@@ -127,6 +127,30 @@ def test_instagram_three_attempts_then_error(ky):
     ]
 
 
+def test_instagram_no_video_is_not_retried(ky):
+    calls = []
+
+    def run(overrides):
+        calls.append(overrides)
+        raise Exception("ERROR: [Instagram] DQx1: There is no video in this post")
+
+    with pytest.raises(Exception, match="no video"):
+        ky._ladder(IG, None, run)
+    assert calls == [{}]
+
+
+def test_tiktok_same_text_still_retried(ky):
+    calls = []
+
+    def run(overrides):
+        calls.append(overrides)
+        raise Exception("There is no video in this post")  # "unknown" -> retried, as before
+
+    with pytest.raises(Exception):
+        ky._ladder(TT, None, run)
+    assert len(calls) == 3
+
+
 @pytest.mark.parametrize("url", [TT, IG])
 @pytest.mark.parametrize("fmt", [None, "best", "137+140"])
 def test_tiktok_instagram_first_attempt_options_are_plain_base(ky, url, fmt):

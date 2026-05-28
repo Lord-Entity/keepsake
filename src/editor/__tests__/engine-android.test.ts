@@ -71,10 +71,15 @@ const openMock = mock(async () => ({
   write: handleWrite,
   close: closeHandle,
 }));
+/** Staged files in the app cache exist unless a test says they went missing. */
+let stagedMissing = false;
+let dirEntries = [];
+const readDirMock = mock(async () => dirEntries);
 mock.module("@tauri-apps/plugin-fs", () => ({
-  exists: async (p) => taken.has(p),
+  exists: async (p) => taken.has(p) || (p.startsWith("/data/cache/") && !stagedMissing),
   mkdir: mkdirMock,
   open: openMock,
+  readDir: readDirMock,
   readFile: async () => new Uint8Array([1, 2, 3]),
   remove: removeMock,
   writeFile: writeMock,
@@ -113,7 +118,8 @@ afterAll(() => {
   URL.createObjectURL = realCreateObjectURL;
 });
 
-const { androidEngine } = await import("../engine-android");
+const { androidEngine, discardPendingStage, stageTime, sweepStaleStages, STAGE_PREFIX } = await import("../engine-android");
+const { stepOf } = await import("../engine-photo");
 const { EditorError } = await import("../types");
 
 const VURI = "content://media/external/video/media/42";
@@ -121,8 +127,13 @@ const VIDEO = { kind: "video", name: "clip.mp4", uri: VURI };
 const PHOTO = { kind: "photo", name: "pic.jpg", uri: "content://media/external/images/media/9" };
 const PROBE = { width: 1920, height: 1080, duration: 10, hasAudio: true, rotation: 0 };
 const LEGACY_OUT = `${DL}/clip_edit.mp4`;
-/** The plugin only writes inside the app cache: every video export goes to a staging dir there first. */
-const STAGED = /^\/data\/cache\/editor-[a-z0-9]+\/clip_edit\.mp4$/;
+/**
+ * The plugin only writes inside the app cache: every video export goes to a staging dir there first. Its name must
+ * start with "gallery-" (KeepsakeMediaPlugin.kt stagedSource refuses any other publish source).
+ */
+const STAGED = /^\/data\/cache\/gallery-editor-[a-z0-9]+-[a-z0-9]+\/clip_edit\.mp4$/;
+const stageOf = (p) => p.slice(0, p.lastIndexOf("/"));
+const removedStage = (stage) => removeMock.mock.calls.some((c) => c[0] === stage);
 
 const videoJob = (over = {}) => ({ input: VIDEO, audio: true, output: "mp4", ...over });
 const photoJob = (over = {}) => ({ input: PHOTO, audio: false, output: "jpg", ...over });
@@ -140,7 +151,12 @@ const calls = (cmd) => invokeMock.mock.calls.filter((c) => c[0] === cmd);
 /** Default export handler: succeed and return the outPath it was given. */
 const exportOk = async (args) => ({ path: args.outPath });
 
-beforeEach(() => {
+beforeEach(async () => {
+  // A failed save in one test must not hand its kept stage to the next one.
+  await discardPendingStage();
+  stagedMissing = false;
+  dirEntries = [];
+  readDirMock.mockClear();
   handlers = { [`${P}editor_export_video`]: exportOk };
   invokeMock.mockClear();
   listenMock.mockClear();
@@ -572,7 +588,143 @@ describe("exportEdit: photo", () => {
     expect(args.kind).toBe("image");
     expect(args.mime).toBe("image/png");
     expect(args.fileName).toBe("pic_edit.png");
-    expect(args.src).toMatch(/^\/data\/cache\/editor-[a-z0-9]+\/pic_edit\.png$/);
+    expect(args.src).toMatch(/^\/data\/cache\/gallery-editor-[a-z0-9]+-[a-z0-9]+\/pic_edit\.png$/);
+    // The PNG was written to exactly the path that was published.
+    expect(writeMock.mock.calls[0][0]).toBe(args.src);
     expect(removeMock).toHaveBeenCalledWith(args.src.slice(0, -"/pic_edit.png".length), { recursive: true });
+  });
+});
+
+describe("exportEdit: staged save (Gallery / folder) like download.ts runStaged", () => {
+  const GALLERY = { saveDir: "gallery", saveTreeUri: "" };
+  const FOLDER = { saveDir: "", saveTreeUri: "content://tree/abc" };
+
+  test("the stage prefix is one the plugin's stagedSource accepts", () => {
+    expect(STAGE_PREFIX.startsWith("gallery-")).toBe(true);
+  });
+
+  test("publishes exactly the file Media3 wrote, and removes the stage only after the publish succeeded", async () => {
+    settings = GALLERY;
+    let removedBeforePublish;
+    handlers[`${P}gallery_publish`] = async (args) => {
+      removedBeforePublish = removedStage(stageOf(args.src));
+      return { uri: "content://media/external/video/media/1" };
+    };
+    await androidEngine.exportEdit(videoJob(), PROBE, () => {});
+    const outPath = calls(`${P}editor_export_video`)[0][1].outPath;
+    expect(calls(`${P}gallery_publish`)[0][1].src).toBe(outPath);
+    expect(removedBeforePublish).toBe(false);
+    expect(removedStage(stageOf(outPath))).toBe(true);
+  });
+
+  test("a failed save keeps the stage; Retry of the same edit re-publishes it without re-encoding", async () => {
+    settings = GALLERY;
+    handlers[`${P}gallery_publish`] = async () => {
+      throw "gallery:unknown: MediaStore insert failed";
+    };
+    const e = await rejection(androidEngine.exportEdit(videoJob(), PROBE, () => {}));
+    expect(e.code).toBe("export_failed");
+    expect(stepOf(e)).toBe("save");
+    expect(e.message).toContain("Your edit was made, but Keepsake couldn't save it to the Gallery.");
+    expect(e.message).toContain("Tap Retry to save it again");
+    expect(e.message).toContain("(Details: gallery:unknown: MediaStore insert failed");
+    const src = calls(`${P}gallery_publish`)[0][1].src;
+    expect(removedStage(stageOf(src))).toBe(false);
+
+    handlers[`${P}gallery_publish`] = async () => ({ uri: "content://media/external/video/media/2" });
+    const seen = [];
+    const res = await androidEngine.exportEdit(videoJob(), PROBE, (f) => seen.push(f));
+    expect(res.path).toBe("content://media/external/video/media/2");
+    expect(calls(`${P}editor_export_video`).length).toBe(1);
+    expect(calls(`${P}gallery_publish`)[1][1].src).toBe(src);
+    expect(seen).toEqual([1]);
+    expect(removedStage(stageOf(src))).toBe(true);
+  });
+
+  test("a different edit drops the kept stage and exports again", async () => {
+    settings = GALLERY;
+    handlers[`${P}gallery_publish`] = async () => {
+      throw "gallery:unknown: boom";
+    };
+    await rejection(androidEngine.exportEdit(videoJob(), PROBE, () => {}));
+    const first = calls(`${P}editor_export_video`)[0][1].outPath;
+    handlers[`${P}gallery_publish`] = async () => ({ uri: "content://x/3" });
+    await androidEngine.exportEdit(videoJob({ audio: false }), PROBE, () => {});
+    expect(calls(`${P}editor_export_video`).length).toBe(2);
+    expect(removedStage(stageOf(first))).toBe(true);
+  });
+
+  test("folder source_missing: honest save-step error, stage removed, Retry exports again", async () => {
+    settings = FOLDER;
+    handlers[`${P}folder_save`] = async () => {
+      throw "folder:source_missing: The source must be a staged download in the app cache: /x";
+    };
+    const e = await rejection(androidEngine.exportEdit(videoJob(), PROBE, () => {}));
+    expect(e).toBeInstanceOf(EditorError);
+    expect(e.code).toBe("export_failed");
+    expect(stepOf(e)).toBe("save");
+    expect(e.message).toContain("Your edit was made, but Keepsake couldn't save it to your folder.");
+    expect(e.message).toContain("Tap Retry to export it again.");
+    expect(e.message).toContain("(Details: folder:source_missing: The source must be a staged download");
+    expect(e.message).not.toContain("downloaded file");
+    const src = calls(`${P}folder_save`)[0][1].src;
+    expect(removedStage(stageOf(src))).toBe(true);
+
+    handlers[`${P}folder_save`] = async () => ({ uri: "content://tree/abc/document/9", name: "clip_edit.mp4" });
+    await androidEngine.exportEdit(videoJob(), PROBE, () => {});
+    expect(calls(`${P}editor_export_video`).length).toBe(2);
+  });
+
+  test("a staged file that is not there is an export-step error and nothing is published", async () => {
+    settings = GALLERY;
+    stagedMissing = true;
+    const e = await rejection(androidEngine.exportEdit(videoJob(), PROBE, () => {}));
+    expect(e.code).toBe("export_failed");
+    expect(stepOf(e)).toBe("export");
+    expect(e.message).toContain("Details: export: missing /data/cache/gallery-editor-");
+    expect(calls(`${P}gallery_publish`).length).toBe(0);
+  });
+
+  test("photo: a failed folder save keeps the PNG for Retry; leaving the editor frees it", async () => {
+    settings = FOLDER;
+    handlers[`${P}folder_save`] = async () => {
+      throw "folder:io: broken pipe";
+    };
+    const e = await rejection(androidEngine.exportEdit(photoJob({ output: "png" }), PROBE, () => {}));
+    expect(stepOf(e)).toBe("save");
+    const src = calls(`${P}folder_save`)[0][1].src;
+    expect(writeMock.mock.calls[0][0]).toBe(src);
+    expect(removedStage(stageOf(src))).toBe(false);
+    await discardPendingStage();
+    expect(removedStage(stageOf(src))).toBe(true);
+  });
+
+  test("an abort during the save does not keep the stage", async () => {
+    settings = GALLERY;
+    const ac = new AbortController();
+    handlers[`${P}gallery_publish`] = async () => {
+      ac.abort();
+      throw "gallery:unknown: interrupted";
+    };
+    await rejection(androidEngine.exportEdit(videoJob(), PROBE, () => {}, ac.signal));
+    const src = calls(`${P}gallery_publish`)[0][1].src;
+    expect(removedStage(stageOf(src))).toBe(true);
+  });
+
+  test("the sweep removes only gallery-editor stages older than an hour", async () => {
+    const old = `${STAGE_PREFIX}${(Date.now() - 2 * 3600_000).toString(36)}-abcd`;
+    const fresh = `${STAGE_PREFIX}${(Date.now() - 60_000).toString(36)}-abcd`;
+    dirEntries = [
+      { name: old, isDirectory: true },
+      { name: fresh, isDirectory: true },
+      { name: "gallery-job1-xyz", isDirectory: true },
+      // "_" is not a base-36 digit, so no creation time can be read from this name ("garbage" would parse as one).
+      { name: `${STAGE_PREFIX}_partial`, isDirectory: true },
+    ];
+    await sweepStaleStages("/data/cache");
+    expect(removeMock.mock.calls.map((c) => c[0])).toEqual([`/data/cache/${old}`]);
+    expect(stageTime(fresh)).toBeGreaterThan(0);
+    expect(Number.isNaN(stageTime("gallery-job1-xyz"))).toBe(true);
+    expect(Number.isNaN(stageTime(`${STAGE_PREFIX}_partial`))).toBe(true);
   });
 });

@@ -85,7 +85,8 @@ const {
   ytdlpInfoToVideoInfo,
 } = await import("../android-ytdlp");
 const { ANDROID_SELFCONTAINED, androidYtdlpReady, youtubeRoute } = await import("../youtube-ytdlp");
-const { fetchInfo, startDownload } = await import("../index");
+const { fetchInfo, startDownload, listFormats } = await import("../index");
+const { INSTAGRAM_FULL_ENGINE_TEXT } = await import("../formats");
 const { selectionArgs } = await import("../ytdlp");
 const { EngineError, appError } = await import("../errors");
 
@@ -1087,5 +1088,36 @@ describe("fetchInfo: HLS-only TikTok post", () => {
     await setHandlersAndStatus({ ytdlp_status: async () => READY, ytdlp_info: async () => ({ ok: true, info: hlsOnlyRaw() }) });
     const v = await fetchInfo(TT_URL);
     expect(hiddenStreams(v).map((s) => s.id)).toEqual(["hls-1080"]);
+  });
+});
+
+// Instagram VP9-in-MP4 DASH video + AAC audio: nothing the native muxer can pair.
+const igVp9Raw = () => ({
+  ...rawInstagram(),
+  formats: [
+    fmt({ format_id: "dash-2v", vcodec: "vp09.00.31.08", acodec: "none", height: 1920 }),
+    fmt({ format_id: "dash-9a", ext: "m4a", vcodec: "none", acodec: "mp4a.40.5", height: null, fps: null }),
+  ],
+});
+
+describe("fetchInfo: Instagram VP9-only reel (index.ts offerInstagramFullRoute)", () => {
+  test("full route ready: the VP9 video joins the private copy and the picker offers Best available", async () => {
+    await setHandlersAndStatus({ ytdlp_status: async () => READY, ytdlp_info: async () => ({ ok: true, info: igVp9Raw() }) });
+    const v = await fetchInfo(IG_URL);
+    expect(calls("ytdlp_info")[0][1]).toEqual({ url: IG_URL });
+    expect(v.ytdlpFull).toBeUndefined();
+    expect(hiddenStreams(v).map((s) => s.id)).toEqual(["dash-2v"]);
+    const video = listFormats(v).filter((o) => o.mode === "video");
+    expect(video.map((o) => o.id)).toEqual(["video:best"]);
+    expect(video[0].disabledReason).toBeUndefined();
+  });
+
+  test("full route not ready: nothing hidden, the disabled row names the built-in engine", async () => {
+    await setHandlersAndStatus({ ytdlp_status: async () => NOT_READY, ytdlp_info: async () => ({ ok: true, info: igVp9Raw() }) });
+    const v = await fetchInfo(IG_URL);
+    expect(hiddenStreams(v)).toEqual([]);
+    const video = listFormats(v).filter((o) => o.mode === "video");
+    expect(video.map((o) => o.id)).toEqual(["video:none"]);
+    expect(video[0].disabledReason).toBe(INSTAGRAM_FULL_ENGINE_TEXT);
   });
 });

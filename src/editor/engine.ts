@@ -6,7 +6,7 @@
  * platform modules only ever see valid jobs. All failures reject with EditorError.
  */
 import { platform } from "../engine/platform";
-import { androidEngine } from "./engine-android";
+import { androidEngine, discardPendingStage } from "./engine-android";
 import { desktopEngine } from "./engine-desktop";
 import {
   editBase,
@@ -124,6 +124,14 @@ async function probeCached(input: EditorInput, signal?: AbortSignal): Promise<Me
   probes.set(key, p);
   if (probes.size > 8) probes.delete(probes.keys().next().value as string);
   return p;
+}
+
+/**
+ * Call when the editor is left: frees the kept file of a failed Android Gallery/folder save (kept for Retry).
+ * Not part of the frozen EditorEngine contract; a no-op on other platforms. Never rejects.
+ */
+export function releaseEditorStage(): Promise<void> {
+  return platform() === "android" ? discardPendingStage() : Promise.resolve();
 }
 
 export const editorEngine: EditorEngine = {

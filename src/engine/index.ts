@@ -12,6 +12,8 @@ import {
   forgetHiddenStreams,
   hiddenStreams,
   isAndroidYtdlpSupported,
+  isInstagramHost,
+  offerInstagramFullRoute,
 } from "./android-ytdlp";
 import { EngineError, fail, toAppError } from "./errors";
 import { isDesktop, platform } from "./platform";
@@ -84,6 +86,10 @@ async function fetchInfoInner(url: string, opts: FetchInfoOptions): Promise<Vide
       // drop the private copy so the picker shows the disabled "No video we can save" row (as before), not a dead end.
       if (bestStreamsByHeight(info).size === 0 && hiddenStreams(info).some((s) => s.kind !== "audio-only")) {
         if (!(await androidYtdlpReady())) forgetHiddenStreams(info);
+      } else if (isInstagramHost(info.url) && bestStreamsByHeight(info).size === 0 && info.streams.some((s) => s.kind !== "audio-only")) {
+        // Instagram only: video the phone cannot mux (VP9 DASH + AAC). With the full route ready, offer "Best
+        // available" through it; otherwise the picker says the built-in engine is needed (formats.ts).
+        if (await androidYtdlpReady()) offerInstagramFullRoute(info);
       }
       return info;
     }

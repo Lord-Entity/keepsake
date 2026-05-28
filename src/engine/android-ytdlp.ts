@@ -146,6 +146,18 @@ export function isAndroidYtdlpHost(url: string): boolean {
   }
 }
 
+/** Instagram part of ANDROID_YTDLP_HOSTS (exact host or any subdomain). */
+const INSTAGRAM_HOSTS: readonly string[] = ["instagram.com", "instagr.am"];
+
+/** Pure: isAndroidYtdlpHost(url) and the host is Instagram. Gates every Instagram-only rule below. */
+export function isInstagramHost(url: string): boolean {
+  if (!isAndroidYtdlpHost(url)) return false;
+  const h = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+  return INSTAGRAM_HOSTS.some((d) => h === d || h.endsWith(`.${d}`));
+}
+
+const isInstagramInfo = (info: VideoInfo) => isInstagramHost(info.url);
+
 /** platform() === "android" && isAndroidYtdlpHost(url). */
 export function isAndroidYtdlpSupported(url: string): boolean {
   return platform() === "android" && isAndroidYtdlpHost(url);
@@ -161,9 +173,9 @@ const watermarked = new WeakMap<VideoInfo, Set<string>>();
  */
 const hidden = new WeakMap<VideoInfo, StreamInfo[]>();
 
-/** Pure: one reduced yt-dlp format -> StreamInfo. */
-function toStream(f: YtdlpFormat): StreamInfo {
-  const kind = f.vcodec === "none" ? "audio-only" : f.acodec === "none" ? "video-only" : "progressive";
+/** Pure: one reduced yt-dlp format -> StreamInfo. `kindOverride`: Instagram only (instagramKind). */
+function toStream(f: YtdlpFormat, kindOverride?: StreamInfo["kind"]): StreamInfo {
+  const kind = kindOverride ?? (f.vcodec === "none" ? "audio-only" : f.acodec === "none" ? "video-only" : "progressive");
   // Audio-only streams rank by audio bitrate; video streams by total bitrate.
   const bitrate = kind === "audio-only" ? (f.abr ?? f.tbr) : (f.tbr ?? f.abr);
   return {
@@ -180,6 +192,28 @@ function toStream(f: YtdlpFormat): StreamInfo {
 }
 
 /**
+ * Instagram only: a format with no codec at all (yt-dlp leaves both null when the DASH manifest or the API omits
+ * them) is classified by its ext / format_note ("DASH audio", "DASH video") instead of being taken as progressive.
+ */
+function instagramKind(f: YtdlpFormat): StreamInfo["kind"] | undefined {
+  if (f.vcodec || f.acodec) return undefined;
+  const note = f.format_note ?? "";
+  if (/^(m4a|aac|mp3|opus|ogg|oga)$/i.test(f.ext ?? "") || /\baudio\b/i.test(note)) return "audio-only";
+  if (/\bvideo\b/i.test(note)) return "video-only";
+  return undefined;
+}
+
+/** Instagram only: toStream with instagramKind, and a missing height taken from format_note ("720p", "1080p60"). */
+function toInstagramStream(f: YtdlpFormat): StreamInfo {
+  const s = toStream(f, instagramKind(f));
+  if (s.kind !== "audio-only" && s.height === undefined) {
+    const m = /(?:^|\D)(\d{3,4})p(?:\d{2,3})?\b/i.exec(f.format_note ?? "");
+    if (m) s.height = Number(m[1]);
+  }
+  return s;
+}
+
+/**
  * Pure: reduced yt-dlp info -> VideoInfo (source "ytdlp"). Legacy: drops formats whose protocol is not http/https
  * (for non-YouTube links a private copy is kept, see hiddenStreams). `full` (self-contained route): keeps HLS/DASH
  * formats too (yt-dlp downloads and ffmpeg merges them) and marks the result `ytdlpFull: true`.
@@ -189,14 +223,19 @@ export function ytdlpInfoToVideoInfo(info: YtdlpInfo, requestedUrl: string, opts
   const marked = new Set<string>();
   const streams: StreamInfo[] = [];
   const dropped: StreamInfo[] = [];
+  // Instagram only: codec-less formats are classified by ext / note, heights come from format_note when missing, and
+  // http_dash_segments formats stay listable (one concrete format_id downloads through yt-dlp's native DashSegmentsFD,
+  // no ffmpeg). TikTok / YouTube: unchanged.
+  const ig = isInstagramHost(info.webpage_url || requestedUrl);
+  const conv = ig ? toInstagramStream : (f: YtdlpFormat) => toStream(f);
   for (const f of info.formats) {
     if (f.vcodec === "none" && f.acodec === "none") continue;
-    if (!full && f.protocol !== "https" && f.protocol !== "http") {
-      dropped.push(toStream(f));
+    if (!full && f.protocol !== "https" && f.protocol !== "http" && !(ig && f.protocol === "http_dash_segments")) {
+      dropped.push(conv(f));
       continue;
     }
     if ((f.format_note && /watermark/i.test(f.format_note)) || /^download/i.test(f.format_id)) marked.add(f.format_id);
-    streams.push(toStream(f));
+    streams.push(conv(f));
   }
   const fpsByHeight: Record<number, number> = {};
   for (const s of streams) {
@@ -248,6 +287,41 @@ export function forgetHiddenStreams(info: VideoInfo): void {
   hidden.delete(info);
 }
 
+/**
+ * Instagram only (index.ts, full route ready): nothing is listable on the phone (e.g. VP9-in-MP4 DASH video, which
+ * the native muxer cannot pair with AAC) but video streams exist, so hand them to the full route: they join the
+ * private copy, the picker shows its "Best available" row and the ladder reaches the bundled-ffmpeg step.
+ * No-op for any other host or when a height is listable.
+ */
+export function offerInstagramFullRoute(info: VideoInfo): void {
+  if (info.source !== "ytdlp" || !isInstagramInfo(info) || bestStreamsByHeight(info).size > 0) return;
+  const video = info.streams.filter((s) => s.kind !== "audio-only");
+  if (video.length === 0) return;
+  const prev = hidden.get(info) ?? [];
+  hidden.set(info, [...prev, ...video.filter((s) => !prev.some((p) => p.id === s.id))]);
+}
+
+/**
+ * Instagram only: no listable height, but the legacy route still has concrete things to try for "video:best"
+ * (heightless progressive files, or pairs the native muxer may accept). formats.ts then offers one "Best available"
+ * row; the ladder tries those (path A) and then the full route when it is ready (path B). False for any other host.
+ */
+export function instagramBestFallback(info: VideoInfo): boolean {
+  if (info.source !== "ytdlp" || !isInstagramInfo(info) || bestStreamsByHeight(info).size > 0) return false;
+  const alts = ytdlpAlternatives(info, "video:best", null);
+  return alts.clean.length + alts.watermarked.length > 0;
+}
+
+/**
+ * Instagram only: video streams exist but none can be saved without the bundled ffmpeg (typically VP9-in-MP4 DASH
+ * with AAC audio) and the full route did not take them. formats.ts shows a specific disabled row instead of the
+ * generic "No video" one. False for any other host.
+ */
+export function instagramNeedsFullEngine(info: VideoInfo): boolean {
+  if (info.source !== "ytdlp" || !isInstagramInfo(info)) return false;
+  return info.streams.some((s) => s.kind !== "audio-only") && !instagramBestFallback(info) && bestStreamsByHeight(info).size === 0;
+}
+
 export interface YtdlpPick {
   formatId: string;
   ext: string;
@@ -283,6 +357,32 @@ export function muxContainerFor(video: StreamInfo): MuxContainer | null {
   return null;
 }
 
+/**
+ * Instagram only: muxContainerFor, plus MP4 for a video-only MP4 whose codec name is missing or not one we map
+ * (yt-dlp leaves vcodec null on API video_versions; AV1 in MP4 is written by KeepsakeMux on API 29+). The native
+ * muxer probes the real codec, and a refusal sends the ladder on. VP8/VP9 in MP4 stays null: KeepsakeMux can only
+ * write VP9 into WebM, and WebM cannot hold Instagram's AAC, so that pair is left to the full route.
+ */
+function instagramMuxContainer(video: StreamInfo): MuxContainer | null {
+  const strict = muxContainerFor(video);
+  if (strict) return strict;
+  if ((video.ext ?? "").toLowerCase() !== "mp4") return null;
+  return /^(vp8|vp08|vp9|vp09)/i.test(video.vcodec ?? "") ? null : "mp4";
+}
+
+/** Instagram only: AAC audio for MP4, accepting an m4a/mp4 audio-only stream whose codec name is missing. */
+function instagramAudioMatches(a: StreamInfo, container: MuxContainer): boolean {
+  if (audioMatches(a, container)) return true;
+  const ext = (a.ext ?? "").toLowerCase();
+  return container === "mp4" && !a.acodec && (ext === "m4a" || ext === "mp4");
+}
+
+/** Instagram audio ranking: a named AAC codec before a missing one, then byAudioQuality. */
+const igAudioRank = (a: StreamInfo, b: StreamInfo) => Number(!a.acodec) - Number(!b.acodec) || byAudioQuality(a, b);
+
+/** Instagram only: a stream listed on a guess (unnamed or AV1-in-MP4 codec) ranks below a confident one. */
+const igGuessed = (s: StreamInfo) => s.kind === "video-only" && muxContainerFor(s) === null;
+
 /** Pure: AAC in m4a/mp4, or Opus/Vorbis in webm/ogg. */
 function muxableAudio(ext: string, codec: string): boolean {
   const e = ext.toLowerCase();
@@ -304,6 +404,11 @@ const byAudioQuality = (a: StreamInfo, b: StreamInfo) => (b.bitrate ?? 0) - (a.b
 /** Best audio-only stream that can be muxed into `container` (bitrate, then size), or undefined. */
 export function audioForContainer(info: VideoInfo, container: MuxContainer): StreamInfo | undefined {
   return info.streams.filter((s) => s.kind === "audio-only" && audioMatches(s, container)).toSorted(byAudioQuality)[0];
+}
+
+/** Instagram only: audioForContainer with instagramAudioMatches (named AAC first). */
+function instagramAudioFor(info: VideoInfo, container: MuxContainer): StreamInfo | undefined {
+  return info.streams.filter((s) => s.kind === "audio-only" && instagramAudioMatches(s, container)).toSorted(igAudioRank)[0];
 }
 
 /** Extension of the file the native muxer writes for `video` in `container`: AV1 always goes to MP4. */
@@ -345,17 +450,20 @@ function sameHeightRank(info: VideoInfo): (a: StreamInfo, b: StreamInfo) => numb
  * are not listed. The picker lists exactly these heights and pickYtdlpFormat (non-YouTube) downloads exactly these.
  */
 export function bestStreamsByHeight(info: VideoInfo): Map<number, HeightStream> {
-  const rank = sameHeightRank(info);
+  const ig = isInstagramInfo(info);
+  const base = sameHeightRank(info);
+  const rank = ig ? (a: StreamInfo, b: StreamInfo) => Number(igGuessed(a)) - Number(igGuessed(b)) || base(a, b) : base;
   const audio: Record<MuxContainer, StreamInfo | undefined> = {
-    mp4: audioForContainer(info, "mp4"),
+    mp4: ig ? instagramAudioFor(info, "mp4") : audioForContainer(info, "mp4"),
     webm: audioForContainer(info, "webm"),
   };
+  const containerOf = ig ? instagramMuxContainer : muxContainerFor;
   const byHeight = new Map<number, HeightStream>();
   for (const s of info.streams) {
     if (s.kind === "audio-only" || !s.height) continue;
     let entry: HeightStream;
     if (s.kind === "video-only") {
-      const container = muxContainerFor(s);
+      const container = containerOf(s);
       const a = container ? audio[container] : undefined;
       if (!container || !a) continue;
       entry = { video: s, audio: a, container, outExt: muxOutputExt(s, container) };
@@ -516,10 +624,14 @@ export function ytdlpAlternatives(info: VideoInfo, uiFormatId: string, primary: 
     const progressive = info.streams.filter((s) => s.kind === "progressive" && fits(s)).toSorted(byHeightThenRank);
     for (const s of progressive) add(s, { formatId: s.id, ext: s.ext || "mp4", needsRemux: false, height: s.height, sizeBytes: s.sizeBytes });
     const videoOnly = info.streams.filter((s) => s.kind === "video-only" && fits(s)).toSorted(byHeightThenRank);
+    // Instagram: the same relaxed container / audio rules as bestStreamsByHeight. Others: unchanged.
+    const ig = isInstagramInfo(info);
     for (const v of videoOnly) {
-      const container = muxContainerFor(v);
+      const container = ig ? instagramMuxContainer(v) : muxContainerFor(v);
       if (!container) continue;
-      const audios = info.streams.filter((s) => s.kind === "audio-only" && audioMatches(s, container)).toSorted(byAudioQuality);
+      const audios = ig
+        ? info.streams.filter((s) => s.kind === "audio-only" && instagramAudioMatches(s, container)).toSorted(igAudioRank)
+        : info.streams.filter((s) => s.kind === "audio-only" && audioMatches(s, container)).toSorted(byAudioQuality);
       for (const a of audios) {
         add(v, {
           formatId: v.id,

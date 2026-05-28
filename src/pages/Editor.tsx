@@ -3,7 +3,8 @@ import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { Spinner } from "../components/ui/Loader";
 import { PAGE_BOTTOM } from "../components/layout/page";
-import { editorEngine } from "../editor/engine";
+import { editorEngine, releaseEditorStage } from "../editor/engine";
+import { stepOf } from "../editor/engine-photo";
 import {
   EditorError,
   validateJob,
@@ -203,6 +204,8 @@ function EditorWorkspace({
   const [quality, setQuality] = useState(92);
   const [saved, setSaved] = useState<{ name: string; path: string } | null>(null);
   const exportAbort = useRef<AbortController | null>(null);
+  /** Latest runExport, for the error toast's Retry (a toast outlives the render that made it). */
+  const retryExport = useRef<(j: EditJob) => Promise<void>>(() => Promise.resolve());
   const videoRef = useRef<HTMLVideoElement>(null);
   const trimRef = useRef(trim);
   useLayoutEffect(() => {
@@ -293,8 +296,10 @@ function EditorWorkspace({
     setCrop((c) => applyPreset(c, p, size));
   };
 
-  const runExport = async () => {
-    if (invalid || exporting || checking || nothing) return;
+  /** `retry`: the exact job of a failed export (from the error toast), so a kept staged file is reused. */
+  const runExport = async (retry?: EditJob) => {
+    if (exporting || checking || (!retry && (invalid || nothing))) return;
+    const run = retry ?? job;
     videoRef.current?.pause();
     const ac = new AbortController();
     exportAbort.current = ac;
@@ -304,7 +309,7 @@ function EditorWorkspace({
     let last = -1;
     try {
       const res = await editorEngine.exportEdit(
-        job,
+        run,
         (f) => {
           const p = Math.round(Math.min(1, Math.max(0, Number.isFinite(f) ? f : 0)) * 100) / 100;
           if (p !== last) {
@@ -327,6 +332,7 @@ function EditorWorkspace({
         notify({ tone: "info", title: "Export cancelled" });
       } else {
         const code = e instanceof EditorError ? e.code : null;
+        const savingFailed = stepOf(e) === "save";
         notify({
           tone: "error",
           title:
@@ -336,8 +342,12 @@ function EditorWorkspace({
                 ? "Keepsake can't save there"
                 : code === "unsupported"
                   ? "This file can't be exported"
-                  : "Export failed",
+                  : savingFailed
+                    ? "Couldn't save the edit"
+                    : "Export failed",
           body: errorText(e),
+          // Retry sends the same EditJob, so the engine re-saves a kept staged file instead of re-encoding it.
+          action: code === "unsupported" || code === "invalid_job" ? undefined : { label: "Retry", run: () => void retryExport.current(run) },
         });
       }
     } finally {
@@ -346,6 +356,17 @@ function EditorWorkspace({
       setProgress(null);
     }
   };
+  useLayoutEffect(() => {
+    retryExport.current = runExport;
+  });
+  // Leaving the editor: a toast's Retry no longer runs, and a kept staged file of a failed save is freed.
+  useEffect(
+    () => () => {
+      retryExport.current = () => Promise.resolve();
+      void releaseEditorStage();
+    },
+    [],
+  );
 
   const media = video ? (
     <video

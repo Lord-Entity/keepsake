@@ -13,8 +13,12 @@
  *   or convert it in the browser).
  */
 import type { AudioFormat, FormatOption, Platform, ThumbnailFormat, VideoInfo } from "../lib/types";
-import { bestStreamsByHeight, hiddenStreams, pickYtdlpFormat } from "./android-ytdlp";
+import { bestStreamsByHeight, hiddenStreams, instagramBestFallback, instagramNeedsFullEngine, pickYtdlpFormat } from "./android-ytdlp";
 import { platform } from "./platform";
+
+/** Instagram video only the bundled ffmpeg can save (VP9 video + AAC audio) while that engine is not ready. */
+export const INSTAGRAM_FULL_ENGINE_TEXT =
+  "This Instagram video needs Keepsake's built-in video engine, which isn't ready on this phone. Try Audio, reinstall Keepsake, or use the desktop app.";
 
 /** Heights offered when the link gives none (playlists, and the Android pre-fetch placeholders): 2160 down to 360. */
 const PLAYLIST_HEIGHTS = [2160, 1440, 1080, 720, 480, 360];
@@ -235,9 +239,10 @@ function androidYtdlpOptions(info: VideoInfo): FormatOption[] {
         needsConversion: false,
       });
     }
-  } else if (hiddenStreams(info).some((s) => s.kind !== "audio-only")) {
+  } else if (hiddenStreams(info).some((s) => s.kind !== "audio-only") || instagramBestFallback(info)) {
     // TikTok / Instagram post offered only as HLS/DASH: nothing the phone can mux, so one "Best available" row that
     // the download ladder sends to the full yt-dlp route (bundled ffmpeg). Never YouTube (hiddenStreams is empty).
+    // Instagram also: no listable height but heightless files / guessed pairs to try first (instagramBestFallback).
     out.push({
       id: "video:best",
       mode: "video",
@@ -257,7 +262,9 @@ function androidYtdlpOptions(info: VideoInfo): FormatOption[] {
     const photo = !info.hasVideo && (info.thumbnails.length > 0 || path.startsWith("/p/"));
     const reason = photo
       ? "This post has photos, not a video. Save images with the desktop app."
-      : "No video we can save on Android for this link. Try Audio, or use the desktop app.";
+      : instagramNeedsFullEngine(info)
+        ? INSTAGRAM_FULL_ENGINE_TEXT
+        : "No video we can save on Android for this link. Try Audio, or use the desktop app.";
     out.push({
       id: "video:none",
       mode: "video",

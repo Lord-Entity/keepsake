@@ -112,6 +112,21 @@ export function editorError(code: EditorErrorCode, detail?: string): EditorError
 
 export const cancelled = (): EditorError => editorError("cancelled");
 
+/** Which step of an Android export failed: "export" (making the file) or "save" (Gallery / folder). */
+export type ExportStep = "export" | "save";
+
+/** Tags an EditorError with the step that failed (an extra own property; the frozen EditorError shape is unchanged). */
+export function markSaveStep(e: EditorError, step: ExportStep): EditorError {
+  (e as EditorError & { step?: ExportStep }).step = step;
+  return e;
+}
+
+/** The step an error was tagged with by markSaveStep, if any. */
+export function stepOf(e: unknown): ExportStep | undefined {
+  const s = e instanceof EditorError ? (e as EditorError & { step?: unknown }).step : undefined;
+  return s === "export" || s === "save" ? s : undefined;
+}
+
 export function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw cancelled();
 }

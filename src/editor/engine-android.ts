@@ -10,11 +10,14 @@
  *     cancel: "editor_cancel" {} (best effort; a missing command is ignored).
  *   The plugin only writes inside the app cache, so a video is always exported into a staging dir there.
  * - Saving follows androidSaveMode like download.ts: gallery -> publishToGallery, folder -> saveToFolder (both from the
- *   staging dir), legacy -> photos written straight into Settings saveDir (or Downloads), videos copied there in chunks.
+ *   staging dir $APPCACHE/gallery-editor-<id>, the only prefix the plugin accepts), legacy -> photos written straight
+ *   into Settings saveDir (or Downloads), videos copied there in chunks. As in download.ts runStaged, the stage is
+ *   removed only after a successful save; a failed save keeps it so Retry (the same edit) saves it again.
  */
 import { addPluginListener, invoke, type PluginListener } from "@tauri-apps/api/core";
 import { appCacheDir, downloadDir, join } from "@tauri-apps/api/path";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import * as fsAll from "@tauri-apps/plugin-fs";
 import { exists, mkdir, open as openFs, readFile, remove, writeFile } from "@tauri-apps/plugin-fs";
 import { FolderError, saveToFolder } from "../engine/android-folder";
 import { androidSaveMode, GALLERY_SAVE, GalleryError, publishToGallery } from "../engine/android-gallery";
@@ -28,6 +31,7 @@ import {
   FULL_CAPS,
   kindFromName,
   mapNativeError,
+  markSaveStep,
   MIME,
   parseProbe,
   probePhoto,
@@ -39,7 +43,7 @@ import {
   videoTrim,
   type PlatformEngine,
 } from "./engine-photo";
-import type { EditJob, EditorInput, EditResult, MediaKind, MediaProbe } from "./types";
+import type { EditJob, EditorErrorCode, EditorInput, EditResult, MediaKind, MediaProbe } from "./types";
 import { EditorError } from "./types";
 
 const PLUGIN = "keepsake-media";
@@ -168,41 +172,178 @@ async function uniquePath(dir: string, base: string, ext: string): Promise<strin
   return join(dir, `${base}-${Date.now()}.${ext}`);
 }
 
+/**
+ * Stage folder name prefix. MUST start with "gallery-": the plugin's gallery_publish / folder_save only accept a
+ * source under cacheDir/gallery-<id>/ (KeepsakeMediaPlugin.kt stagedSource) and refuse anything else before any
+ * copy. The old "editor-<id>" stage was refused, so every Gallery/folder save of an edit failed
+ * (folder mode: "folder:source_missing ... went missing"; Gallery mode: "gallery:unknown: The source must be a staged
+ * download"). Same construction as download.ts runStaged: join(appCacheDir(), "gallery-...").
+ */
+export const STAGE_PREFIX = "gallery-editor-";
+
+/** A finished edit waiting in its stage to be saved. */
+interface Staged {
+  key: string;
+  stage: string;
+  src: string;
+  fileName: string;
+  mime: string;
+  kind: "video" | "image";
+}
+
+/**
+ * The last edit whose save failed while the file stayed in its stage. Exporting the same edit again (Retry) re-saves
+ * this file instead of encoding it again. Only one is kept; any other export, or leaving the editor, drops it.
+ */
+let pending: Staged | undefined;
+
+/** Stages older than this are left over from a crash or an abandoned Retry and are swept. */
+const STALE_MS = 60 * 60 * 1000;
+/** Stages in use by a running export (never swept). */
+const activeStages = new Set<string>();
+let swept = false;
+
+/** Creation time encoded in a stage name `gallery-editor-<base36 ms>-<rand>`, or NaN. */
+export function stageTime(name: string): number {
+  if (!name.startsWith(STAGE_PREFIX)) return NaN;
+  const ms = Number.parseInt(name.slice(STAGE_PREFIX.length).split("-")[0] ?? "", 36);
+  return Number.isFinite(ms) && ms > 0 ? ms : NaN;
+}
+
+/**
+ * Best effort (run once per app run, at the first stage): removes `gallery-editor-*` stages older than an hour (a
+ * crash, or a failed save the user never retried). Never the active or pending stage. download.ts's own
+ * `gallery-<jobId>-*` stages never match the prefix and are untouched. Exported for tests. Never throws.
+ */
+export async function sweepStaleStages(cache: string): Promise<void> {
+  try {
+    // Namespace access: test files mock plugin-fs process-wide without readDir, and a named import would fail to link.
+    const readDir = (fsAll as Partial<typeof fsAll>).readDir;
+    if (typeof readDir !== "function") return;
+    const now = Date.now();
+    for (const e of await readDir(cache)) {
+      const t = stageTime(e.name);
+      if (!e.isDirectory || !(now - t > STALE_MS)) continue;
+      const dir = await join(cache, e.name);
+      if (activeStages.has(dir) || pending?.stage === dir) continue;
+      await dropStage(dir);
+    }
+  } catch {
+    // listing the cache is optional
+  }
+}
+
 async function makeStage(): Promise<string> {
-  const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  const stage = await join(await appCacheDir(), `editor-${id}`);
+  const cache = await appCacheDir();
+  if (!swept) {
+    swept = true;
+    await sweepStaleStages(cache);
+  }
+  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6) || "0"}`;
+  const stage = await join(cache, `${STAGE_PREFIX}${id}`);
   try {
     await mkdir(stage, { recursive: true });
   } catch (e) {
     throw mapNativeError(e, "export_failed");
   }
+  activeStages.add(stage);
   return stage;
 }
 
-/** Publish a staged file to the Gallery or the chosen SAF folder. */
-async function publish(mode: "gallery" | "folder", src: string, fileName: string, mime: string, kind: "video" | "image"): Promise<EditResult> {
+function dropStage(stage: string): Promise<void> {
+  activeStages.delete(stage);
+  return remove(stage, { recursive: true }).catch(() => undefined);
+}
+
+/** Drops the kept stage of a failed save (the editor was left). Never throws. */
+export async function discardPendingStage(): Promise<void> {
+  const p = pending;
+  pending = undefined;
+  if (p) await dropStage(p.stage);
+}
+
+const isInside = (p: string, dir: string) => p === dir || p.startsWith(`${dir.replace(/[\\/]+$/, "")}/`);
+
+const jobKey = (job: EditJob, mode: Mode) => `${mode}|${JSON.stringify(job)}`;
+
+/** The pending staged file for this exact edit when it is still on disk; otherwise drops any pending stage. */
+async function takePending(key: string): Promise<Staged | undefined> {
+  const p = pending;
+  pending = undefined;
+  if (!p) return undefined;
+  if (p.key === key && (await exists(p.src).catch(() => false))) {
+    activeStages.add(p.stage);
+    return p;
+  }
+  await dropStage(p.stage);
+  return undefined;
+}
+
+/** Throws (export step) when the file the export wrote is not there. An exists() failure is not proof: carry on. */
+async function requireStaged(s: Staged): Promise<void> {
+  if (await exists(s.src).catch(() => true)) return;
+  await dropStage(s.stage);
+  throw markSaveStep(
+    new EditorError("export_failed", `The edit finished but its file was not found, so nothing was saved. Tap Retry to export it again. (Details: export: missing ${s.src})`),
+    "export",
+  );
+}
+
+/** EditorError for a failed save step: says the edit itself worked, which step failed, what to do, and the plugin code. */
+function saveFailed(where: string, code: EditorErrorCode, reason: string, detail: string, kept: boolean): EditorError {
+  const next = kept ? "Tap Retry to save it again (it will not be re-encoded)." : "Tap Retry to export it again.";
+  const text = `Your edit was made, but Keepsake couldn't save it to ${where}. ${reason ? `${reason} ` : ""}${next} (Details: ${detail})`;
+  return markSaveStep(new EditorError(code, text), "save");
+}
+
+/**
+ * Publish a staged file to the Gallery or the chosen SAF folder: the same helpers, argument shape and cleanup order
+ * as download.ts runStaged (stage removed only after a successful publish; on failure the file stays in its stage).
+ */
+async function saveStaged(mode: "gallery" | "folder", s: Staged, signal?: AbortSignal): Promise<EditResult> {
+  await requireStaged(s);
+  if (signal?.aborted) {
+    await dropStage(s.stage);
+    throw cancelled();
+  }
+  let keepStage = false;
   try {
     if (mode === "folder") {
-      const out = await saveToFolder({ src, treeUri: settingsStore.get().saveTreeUri, fileName, mime });
+      const out = await saveToFolder({ src: s.src, treeUri: settingsStore.get().saveTreeUri, fileName: s.fileName, mime: s.mime });
       return { path: out.uri, name: out.name };
     }
-    const out = await publishToGallery({ src, kind, fileName, mime });
-    return { path: out.uri, name: fileName };
+    const out = await publishToGallery({ src: s.src, kind: s.kind, fileName: s.fileName, mime: s.mime });
+    return { path: out.uri, name: s.fileName };
   } catch (e) {
+    if (e instanceof FolderError) {
+      // The plugin deletes src only on success; source_missing means it is gone, so Retry must export again.
+      keepStage = e.folderCode !== "source_missing";
+      const code: EditorErrorCode =
+        e.folderCode === "no_space" ? "no_space" : e.folderCode === "permission" || e.folderCode === "not_found" ? "permission" : "export_failed";
+      const reason =
+        e.folderCode === "source_missing" ? "The edited file was gone from the app cache before it could be copied." : e.message;
+      throw saveFailed("your folder", code, reason, `folder:${e.folderCode}: ${e.detail ?? "no detail"}`, keepStage);
+    }
     if (e instanceof GalleryError) {
       const kept = e.keptPath?.trim();
-      // Storage permission denied but the plugin kept the file in its own folder: report that location.
-      if (e.galleryCode === "permission" && kept && kept.startsWith("/") && !kept.includes("/editor-")) {
-        return { path: kept, name: baseOf(kept) };
-      }
-      const code = e.galleryCode === "no_space" ? "no_space" : e.galleryCode === "permission" ? "permission" : "export_failed";
-      throw new EditorError(code, e.detail ? `${e.message} (Details: ${e.detail})` : e.message);
+      const keptSafe = kept !== undefined && kept.startsWith("/") && !isInside(kept, s.stage);
+      // Storage permission denied but the plugin moved the file to its own kept folder: report that location.
+      if (keptSafe && kept !== undefined && e.galleryCode === "permission") return { path: kept, name: baseOf(kept) };
+      keepStage = !keptSafe;
+      const code: EditorErrorCode = e.galleryCode === "no_space" ? "no_space" : e.galleryCode === "permission" ? "permission" : "export_failed";
+      const reason = e.galleryCode === "unknown" ? "" : e.message;
+      const where = keptSafe ? `file kept at ${kept}` : `file left at ${s.src}`;
+      throw saveFailed("the Gallery", code, reason, `gallery:${e.galleryCode}: ${e.detail ?? "no detail"} (${where})`, keepStage);
     }
-    if (e instanceof FolderError) {
-      const code = e.folderCode === "no_space" ? "no_space" : e.folderCode === "permission" || e.folderCode === "not_found" ? "permission" : "export_failed";
-      throw new EditorError(code, e.message);
-    }
-    throw mapNativeError(e, "export_failed");
+    keepStage = true;
+    const err = mapNativeError(e, "export_failed");
+    throw saveFailed(mode === "folder" ? "your folder" : "the Gallery", err.code, "", rawText(e), true);
+  } finally {
+    // Kept for Retry only after a real failure; an abort during the save (or any success) removes the stage.
+    if (keepStage && !signal?.aborted) {
+      pending = s;
+      activeStages.delete(s.stage);
+    } else await dropStage(s.stage);
   }
 }
 
@@ -213,9 +354,13 @@ const sendCancel = () => void invoke<void>(`plugin:${PLUGIN}|editor_cancel`, {})
 
 async function exportPhoto(job: EditJob, signal?: AbortSignal): Promise<EditResult> {
   const uri = uriOf(job.input);
+  const mode = saveMode();
+  const key = jobKey(job, mode);
+  // Retry after a failed save: the rendered file is still staged, save it again.
+  const again = await takePending(key);
+  if (again && mode !== "legacy") return saveStaged(mode, again, signal);
   const rendered = await renderPhoto(await readBlob(uri, MIME[extOf(job.input.name)] ?? "image/*"), job, signal);
   const base = editBase(job.input.name);
-  const mode = saveMode();
   if (mode === "legacy") {
     const out = await uniquePath(await legacyDir(), base, rendered.ext);
     try {
@@ -226,19 +371,15 @@ async function exportPhoto(job: EditJob, signal?: AbortSignal): Promise<EditResu
     return { path: out, name: baseOf(out) };
   }
   const stage = await makeStage();
+  const fileName = `${base}.${rendered.ext}`;
+  const src = await join(stage, fileName);
   try {
-    const fileName = `${base}.${rendered.ext}`;
-    const src = await join(stage, fileName);
-    try {
-      await writeFile(src, rendered.bytes);
-    } catch (e) {
-      throw mapNativeError(e, "export_failed");
-    }
-    throwIfAborted(signal);
-    return await publish(mode, src, fileName, rendered.mime, "image");
-  } finally {
-    await remove(stage, { recursive: true }).catch(() => undefined);
+    await writeFile(src, rendered.bytes);
+  } catch (e) {
+    await dropStage(stage);
+    throw mapNativeError(e, "export_failed");
   }
+  return saveStaged(mode, { key, stage, src, fileName, mime: rendered.mime, kind: "image" }, signal);
 }
 
 async function exportVideo(
@@ -251,6 +392,14 @@ async function exportVideo(
   const uri = uriOf(job.input);
   const base = editBase(job.input.name);
   const mode = saveMode();
+  const key = jobKey(job, mode);
+  // Retry after a failed save: the encoded file is still staged, save it again without re-encoding.
+  const again = await takePending(key);
+  if (again && mode !== "legacy") {
+    const r = await saveStaged(mode, again, signal);
+    onProgress(1);
+    return r;
+  }
   // Legacy target first, so an unwritable save folder fails before any encoding.
   const target = mode === "legacy" ? await uniquePath(await legacyDir(), base, "mp4") : undefined;
   const stage = await makeStage();
@@ -267,6 +416,7 @@ async function exportVideo(
     // progress is optional: the bar stays where it is until the export ends
   }
   signal?.addEventListener("abort", sendCancel, { once: true });
+  let staged: Staged | undefined;
   try {
     // An abort during the awaits above fired before the listener existed: don't start an export nobody can cancel.
     throwIfAborted(signal);
@@ -295,7 +445,9 @@ async function exportVideo(
       if (signal?.aborted) throw cancelled();
       return { path: target, name: baseOf(target) };
     }
-    return await publish(mode as "gallery" | "folder", written, baseOf(written), "video/mp4", "video");
+    // Save the file this module asked Media3 to write (outPath), not a re-spelled path: the plugin's reply is the
+    // canonical form of the same file (e.g. /data/data vs /data/user/0), and stage checks compare against `stage`.
+    staged = { key, stage, src: outPath, fileName: baseOf(outPath), mime: "video/mp4", kind: "video" };
   } catch (e) {
     // Legacy mode copies into the user's folder: never leave a half or cancelled file there.
     if (target) await remove(target).catch(() => undefined);
@@ -303,8 +455,11 @@ async function exportVideo(
   } finally {
     signal?.removeEventListener("abort", sendCancel);
     await listener?.unregister().catch(() => undefined);
-    await remove(stage, { recursive: true }).catch(() => undefined);
+    // The stage outlives this block only when the file still has to be saved (saveStaged owns it from here).
+    if (!staged) await dropStage(stage);
   }
+  if (!staged || mode === "legacy") throw editorError("export_failed", "no staged file to save");
+  return saveStaged(mode, staged, signal);
 }
 
 /** Copies a staged file to `dst` in chunks (no single IPC message holds the whole video). */

@@ -113,6 +113,19 @@ def next_step(code, attempt, backed_off, bridge_error=False):
     return "stop"
 
 
+# Instagram only: yt-dlp's expected "no video" error (instagram.py raise_no_formats) is classified
+# "unknown" by the bridge, but a retry cannot change it. Other sites: none (their ladder is unchanged).
+_FINAL_TEXT = {
+    "instagram": ("there is no video in this post",),
+}
+
+
+def final_text(site, text):
+    """True when the error text of a failed attempt is final for `site` (stop, never retry)."""
+    t = str(text or "").lower()
+    return any(n in t for n in _FINAL_TEXT.get(site, ()))
+
+
 def partial_victims(seen, finished):
     """Paths to delete before a download retry: unfinished downloads and their .part / .ytdl /
     -Frag* leftovers (the -Frag glob is done by the bridge). Files in `finished` (complete

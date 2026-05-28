@@ -47,7 +47,7 @@ mock.module("../../state/settings", () => ({
   settingsStore: { get: () => ({ saveDir: "", saveTreeUri: "" }) },
 }));
 
-const { editorEngine, webAccept } = await import("../engine");
+const { editorEngine, webAccept, releaseEditorStage } = await import("../engine");
 const { desktopEngine } = await import("../engine-desktop");
 const { EditorError } = await import("../types");
 
@@ -94,6 +94,14 @@ describe("dispatch", () => {
     expect(await editorEngine.probe(v)).toEqual(PROBE);
     expect(calls("plugin:keepsake-media|editor_probe")[0][1]).toEqual({ uri: v.uri });
     expect(calls("editor_probe").length).toBe(0);
+  });
+
+  test("releaseEditorStage resolves on every platform and makes no native call", async () => {
+    for (const p of ["android", "windows", "linux", "web"]) {
+      current = p;
+      await expect(releaseEditorStage()).resolves.toBeUndefined();
+    }
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 });
 

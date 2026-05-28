@@ -16,11 +16,13 @@ import {
   extOf,
   kindFromName,
   mapNativeError,
+  markSaveStep,
   parseProbe,
   probePhoto,
   progressGate,
   rawText,
   renderPhoto,
+  stepOf,
   throwIfAborted,
   videoCrop,
   videoTrim,
@@ -28,6 +30,19 @@ import {
 import { EditorError } from "../types";
 
 const HD = { width: 1920, height: 1080, duration: 10, hasAudio: true, rotation: 0 };
+
+describe("export step tag", () => {
+  test("markSaveStep tags the same EditorError; stepOf reads it back, anything else is undefined", () => {
+    const e = new EditorError("export_failed", "x");
+    expect(stepOf(e)).toBeUndefined();
+    expect(markSaveStep(e, "save")).toBe(e);
+    expect(stepOf(e)).toBe("save");
+    expect(e.code).toBe("export_failed");
+    expect(stepOf(markSaveStep(new EditorError("export_failed", "y"), "export"))).toBe("export");
+    expect(stepOf(Object.assign(new Error("z"), { step: "save" }))).toBeUndefined();
+    expect(stepOf("save")).toBeUndefined();
+  });
+});
 
 describe("names and kinds", () => {
   test("baseOf handles both separators", () => {

@@ -1205,7 +1205,7 @@ mod tests {
     };
 
     const TREE: &str = "content://com.android.externalstorage.documents/tree/primary%3AMovies";
-    const OUT: &str = "/data/user/0/app.keepsake/cache/editor-1/out.mp4";
+    const OUT: &str = "/data/user/0/app.keepsake/cache/gallery-editor-1/out.mp4";
 
     fn crop(x: f64, y: f64, w: f64, h: f64) -> EditorCrop {
         EditorCrop { x, y, w, h }

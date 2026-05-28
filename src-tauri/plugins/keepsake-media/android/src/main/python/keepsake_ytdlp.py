@@ -281,7 +281,7 @@ def _ladder(url, job, run, between=None):
         except Exception as exc:  # KeyboardInterrupt / SystemExit are never retried
             code = _classify(exc)
             step = _lad.next_step(code, attempt, backed_off, isinstance(exc, _Fail))
-            if step == "stop":
+            if step == "stop" or _lad.final_text(site, exc):
                 raise
             try:
                 sys.stderr.write("keepsake_ytdlp: %s attempt %d failed (%s), %s\n" % (site, attempt, code, step))

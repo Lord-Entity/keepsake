@@ -158,6 +158,18 @@ def test_next_step_unlisted():
     assert kl.next_step("weird", 1, False) == "stop"
 
 
+def test_final_text_instagram_no_video():
+    msg = "ERROR: [Instagram] DQx1: There is no video in this post"
+    assert kl.final_text("instagram", msg) is True
+    assert kl.final_text("instagram", "HTTP Error 500") is False
+    assert kl.final_text("instagram", None) is False
+
+
+@pytest.mark.parametrize("site", ["tiktok", None, "youtube"])
+def test_final_text_other_sites_never(site):
+    assert kl.final_text(site, "There is no video in this post") is False
+
+
 def test_partial_victims_nothing_finished():
     seen = {"/o/a.mp4.part", "/o/a.mp4"}
     assert kl.partial_victims(seen, set()) == {"/o/a.mp4.part", "/o/a.mp4.ytdl", "/o/a.mp4"}
