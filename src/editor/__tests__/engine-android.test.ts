@@ -721,7 +721,8 @@ describe("exportEdit: staged save (Gallery / folder) like download.ts runStaged"
       // "_" is not a base-36 digit, so no creation time can be read from this name ("garbage" would parse as one).
       { name: `${STAGE_PREFIX}_partial`, isDirectory: true },
     ];
-    await sweepStaleStages("/data/cache");
+    // Pass the listing directly: the plugin-fs mock is process-wide in bun, so the default readDir may belong to another file.
+    await sweepStaleStages("/data/cache", async () => dirEntries);
     expect(removeMock.mock.calls.map((c) => c[0])).toEqual([`/data/cache/${old}`]);
     expect(stageTime(fresh)).toBeGreaterThan(0);
     expect(Number.isNaN(stageTime("gallery-job1-xyz"))).toBe(true);

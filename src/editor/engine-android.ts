@@ -215,10 +215,14 @@ export function stageTime(name: string): number {
  * crash, or a failed save the user never retried). Never the active or pending stage. download.ts's own
  * `gallery-<jobId>-*` stages never match the prefix and are untouched. Exported for tests. Never throws.
  */
-export async function sweepStaleStages(cache: string): Promise<void> {
+export async function sweepStaleStages(
+  cache: string,
+  // Injectable so tests do not depend on how the process-wide plugin-fs mock is resolved (namespace access below).
+  listDir: ((dir: string) => Promise<{ name: string; isDirectory: boolean }[]>) | undefined = (fsAll as Partial<typeof fsAll>).readDir,
+): Promise<void> {
   try {
     // Namespace access: test files mock plugin-fs process-wide without readDir, and a named import would fail to link.
-    const readDir = (fsAll as Partial<typeof fsAll>).readDir;
+    const readDir = listDir;
     if (typeof readDir !== "function") return;
     const now = Date.now();
     for (const e of await readDir(cache)) {
