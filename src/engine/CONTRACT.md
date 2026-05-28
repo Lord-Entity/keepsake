@@ -21,12 +21,12 @@ Embedding flags on `DownloadRequest` (desktop only):
 
 | | Windows / Linux | Android | Web (dev preview) |
 |---|---|---|---|
-| Info | YouTube via youtubei.js, falling back to yt-dlp `-J`; other sites via yt-dlp | YouTube via youtubei.js; TikTok and Instagram via yt-dlp (Chaquopy, in-process); others reject with `unsupported_url` | YouTube only; plain-browser fetches fail with `web_cors` |
-| Video | Every height the link offers, plus "Best available"; yt-dlp merges video-only + audio | YouTube: youtubei.js with a PO token (section 1.3); every height the video offers down to 144p, plus "Best available". A video-only stream is paired with a matching audio-only stream and copy-muxed on the phone (MP4 for AVC/HEVC+AAC, WebM for VP8/VP9+Vorbis/Opus, AV1 to MP4 on Android 10+). Without a token, or when no pair exists: the progressive MP4 at or below 360p, exactly as before. Accepted links (https): hosts `youtube.com`, `www.`, `m.`, `music.youtube.com`, `youtu.be`; forms `watch?v=`, `youtu.be/ID`, `/shorts/`, `/live/`, `/embed/`; canonicalised to `https://www.youtube.com/watch?v=ID`; playlist-only URLs rejected. TikTok/Instagram: every height the phone can save, plus "Best available"; video-only heights are merged with an audio stream on the phone (copy-mux, no re-encode); list and pick share `bestStreamsByHeight` (section 3.1) | Same as Android |
+| Info | YouTube via youtubei.js, falling back to yt-dlp `-J`; other sites via yt-dlp | YouTube via the self-contained yt-dlp route when it is on and ready (section 3.2), else youtubei.js; TikTok and Instagram via yt-dlp (Chaquopy, in-process); others reject with `unsupported_url` | YouTube only; plain-browser fetches fail with `web_cors` |
+| Video | Every height the link offers, plus "Best available"; yt-dlp merges video-only + audio | YouTube, self-contained route (section 3.2, `info.ytdlpFull`): the desktop rows (every height plus "Best available"), downloaded and merged by yt-dlp with the bundled ffmpeg. Otherwise YouTube: youtubei.js with a PO token (section 1.3); every height the video offers down to 144p, plus "Best available". A video-only stream is paired with a matching audio-only stream and copy-muxed on the phone (MP4 for AVC/HEVC+AAC, WebM for VP8/VP9+Vorbis/Opus, AV1 to MP4 on Android 10+). Without a token, or when no pair exists: the progressive MP4 at or below 360p, exactly as before. Accepted links (https): hosts `youtube.com`, `www.`, `m.`, `music.youtube.com`, `youtu.be`; forms `watch?v=`, `youtu.be/ID`, `/shorts/`, `/live/`, `/embed/`; canonicalised to `https://www.youtube.com/watch?v=ID`; playlist-only URLs rejected. TikTok/Instagram: every height the phone can save, plus "Best available"; video-only heights are merged with an audio stream on the phone (copy-mux, no re-encode); list and pick share `bestStreamsByHeight` (section 3.1) | Same as Android |
 | Audio | MP3 (default), M4A, OPUS, WAV, FLAC | **M4A (default) and WAV only.** MP3, FLAC and OPUS are not listed. TikTok/Instagram: M4A only | None |
 | Thumbnail | Original, PNG, JPG | Original, PNG, JPG. TikTok/Instagram: not offered on Android | Original, PNG, JPG |
 | Playlists | Yes, per-item progress | Rejected (`format_unavailable`: "Playlists can be downloaded in the desktop app only.") | Rejected |
-| Downloads via | yt-dlp sidecar (`run_ytdlp`) | Range requests through plugin-http, streamed to disk with plugin-fs | Range requests into a Blob, then `<a download>` |
+| Downloads via | yt-dlp sidecar (`run_ytdlp`) | YouTube self-contained route: one `ytdlp_download` with `args` (section 3.2). Otherwise range requests through plugin-http, streamed to disk with plugin-fs | Range requests into a Blob, then `<a download>` |
 | Conversion via | ffmpeg sidecar, run by yt-dlp | `keepsake-media` Tauri plugin (section 3) | None |
 
 ### 1.3 Android YouTube quality: PO token + adaptive mux
@@ -36,7 +36,7 @@ YouTube binds every high-quality `googlevideo` URL to a PO token. The Android cl
 - `src/engine/po-token.ts` runs Google's BotGuard in the app's own WebView with `bgutils-js` (CSP already allows `'unsafe-eval'` for youtubei.js). Challenge and integrity token go through `www.youtube.com/api/jnn/v1`, already allowed by the `http` capability; no Deno, Node or extra host.
 - The player token is bound to the session's `visitor_data` and attached as `po_token` to every `getBasicInfo` client (`youtube.ts`), then cached until shortly before the integrity token expires.
 - All of it is fail-soft: a missing interpreter, blocked challenge or network error resolves to `null` and the old 360p path runs unchanged. Nothing in the engine throws because of it.
-- `YOUTUBE_VIA_YTDLP` in `youtube-ytdlp.ts` is **false**: in-process yt-dlp cannot run yt-dlp's JavaScript challenge solver without a Node/Deno runtime, so it cannot mint a token. yt-dlp on Android stays for TikTok and Instagram.
+- This section is now the **fallback** YouTube path. The primary path is the self-contained yt-dlp route (section 3.2): yt-dlp with the bundled QuickJS-NG and EJS solver uses its default clients, which need no PO token, as on desktop. The old reason for keeping yt-dlp off YouTube ("in-process yt-dlp cannot solve challenges without Node/Deno") no longer holds once QuickJS-NG is bundled. This PO-token path is removed only after device sign-off (plan 11, WP-K).
 - `resolveAdaptive(videoId, maxHeight)` (`youtube.ts`) picks the best video-only stream at or below the requested height and its matching audio-only stream (same container: mp4 for AAC, webm for Opus/Vorbis). `download.ts` streams both to `$APPCACHE/mux-<id>/`, then calls `muxAndroid`; output follows the codec matrix in section 3, and no re-encoding happens.
 - Diagnostics: Settings > Components > "Copy diagnostics" reports the platform, WebView, app version and whether the PO token is minted (`poTokenStatus()`), so a bug report can tell "token failed" from "no pair at that height".
 
@@ -55,7 +55,7 @@ YouTube binds every high-quality `googlevideo` URL to a PO token. The Android cl
 invoke<number>("run_ytdlp", { jobId: string, args: string[], tempDir: string | null, onEvent: Channel<YtdlpEvent> })
 type YtdlpEvent = { event: "stdout"; line: string } | { event: "stderr"; line: string };
 ```
-- Spawns the `yt-dlp` sidecar with Rust's fixed flags prepended: `--ignore-config --no-plugin-dirs --no-js-runtimes [--js-runtimes <runtime>:<absolute path>] --ffmpeg-location <sidecar dir>`. TS never sends any of these.
+- Spawns the `yt-dlp` sidecar with Rust's fixed flags prepended: `--ignore-config --no-plugin-dirs --no-js-runtimes [--js-runtimes <runtime>:<absolute path>] --ffmpeg-location <sidecar dir>/keepsake-ffmpeg(.exe)` (the FILE: given a folder, yt-dlp only finds a binary named `ffmpeg`). A job that merges or converts fails with "ffmpeg not found" when that file is missing. TS never sends any of these.
 - Env `PYTHONIOENCODING=utf-8`. Windows: `CREATE_NO_WINDOW` + Job Object (kill on close). Unix: `process_group(0)`.
 - Sends every stdout/stderr line (no trailing newline, UTF-8, lossy decode) on `onEvent` as it arrives.
 - Resolves with the exit code when the process exits (after both pipes are drained; -1 = killed by a signal). Rejects only if validation or spawning fails; the message includes "yt-dlp" and "not found" when the binary is missing.
@@ -93,7 +93,7 @@ yt-dlp browser names (`edge chrome firefox brave chromium opera vivaldi`) whose 
 
 **No ffprobe.** It is not bundled and Keepsake never calls it; yt-dlp falls back to `ffmpeg -i` for probing. The minimal ffmpeg has no video encoders, no network protocols and no HLS/DASH demuxers, so TS never asks for a re-encode or remux.
 
-Android has no sidecars (`tauri.android.conf.json` sets `"externalBin": []`).
+Android has no Tauri sidecars (`tauri.android.conf.json` sets `"externalBin": []`). The self-contained route instead ships `libqjs.so` and `libffmpeg.so` as jniLibs of the `keepsake-media` plugin (section 3.2), fetched by `scripts/fetch-android-binaries.sh` and pinned in the `android` block of `scripts/binaries.lock.json`.
 
 ### JS runtime and cookie fallback
 - Rust picks the runtime: the bundled `qjs` sidecar (`--js-runtimes quickjs:<absolute path>`) when the file exists; otherwise a user-installed Node, looked up on PATH, then `%ProgramFiles%\nodejs`, `C:\Program Files\nodejs`, `%LOCALAPPDATA%\Programs\nodejs`, `%NVM_SYMLINK%` (Windows) or `/usr/local/bin`, `/usr/bin` (Linux) (`--js-runtimes node:<absolute path>`). The Node fallback must keep working.
@@ -102,7 +102,7 @@ Android has no sidecars (`tauri.android.conf.json` sets `"externalBin": []`).
 
 ## 3. Android native plugin `keepsake-media` (`src-tauri/plugins/keepsake-media`)
 
-Kotlin, written against the platform `MediaExtractor` / `MediaCodec` / `MediaMuxer` APIs only (no ffmpeg, no GPL code). TS wrapper: `src/engine/android-media.ts`, exporting `transcodeAudio(args)` and `isAndroidMediaAvailable()`.
+Kotlin, written against the platform `MediaExtractor` / `MediaCodec` / `MediaMuxer` APIs only (no GPL code; the Kotlin code never calls ffmpeg, which only yt-dlp runs on the route in section 3.2). TS wrapper: `src/engine/android-media.ts`, exporting `transcodeAudio(args)` and `isAndroidMediaAvailable()`.
 
 ```ts
 invoke<{ path: string }>("plugin:keepsake-media|transcode", {
@@ -119,9 +119,9 @@ invoke<{ path: string }>("plugin:keepsake-media|transcode", {
 - M4A from an audio-only AAC stream needs no plugin call: the file is saved as served.
 - Not supported this round: MP3 (needs LAME), FLAC and Opus (encoder availability per API level unverified; Opus needs API 29, minSdk is 24). The engine rejects them with `format_unavailable` before any network work, and `listFormats` does not offer them.
 
-### 3.1 Android yt-dlp commands (TikTok and Instagram; YouTube route off)
+### 3.1 Android yt-dlp commands (legacy route: TikTok and Instagram, YouTube fallback)
 
-Same plugin, yt-dlp 2026.10.26 (pure Python) running in-process through Chaquopy, arm64 only. TS wrapper: `src/engine/android-ytdlp.ts`. Details: `plan-docs/07-android-ytdlp-plan.md`. The commands still accept YouTube hosts because the route is behind `YOUTUBE_VIA_YTDLP`, but it ships **off**: in-process yt-dlp cannot mint a PO token without a Node runtime (section 1.3).
+Same plugin, yt-dlp 2026.10.26 (pure Python) running in-process through Chaquopy, arm64 only. TS wrapper: `src/engine/android-ytdlp.ts`. Details: `plan-docs/07-android-ytdlp-plan.md`. Everything in this section is the **legacy route** (`full` absent or `false`) and stays byte-identical. YouTube through yt-dlp uses the self-contained route in section 3.2.
 
 ```ts
 invoke<{ ok: true; info: YtdlpInfo }>("plugin:keepsake-media|ytdlp_info", { url: string })
@@ -155,6 +155,40 @@ invoke<{ path: string; bytes: number }>("plugin:keepsake-media|ytdlp_download",
 - Extra error codes (same `ytdlp:<code>: <message>` form, same-named `AppErrorCode`): `no_space` (storage full), `permission` (cannot write the folder), `too_large` (over 2 GiB), `mux_failed` (combining streams failed), `cancelled` (user stopped the job), `empty` (nothing was downloaded). Retries (`runWithRetry` in `android-ytdlp.ts`): `network`, `timeout` and `rate_limited` are retried twice, with waits of 2 s then 6 s; `no_space`, `permission` and the rest are not retried.
 - Limits: one yt-dlp job at a time (single native thread); files over 2 GiB are refused; M4A audio only (a progressive MP4 is remuxed with `transcode` when no m4a stream exists).
 - Out of scope: progress events (indeterminate bar), cookies or login, proxies, user yt-dlp options, MP3/FLAC/Opus/WAV, thumbnails, playlists and carousels, other sites, in-app yt-dlp updates.
+
+### 3.2 Self-contained yt-dlp route (Android, YouTube only in this MVP)
+
+Plan: `plan-docs/11-android-selfcontained-ytdlp.md` (sections 3.7 and 8). Phone test plan and troubleshooting: [`docs/ANDROID_SELFCONTAINED.md`](../../docs/ANDROID_SELFCONTAINED.md). **Nothing in this section has been run on a device yet**; CI checks packaging only.
+
+The APK bundles two separate programs in `lib/arm64-v8a/` (extracted to `nativeLibraryDir`, the only app-owned place Android lets an app execute from): `libqjs.so` (QuickJS-NG v0.18.0) and `libffmpeg.so` (FFmpeg 7.1.1 minimal LGPL build, no ffprobe), plus the pip package `yt-dlp-ejs==0.8.0` (the EJS solver scripts; the version must equal the pin in the bundled yt-dlp's `pyproject.toml`). With `full: true` the Python bridge sets `js_runtimes={'quickjs': {'path': <nativeLibraryDir>/libqjs.so}}`, `ffmpeg_location=<nativeLibraryDir>/libffmpeg.so` and `cachedir=<cache>/yt-dlp`, and leaves `player_client` at yt-dlp's defaults (as the desktop sidecar does). These values are always set by the bridge, never taken from TS.
+
+```ts
+invoke<YtdlpStatus>("plugin:keepsake-media|ytdlp_status", {})
+type YtdlpStatus = {
+  ytdlp: string;            // yt_dlp.version.__version__
+  ejs: string | null;       // yt_dlp_ejs version, null when not importable
+  jsRuntime: string | null; // QuickJS runtime info, e.g. "quickjs-ng 0.18.0", null when not runnable
+  ffmpeg: string | null;    // first line of `libffmpeg.so -version`, null when not runnable
+  ready: boolean;           // all four present and the ejs version matches the pin
+  problems: string[];       // short machine words, e.g. "qjs_missing", "ffmpeg_exec_denied", "ejs_missing"
+};
+invoke<{ ok: true; info: YtdlpInfo }>("plugin:keepsake-media|ytdlp_info", { url, full?: boolean })
+invoke<{ path: string; bytes: number }>("plugin:keepsake-media|ytdlp_download",
+  { url, formatId?: string, args?: string[], outDir, fileName?, jobId, full?: boolean })
+```
+
+- **`ytdlp_status`**: works offline, never throws for a missing piece (problems are data). Capability `keepsake-media:allow-ytdlp-status`. TS caches it per session (`androidYtdlpStatus()`); any invoke error (old plugin, missing permission, command not found) counts as not ready. The authoritative `problems` words are in `keepsake_ytdlp.py::status()`.
+- **`full`** (default `false`): `false` keeps the legacy behaviour of section 3.1 byte-identical. `true` turns on the bundled runtime, solver and ffmpeg. `ytdlp_info` with `full` keeps HLS/DASH formats (TS sets `VideoInfo.ytdlpFull = true` and does not filter to muxable pairs).
+- **`ytdlp_download`: exactly one of `formatId` or `args`**, else the call is rejected (`ytdlp:unknown:`).
+  - `formatId`: one concrete id, or two joined by one `+` (`^[A-Za-z0-9_.-]{1,64}(\+[A-Za-z0-9_.-]{1,64})?$`, e.g. `"137+140"`). The `+` form needs ffmpeg. `"a+b+c"`, `"a+"`, `"+a"`, `"a,b"` are rejected.
+  - `args`: 1..24 items, the selection argv from `selectionArgs(req, { platform: "android" })` in `ytdlp.ts` (the same selectors desktop `buildDownloadArgs` uses). Allow-list, checked in Rust (`validate_selection_args`) and again in Python: `-f`/`--format` value `^[A-Za-z0-9_.+/\[\]<>=!*?^$:~-]{1,200}$` (no comma, space or quotes); `-S`/`--format-sort` value `^[a-z0-9:,+_.-]{1,100}$`; `--merge-output-format` in `{mp4/mkv, mp4, mkv, webm}`; `-x`; `--audio-format` in `{m4a}`; `--audio-quality` `^\d{2,3}K$`; `--embed-metadata`; `--embed-thumbnail`; `--convert-thumbnails` in `{jpg, png}`. Everything else is rejected, including `-o`, `-P`, `--exec*`, `--ffmpeg-location`, `--js-runtimes`, `--remote-components`, `--extractor-args`, `--postprocessor-args`, `--plugin-dirs`, `--config-location*`, `--cookies*`, `--load-info-json` and `--`. Python keeps only the option keys `format`, `format_sort`, `merge_output_format`, `postprocessors`, `writethumbnail`, `final_ext`, and only postprocessors `FFmpegExtractAudio`, `FFmpegMetadata`, `EmbedThumbnail`, `FFmpegThumbnailsConvertor`.
+  - Result: the final merged path (`.mp4`, or `.mkv` when the streams do not fit MP4; `.m4a` for audio). Merge intermediates (`*.fNNN.*`) are removed. WAV is an M4A download followed by the native `transcode`.
+- **Errors**: same `ytdlp:<code>: <message>` form as section 3.1. New codes (already in `AppErrorCode`, used by desktop): `js_runtime_missing` (no usable JS runtime), `ytdlp_missing` (ffmpeg or solver missing), `bot_check` ("confirm you're not a bot", matched before `login_required`).
+- **Flag and routing**: `ANDROID_SELFCONTAINED` (build-time constant in `youtube-ytdlp.ts`) **and** `ytdlp_status().ready` must both be true; otherwise every path behaves exactly as before. In this MVP only **YouTube** links use the route (info with `full: true`, download through `runAndroidYtdlpFull` in `download.ts`, rows from `formats.ts` when `info.ytdlpFull`). TikTok and Instagram stay on section 3.1 unchanged.
+- **Fallback rule**: any non-final error on the route (`js_runtime_missing`, `ytdlp_missing`, `parse_failed`, `format_unavailable`, `bot_check`, `unknown`) falls back **once** to the legacy YouTube path (youtubei.js, section 1.3). Final errors (`cancelled`, `no_space`, `permission`, `too_large`, `not_found`, `login_required`) never fall back.
+- **Cancel**: `ytdlp_cancel` sets the job's flag; it is checked between downloads and postprocessors. A running ffmpeg merge is not interrupted; its output is deleted when it returns and the final status is `cancelled`.
+- Capabilities: `keepsake-media:allow-ytdlp-status` (new) plus the existing `allow-ytdlp-info`, `allow-ytdlp-download`, `allow-ytdlp-cancel`.
+- Licences: `THIRD_PARTY_NOTICES.md` (repo root) and `assets/licenses/` inside the APK. FFmpeg and QuickJS-NG run as separate programs; Keepsake does not link to them.
 
 ## 4. Arguments TS sends (for reference and Rust tests)
 

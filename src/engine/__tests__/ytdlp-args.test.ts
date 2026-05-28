@@ -4,7 +4,7 @@
  * Pure: buildDownloadArgs only builds an array; nothing is invoked or spawned. No network.
  */
 import { describe, expect, test } from "bun:test";
-import { buildDownloadArgs, parseProgressLine } from "../ytdlp";
+import { buildDownloadArgs, isFormatPart, mergeTracker, movedPartPath, parseProgressLine, selectionArgs } from "../ytdlp";
 
 const URL = "https://www.youtube.com/watch?v=abc";
 const WIN_OUT = "C:\\Users\\me\\Downloads";
@@ -314,5 +314,246 @@ describe("parseProgressLine", () => {
   test("other lines return null", () => {
     expect(parseProgressLine("[download] Destination: x.mp4")).toBeNull();
     expect(parseProgressLine("KEEPSAKE_DONE|/tmp/x.mp4")).toBeNull();
+  });
+});
+
+// Regression: desktop YouTube gave a .webm + an .mp4 with no sound. yt-dlp could not find the bundled ffmpeg
+// (`--ffmpeg-location <folder>` holding keepsake-ffmpeg.exe), skipped the merge under -i/--no-warnings and moved the
+// video-only and audio-only `.fNNN` parts into the output folder while the app reported success.
+const prog = (f: string) => `KEEPSAKE|finished|10|10|NA|NA|NA|NA|NA|${f}`;
+describe("skipped merge is an error, parts are removed", () => {
+  const tmp = "C:\\Users\\u\\Downloads\\.keepsake-tmp\\job1";
+  const out = "C:\\Users\\u\\Downloads";
+  const v = `${tmp}\\Clip [abc].f137.mp4`;
+  const a = `${tmp}\\Clip [abc].f251.webm`;
+
+  test("isFormatPart: per-format parts only", () => {
+    expect(isFormatPart("C:\\o\\Clip [abc].f137.mp4")).toBe(true);
+    expect(isFormatPart("/o/Clip [abc].f251.webm")).toBe(true);
+    expect(isFormatPart("/o/Clip [abc].fhls-1080p.mp4")).toBe(true);
+    expect(isFormatPart("/o/Clip [abc].mp4")).toBe(false);
+    expect(isFormatPart("/o/Clip [abc].mkv")).toBe(false);
+    expect(isFormatPart("/o/Clip.final [abc].webm")).toBe(false);
+  });
+
+  test("isFormatPart with the Android file name is exact", () => {
+    expect(isFormatPart("/data/out/Clip.f137.mp4", "Clip")).toBe(true);
+    expect(isFormatPart("/data/out/Clip.f251.webm", "Clip")).toBe(true);
+    expect(isFormatPart("/data/out/Clip.mp4", "Clip")).toBe(false);
+    expect(isFormatPart("/data/out/Clip.flac", "Clip")).toBe(false);
+    expect(isFormatPart("/data/out/my.file.mp4", "my.file")).toBe(false);
+    expect(isFormatPart("/data/out/my.file.f140.m4a", "my.file")).toBe(true);
+    expect(isFormatPart("/data/out/Other.f137.mp4", "Clip")).toBe(false);
+  });
+
+  test("parts without a Merger run are reported, even when the printed path is the merged name", () => {
+    const t = mergeTracker();
+    t.line(prog(v));
+    t.line(prog(a));
+    expect(t.done(`${out}\\Clip [abc].mp4`).toSorted()).toEqual([v, a].toSorted());
+  });
+
+  test("a merged video reports nothing", () => {
+    const t = mergeTracker();
+    t.line(prog(v));
+    t.line(prog(a));
+    t.line("KEEPSAKE_PP|started|Merger");
+    t.line("KEEPSAKE_PP|finished|Merger");
+    expect(t.done(`${out}\\Clip [abc].mp4`)).toEqual([]);
+  });
+
+  test("other postprocessors do not count as a merge; a printed part path is always reported", () => {
+    const t = mergeTracker();
+    t.line(prog(v));
+    t.line("KEEPSAKE_PP|started|MoveFiles");
+    expect(t.done(`${out}\\Clip [abc].f137.mp4`)).toEqual([v, `${out}\\Clip [abc].f137.mp4`]);
+  });
+
+  test("progressive download (no parts) reports nothing; state resets per video", () => {
+    const t = mergeTracker();
+    t.line(prog(v));
+    t.done(`${out}\\Clip [abc].mp4`);
+    t.line(prog(`${tmp}\\Other [x].mp4`));
+    expect(t.done(`${out}\\Other [x].mp4`)).toEqual([]);
+  });
+
+  test("movedPartPath maps temp to home, keeping playlist sub-folders", () => {
+    expect(movedPartPath(v, tmp, out)).toBe(`${out}\\Clip [abc].f137.mp4`);
+    expect(movedPartPath(`${tmp}\\PL\\01 - Clip [abc].f251.webm`, tmp, `${out}\\`)).toBe(`${out}\\PL\\01 - Clip [abc].f251.webm`);
+    expect(movedPartPath("/o/Clip [abc].f137.mp4", "/o/.keepsake-tmp/job1", "/o")).toBe("/o/Clip [abc].f137.mp4");
+  });
+});
+
+const codeOf = (fn) => {
+  try {
+    fn();
+  } catch (e) {
+    return e.code;
+  }
+  return undefined;
+};
+
+describe("selectionArgs", () => {
+  const AND = { platform: "android" };
+  const DESK = { platform: "desktop" };
+  const MERGE = ["--merge-output-format", "mp4/mkv"];
+  const THUMB = ["--embed-thumbnail", "--convert-thumbnails", "jpg"];
+
+  describe("android", () => {
+    test("video:best has no height cap", () => {
+      expect(selectionArgs(req("video:best"), AND)).toEqual(["-f", "bestvideo+bestaudio/best/best", ...MERGE]);
+    });
+
+    for (const h of [2160, 1440, 1080, 720, 480, 360]) {
+      test(`video:${h} caps the height`, () => {
+        expect(selectionArgs(req(`video:${h}`), AND)).toEqual([
+          "-f",
+          `bestvideo[height<=${h}]+bestaudio/best[height<=${h}]/best`,
+          ...MERGE,
+        ]);
+      });
+    }
+
+    test("preferH264 inserts -S before the merge format", () => {
+      expect(selectionArgs(req("video:720", { preferH264: true }), AND)).toEqual([
+        "-f",
+        "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+        "-S",
+        "res,fps,vcodec:h264,acodec:aac",
+        ...MERGE,
+      ]);
+    });
+
+    test("streamId, info, embedVideoMeta and embedThumbnail are ignored", () => {
+      const plain = selectionArgs(req("video:1080"), AND);
+      const extra = selectionArgs(
+        req("video:1080", { streamId: "137", info: info(), embedVideoMeta: true, embedThumbnail: true }),
+        AND,
+      );
+      expect(extra).toEqual(plain);
+    });
+
+    test("audio:m4a and audio:wav use the m4a fallback chain, with or without info", () => {
+      const want = ["-f", "bestaudio[ext=m4a]/bestaudio/best", "-x", "--audio-format", "m4a"];
+      for (const f of ["audio:m4a", "audio:wav"]) {
+        expect(selectionArgs(req(f), AND)).toEqual(want);
+        expect(selectionArgs(req(f, { info: info() }), AND)).toEqual(want);
+      }
+    });
+
+    for (const f of ["audio:mp3", "audio:opus", "audio:flac", "thumb:png", "thumb:original", "bogus"]) {
+      test(`${f} throws format_unavailable`, () => {
+        expect(codeOf(() => selectionArgs(req(f), AND))).toBe("format_unavailable");
+      });
+    }
+  });
+
+  describe("desktop", () => {
+    const H1080 = ["-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best", ...MERGE];
+
+    test("video:1080 without a streamId uses the height selector", () => {
+      expect(selectionArgs(req("video:1080"), DESK)).toEqual(H1080);
+    });
+
+    test("picked video-only stream is merged with best audio", () => {
+      expect(selectionArgs(req("video:1080", { streamId: "137", info: info() }), DESK)).toEqual([
+        "-f",
+        "137+bestaudio[ext=m4a]/137+bestaudio",
+        ...MERGE,
+      ]);
+    });
+
+    test("picked progressive stream is used as-is", () => {
+      expect(selectionArgs(req("video:1080", { streamId: "18", info: info() }), DESK)).toEqual(["-f", "18", ...MERGE]);
+    });
+
+    test("heightFallback ignores the picked stream", () => {
+      for (const streamId of ["137", "18"]) {
+        expect(selectionArgs(req("video:1080", { streamId, info: info() }), { ...DESK, heightFallback: true })).toEqual(H1080);
+      }
+    });
+
+    test("embedVideoMeta: true appends the embed flags", () => {
+      expect(selectionArgs(req("video:1080", { embedVideoMeta: true }), DESK)).toEqual([
+        ...H1080,
+        ...THUMB,
+        "--embed-metadata",
+      ]);
+    });
+
+    test("audio:mp3 transcodes at 192K and embeds", () => {
+      expect(selectionArgs(req("audio:mp3"), DESK)).toEqual([
+        "-f",
+        "bestaudio/best",
+        "-x",
+        "--audio-format",
+        "mp3",
+        "--audio-quality",
+        "192K",
+        ...THUMB,
+        "--embed-metadata",
+      ]);
+    });
+
+    test("audioBitrate 320 gives 320K", () => {
+      expect(after(selectionArgs(req("audio:mp3", { audioBitrate: 320 }), DESK), "--audio-quality")).toBe("320K");
+    });
+
+    test("audio:m4a with a native m4a stream takes it as-is", () => {
+      expect(selectionArgs(req("audio:m4a", { info: info() }), DESK)).toEqual([
+        "-f",
+        "bestaudio[ext=m4a]",
+        ...THUMB,
+        "--embed-metadata",
+      ]);
+    });
+
+    test("audio:m4a without a native m4a stream keeps -x", () => {
+      expect(selectionArgs(req("audio:m4a", { info: info({ m4a: false }) }), DESK)).toEqual([
+        "-f",
+        "bestaudio[ext=m4a]/bestaudio/best",
+        "-x",
+        "--audio-format",
+        "m4a",
+        ...THUMB,
+        "--embed-metadata",
+      ]);
+    });
+
+    test("audio:opus has a quality but no cover art", () => {
+      expect(selectionArgs(req("audio:opus"), DESK)).toEqual([
+        "-f",
+        "bestaudio[acodec=opus]/bestaudio/best",
+        "-x",
+        "--audio-format",
+        "opus",
+        "--audio-quality",
+        "192K",
+        "--embed-metadata",
+      ]);
+    });
+
+    test("embedThumbnail: false drops the thumbnail flags on mp3", () => {
+      expect(selectionArgs(req("audio:mp3", { embedThumbnail: false }), DESK)).toEqual([
+        "-f",
+        "bestaudio/best",
+        "-x",
+        "--audio-format",
+        "mp3",
+        "--audio-quality",
+        "192K",
+        "--embed-metadata",
+      ]);
+    });
+  });
+
+  describe("consistency with buildDownloadArgs", () => {
+    for (const id of ALL_FORMATS.filter((f) => f.startsWith("video:") || f.startsWith("audio:"))) {
+      test(`${id}: desktop selection is embedded between -o and --`, () => {
+        const a = buildDownloadArgs(req(id), LINUX_OUT).args;
+        const start = a.indexOf("-o") + 2;
+        expect(a.slice(start, a.length - 2)).toEqual(selectionArgs(req(id), { platform: "desktop" }));
+      });
+    }
   });
 });

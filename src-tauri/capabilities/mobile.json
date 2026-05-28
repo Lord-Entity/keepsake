@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "mobile",
-  "description": "Main window on Android. No window-control or shell permissions; yt-dlp runs in-process (Chaquopy) for TikTok and Instagram only.",
+  "description": "Main window on Android. No window-control or shell permissions; yt-dlp runs in-process (Chaquopy, with bundled QuickJS and ffmpeg) for TikTok, Instagram and YouTube.",
   "windows": ["main"],
   "platforms": ["android"],
   "permissions": [
@@ -34,6 +34,7 @@
     },
     "keepsake-media:allow-transcode",
     "keepsake-media:allow-open-file",
+    "keepsake-media:allow-ytdlp-status",
     "keepsake-media:allow-ytdlp-info",
     "keepsake-media:allow-ytdlp-download",
     "keepsake-media:allow-ytdlp-cancel",
@@ -42,6 +43,11 @@
     "keepsake-media:allow-folder-pick",
     "keepsake-media:allow-folder-status",
     "keepsake-media:allow-folder-save",
+    "keepsake-media:allow-editor-probe",
+    "keepsake-media:allow-editor-export-video",
+    "keepsake-media:allow-editor-cancel",
+    "keepsake-media:allow-register-listener",
+    "keepsake-media:allow-remove-listener",
     "fs:default",
     "fs:allow-open",
     "fs:allow-write",

@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# Patches the GENERATED Android project so the keepsake-media plugin module can apply Chaquopy.
-# Only the root build.gradle.kts (and, in the fallback, settings.gradle[.kts]) is touched.
-# The app module ($GEN_DIR/app) is never modified: Chaquopy lives in the plugin module.
-# Idempotent: safe to run again on a restored gen/android.
+# Patches the GENERATED Android project:
+#   1. root build.gradle.kts (and, in the fallback, settings.gradle[.kts]): the Chaquopy classpath, so the
+#      keepsake-media plugin module can apply Chaquopy (Chaquopy itself lives in the plugin module);
+#   2. the app module, only this: one appended block in $GEN_DIR/app/build.gradle.kts (marker
+#      "// keepsake: jniLibs executables") and android:extractNativeLibs="true" on <application> in
+#      $GEN_DIR/app/src/main/AndroidManifest.xml. libqjs.so/libffmpeg.so are executables shipped as jniLibs;
+#      Android lets an app exec its own files only from nativeLibraryDir, which is populated only when native
+#      libs are extracted at install time, and AGP must not strip them.
+# Idempotent: safe to run again on a restored gen/android. Fails loudly if any patch does not apply.
 #
 # usage: scripts/android-patch-gradle.sh [GEN_DIR]     (default GEN_DIR=src-tauri/gen/android)
 set -euo pipefail
@@ -73,3 +78,62 @@ fi
 
 echo "--- patched $ROOT ---"
 cat "$ROOT"
+
+# ---- app module: extract and keep the jniLibs executables (plan 11, section 3.1) ----
+APP_GRADLE="$GEN_DIR/app/build.gradle.kts"
+APP_MANIFEST="$GEN_DIR/app/src/main/AndroidManifest.xml"
+PACKAGING_MARKER="// keepsake: jniLibs executables"
+
+patch_app_packaging() {
+  [ -f "$APP_GRADLE" ] || die "$APP_GRADLE not found (run tauri android init first)"
+  if grep -qF "$PACKAGING_MARKER" "$APP_GRADLE"; then
+    echo "already patched: $APP_GRADLE"
+  else
+    cat >> "$APP_GRADLE" <<'KTS'
+
+// keepsake: jniLibs executables (appended by scripts/android-patch-gradle.sh). libqjs.so and libffmpeg.so
+// are programs yt-dlp runs. Android executes app files only from nativeLibraryDir, which is populated only
+// when native libs are extracted at install (useLegacyPackaging -> extractNativeLibs=true). Never strip them.
+android {
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            keepDebugSymbols += setOf("**/libqjs.so", "**/libffmpeg.so")
+        }
+    }
+}
+KTS
+    echo "appended jniLibs packaging block to $APP_GRADLE"
+  fi
+  grep -qF "$PACKAGING_MARKER" "$APP_GRADLE" || die "marker '$PACKAGING_MARKER' missing from $APP_GRADLE after patching"
+  grep -qF 'useLegacyPackaging = true' "$APP_GRADLE" || die "useLegacyPackaging = true missing from $APP_GRADLE after patching"
+}
+
+# Belt and braces for plan risk R2: AGP derives extractNativeLibs from useLegacyPackaging, and an explicit
+# attribute keeps the merged manifest at true even if that mapping changes. AGP may print a deprecation
+# warning about the attribute; that is expected and harmless.
+patch_app_manifest() {
+  [ -f "$APP_MANIFEST" ] || die "$APP_MANIFEST not found (run tauri android init first)"
+  grep -q '<application' "$APP_MANIFEST" || die "no <application tag in $APP_MANIFEST"
+  grep -q 'xmlns:android=' "$APP_MANIFEST" || die "$APP_MANIFEST does not declare xmlns:android"
+  if grep -qF 'android:extractNativeLibs="true"' "$APP_MANIFEST"; then
+    echo "already patched: $APP_MANIFEST"
+  elif grep -qF 'android:extractNativeLibs=' "$APP_MANIFEST"; then
+    sed -i -E 's/android:extractNativeLibs="[^"]*"/android:extractNativeLibs="true"/' "$APP_MANIFEST"
+    echo "set android:extractNativeLibs=true in $APP_MANIFEST"
+  else
+    # First <application tag only (GNU sed 0,/re/); the attribute goes right after the tag name, which is
+    # valid whether the other attributes follow on the same line or on the next ones.
+    sed -i -E '0,/<application([[:space:]>]|$)/s//<application android:extractNativeLibs="true"\1/' "$APP_MANIFEST"
+    echo "added android:extractNativeLibs=true to $APP_MANIFEST"
+  fi
+  grep -qF 'android:extractNativeLibs="true"' "$APP_MANIFEST" \
+    || die "android:extractNativeLibs=\"true\" missing from $APP_MANIFEST after patching"
+}
+
+patch_app_packaging
+patch_app_manifest
+echo "--- keepsake block in $APP_GRADLE ---"
+awk -v m="$PACKAGING_MARKER" 'index($0, m) { f = 1 } f' "$APP_GRADLE"
+echo "--- <application> in $APP_MANIFEST ---"
+grep -n -A3 '<application' "$APP_MANIFEST"

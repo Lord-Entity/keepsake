@@ -49,6 +49,10 @@ const PATHS = {
   note: "M9 18V6l10-2v12M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM19 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0z",
   chart: ["M4 20h16", "M7 16v-5M12 16V6M17 16v-8"],
   layers: ["M12 3 2 8l10 5 10-5z", "M2 13l10 5 10-5"],
+  scissors: [
+    "M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
+    "M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12",
+  ],
   sparkle: "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z",
 } as const satisfies Record<string, string | readonly string[]>;
 

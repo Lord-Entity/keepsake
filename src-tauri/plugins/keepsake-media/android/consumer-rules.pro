@@ -8,4 +8,7 @@
 -keep class app.keepsake.media.YtdlpMuxArgs { *; }
 -keep class app.keepsake.media.YtdlpError { *; }
 -keep class app.keepsake.media.KeepsakeYtdlp { *; }
+-keep class app.keepsake.media.EditorProbeArgs { *; }
+-keep class app.keepsake.media.EditorCropArgs { *; }
+-keep class app.keepsake.media.EditorExportArgs { *; }
 -keep class com.chaquo.python.** { *; }

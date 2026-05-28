@@ -14,9 +14,16 @@ mock.module("../platform", () => ({
 
 let invokeImpl = async () => ({});
 const invokeMock = mock((cmd, args) => invokeImpl(cmd, args));
+// bun's mock.module is process-wide: export every name any app module imports from it (ytdlp.ts needs Channel,
+// the editor needs convertFileSrc / addPluginListener), so a module linked later under this mock never misses one.
 mock.module("@tauri-apps/api/core", () => ({
   invoke: invokeMock,
   isTauri: () => true,
+  Channel: class Channel {
+    onmessage = () => {};
+  },
+  convertFileSrc: (p) => `asset://localhost/${p}`,
+  addPluginListener: async () => ({ unregister: async () => {} }),
 }));
 
 const {
@@ -430,7 +437,8 @@ const {
   fetchAndroidYouTubeInfo,
 } = await import("../android-ytdlp");
 const ytdlpModule = await import("../android-ytdlp");
-const { YOUTUBE_VIA_YTDLP, youtubeRoute, tryYouTubeViaYtdlp } = await import("../youtube-ytdlp");
+const { ANDROID_SELFCONTAINED, androidYtdlpReady, youtubeRoute, tryYouTubeViaYtdlp } = await import("../youtube-ytdlp");
+const { androidYtdlpStatus } = await import("../android-ytdlp");
 
 function youtubeInfo(over = {}) {
   return {
@@ -487,10 +495,28 @@ describe("YouTube yt-dlp host list (separate from TikTok/Instagram)", () => {
 });
 
 describe("youtubeRoute", () => {
-  test("flag is off by default: YouTube uses youtubei.js for PO tokens", () => {
-    expect(YOUTUBE_VIA_YTDLP).toBe(false);
+  test("not ready by default: YouTube uses youtubei.js unless the caller says the route is ready", () => {
+    expect(typeof ANDROID_SELFCONTAINED).toBe("boolean");
     expect(youtubeRoute("https://www.youtube.com/watch?v=dQw4w9WgXcQ")).toBe("innertube");
     expect(youtubeRoute("https://www.youtube.com/watch?v=dQw4w9WgXcQ", true)).toBe("ytdlp");
+  });
+
+  test("androidYtdlpReady follows ytdlp_status; an old plugin without the command means not ready", async () => {
+    const ok = { ytdlp: "2026.10.26", ejs: "0.8.0", jsRuntime: "quickjs-ng 0.18.0", ffmpeg: "ffmpeg version 7.1.1", ready: true, problems: [] };
+    invokeImpl = async (cmd) => {
+      if (cmd === "plugin:keepsake-media|ytdlp_status") return ok;
+      throw new Error(`unexpected ${cmd}`);
+    };
+    await androidYtdlpStatus({ refresh: true });
+    expect(await androidYtdlpReady()).toBe(ANDROID_SELFCONTAINED);
+    expect(invokeMock).toHaveBeenCalledWith("plugin:keepsake-media|ytdlp_status", {});
+    invokeImpl = async () => {
+      throw "command ytdlp_status not found";
+    };
+    await androidYtdlpStatus({ refresh: true });
+    expect(await androidYtdlpReady()).toBe(false);
+    current = "windows";
+    expect(await androidYtdlpReady()).toBe(false);
   });
 
   test("ytdlp only for https YouTube hosts with the flag on", () => {

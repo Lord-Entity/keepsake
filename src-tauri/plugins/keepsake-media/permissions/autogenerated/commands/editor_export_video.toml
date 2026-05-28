@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-editor-export-video"
+description = "Enables the editor_export_video command without any pre-configured scope."
+commands.allow = ["editor_export_video"]
+
+[[permission]]
+identifier = "deny-editor-export-video"
+description = "Denies the editor_export_video command without any pre-configured scope."
+commands.deny = ["editor_export_video"]

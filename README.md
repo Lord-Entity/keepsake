@@ -29,6 +29,7 @@ A video, audio and thumbnail downloader for Windows, Linux and Android, built fr
 - [Overview](#overview)
 - [Features](#features)
 - [Screens](#screens)
+- [Editor](#editor)
 - [Platforms](#platforms)
 - [Supported sites](#supported-sites)
 - [Install](#install)
@@ -79,13 +80,30 @@ Keepsake is a [Tauri 2](https://v2.tauri.app) app. The interface is React 19 wit
 | **Library** | Everything you have downloaded. Search, filter by kind (video, audio, thumbnail) and status, sort, and open a file or its folder. |
 | **Settings** | Save folder, parallel downloads, cookies, thumbnail embedding, H.264 preference, clipboard detection, theme, and the installed yt-dlp, ffmpeg and JavaScript runtime versions. |
 
+## Editor
+
+The **Editor** tab makes quick edits to a photo or video on your device. It does not add filters, text or effects.
+
+- **Crop** freely or to a fixed ratio (Original, 1:1, 4:5, 9:16, 16:9, 4:3, 3:4), with zoom and pan in the preview.
+- **Trim** a video's start and end.
+- **Mute** a video (drop its audio).
+- **Export** photos as JPG or PNG, and videos as MP4. The edit is saved as `<name>_edit.<ext>`; the original file is never changed.
+
+| | How it works |
+|---|---|
+| Photos (all platforms) | Cropped and encoded inside the app (canvas), so no extra tools are needed. EXIF rotation is applied first. |
+| Video on Windows / Linux | The bundled ffmpeg trims and mutes by stream copy, so a trim starts at the nearest earlier keyframe. **Cropping a video needs a full ffmpeg build** (with libx264 or a hardware H.264 encoder) on your PATH, because the bundled minimal LGPL ffmpeg has no video encoder. With one installed, trims are frame-accurate too. The Editor shows which of these your setup supports. See [docs/EDITOR_DESKTOP_ENCODER.md](docs/EDITOR_DESKTOP_ENCODER.md). |
+| Video on Android | AndroidX Media3 Transformer in the native `keepsake-media` plugin re-encodes to H.264/AAC MP4 with the phone's hardware codecs. Crop and trim are frame-accurate. The result is saved the same way as downloads (Gallery, your chosen folder, or the save folder). |
+
+Developer notes: [`src/editor/CONTRACT.md`](src/editor/CONTRACT.md).
+
 ## Platforms
 
 | Platform | Packages | Expected size (estimate) | How downloads work |
 |---|---|---|---|
 | Windows 10 / 11 (x64) | NSIS `.exe` installer only | about 25-35 MB | Bundled yt-dlp, a minimal LGPL ffmpeg for merging and conversion, and QuickJS for YouTube |
 | Linux (x64) | `.deb`, `.rpm`, `.AppImage` | `.deb` / `.rpm` about 20-40 MB; `.AppImage` likely 100 MB or more (it bundles WebKitGTK) | Same bundled standalone yt-dlp, ffmpeg and QuickJS in every package; no system Python needed |
-| Android 7.0+ (API 24) | arm64 `.apk` (default build) | about 30-45 MB (includes Python and yt-dlp) | youtubei.js plus a PO token minted on the phone for YouTube (every quality the video offers, separate video and audio streams combined natively); TikTok and Instagram through the bundled yt-dlp (Chaquopy, arm64 only, separate streams combined the same way, M4A audio only, no MP3); audio conversion through the native `keepsake-media` plugin |
+| Android 7.0+ (API 24) | arm64 `.apk` (default build) | about 35-50 MB (includes Python, yt-dlp, QuickJS-NG and a minimal ffmpeg) | YouTube through the bundled yt-dlp with its own JavaScript runtime (QuickJS-NG) and a minimal LGPL ffmpeg, like desktop; falls back to youtubei.js plus a PO token if that route is not ready. TikTok and Instagram through the bundled yt-dlp (Chaquopy, arm64 only, separate streams combined natively, M4A audio only, no MP3); audio conversion through the native `keepsake-media` plugin |
 
 The sizes are estimates from the component sizes, not measurements of a release build. They will be replaced with measured numbers once CI publishes the artifacts. Each CI job writes its artifact sizes to the job summary.
 
@@ -93,7 +111,7 @@ The sizes are estimates from the component sizes, not measurements of a release 
 
 | | Desktop (Windows, Linux) | Android |
 |---|---|---|
-| YouTube | Yes, all qualities | Yes, every quality the video offers (up to 4K), as long as the phone can mint a PO token; otherwise 360p (see below) |
+| YouTube | Yes, all qualities | Yes, every quality the video offers, through the bundled yt-dlp (see below); if that route is not ready, youtubei.js with a PO token, and 360p when no token can be minted |
 | Audio formats | MP3, M4A, OPUS, WAV, FLAC | M4A (default) and WAV |
 | TikTok, Instagram | Yes | Yes, through the bundled yt-dlp (public posts, single videos; separate video and audio streams are combined on the phone without re-encoding; M4A audio only) |
 | Other sites | 1,000+ sites supported by [yt-dlp](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) | No |
@@ -102,7 +120,9 @@ The sizes are estimates from the component sizes, not measurements of a release 
 
 On Android, TikTok and Instagram links download through the yt-dlp that is bundled in the app (arm64 only). They offer the heights the site serves. When video and audio come as separate streams, both are downloaded and combined on the phone without re-encoding. Audio is M4A only; there is no MP3, and login-only posts fail.
 
-YouTube on Android uses youtubei.js and mints a **PO token** on the phone: Google's BotGuard runs in the app's own WebView, so higher qualities unlock without Node, Deno or a second app. Links accepted are `youtube.com`, `www.`, `m.` and `music.youtube.com` `/watch?v=`, `youtu.be/ID`, and `/shorts/`, `/live/` and `/embed/` paths (https only). Only the 11-character video ID is used; playlist-only links are rejected, single videos only. The best video-only stream at the chosen height is paired with its matching audio-only stream and combined on the phone without re-encoding: **MP4** for AVC/HEVC + AAC, **WebM** for VP8/VP9 + Vorbis/Opus, and AV1 into MP4 on Android 10 or newer. That reaches 1440p and 4K where the video offers them. If the token cannot be minted (offline, blocked challenge, future BotGuard change) or the link has no adaptive pair, Keepsake falls back to the 360p MP4 it used before. Settings > Components > **Copy diagnostics** reports whether the PO token was minted. Audio is saved as M4A without conversion or decoded to WAV on the phone. MP3, FLAC and OPUS are not offered on Android yet, because Android has no built-in MP3 encoder and the FLAC and Opus encoders are not available on every supported Android version.
+**YouTube on Android: self-contained yt-dlp (new, not yet confirmed on a device).** The APK bundles the same helpers the desktop app uses: [QuickJS-NG](https://github.com/quickjs-ng/quickjs) (a small JavaScript runtime) with yt-dlp's EJS challenge solver, and a minimal LGPL ffmpeg. yt-dlp then solves YouTube's challenges on the phone, uses its default clients (which need no PO token, as on desktop), and downloads and merges every height the video offers into MP4 (or MKV when the streams do not fit MP4). The route is used only when the app's self-check (`ytdlp_status`) reports `ready`; Settings > Components > **Copy diagnostics** shows the yt-dlp, EJS, QuickJS-NG and ffmpeg versions. Any error on it falls back once to the youtubei.js path described next. In this first version only YouTube uses the route; TikTok and Instagram work as described above. How it works and how to test it on a phone: [docs/ANDROID_SELFCONTAINED.md](docs/ANDROID_SELFCONTAINED.md).
+
+**Fallback:** YouTube on Android uses youtubei.js and mints a **PO token** on the phone: Google's BotGuard runs in the app's own WebView, so higher qualities unlock without Node, Deno or a second app. Links accepted are `youtube.com`, `www.`, `m.` and `music.youtube.com` `/watch?v=`, `youtu.be/ID`, and `/shorts/`, `/live/` and `/embed/` paths (https only). Only the 11-character video ID is used; playlist-only links are rejected, single videos only. The best video-only stream at the chosen height is paired with its matching audio-only stream and combined on the phone without re-encoding: **MP4** for AVC/HEVC + AAC, **WebM** for VP8/VP9 + Vorbis/Opus, and AV1 into MP4 on Android 10 or newer. That reaches 1440p and 4K where the video offers them. If the token cannot be minted (offline, blocked challenge, future BotGuard change) or the link has no adaptive pair, Keepsake falls back to the 360p MP4 it used before. Settings > Components > **Copy diagnostics** reports whether the PO token was minted. Audio is saved as M4A without conversion or decoded to WAV on the phone. MP3, FLAC and OPUS are not offered on Android yet, because Android has no built-in MP3 encoder and the FLAC and Opus encoders are not available on every supported Android version.
 
 DRM-protected streams (most paid streaming services) cannot be downloaded on any platform.
 
@@ -241,8 +261,20 @@ Unit tests: `bun test` (engine tests in [`src/engine/__tests__`](src/engine/__te
 ```bash
 bun run android:init     # once; generates src-tauri/gen/android (git-ignored)
 bash scripts/android-patch-gradle.sh   # after every android:init; adds Chaquopy (needs Python 3.12 on PATH)
+                                       # and turns on native-lib extraction for the bundled executables
+bash scripts/build-android-ffmpeg.sh   # builds libffmpeg.so with the NDK (slow the first time; see below)
+bash scripts/fetch-android-binaries.sh # downloads libqjs.so, checks every SHA-256 (Windows: scripts/fetch-android-binaries.ps1)
 bun run build:android    # arm64 APK (the default build)
 ```
+
+The two Android executables are **not committed**. They go to `src-tauri/plugins/keepsake-media/android/src/main/jniLibs/arm64-v8a/` and are pinned in the `android` block of [`scripts/binaries.lock.json`](scripts/binaries.lock.json):
+
+| File | What | Source |
+|---|---|---|
+| `libqjs.so` | QuickJS-NG v0.18.0 | Official release asset `qjs-linux-aarch64`, renamed, SHA-256 pinned. [`scripts/build-android-qjs.sh`](scripts/build-android-qjs.sh) is the NDK build fallback if that binary does not run on Android |
+| `libffmpeg.so` | FFmpeg 7.1.1, minimal LGPL configuration with LAME 3.100 and Opus 1.5.2 | Built from pinned source tarballs by `scripts/build-android-ffmpeg.sh` with the NDK (`27.2.12479018` in CI) |
+
+Android only lets an app run programs from its native-library folder, so both are packaged as `lib*.so` files and extracted at install time. yt-dlp-ejs 0.8.0 is a pip pin in the plugin's `build.gradle.kts` and must change together with the yt-dlp pin. CI runs the same steps and then checks that both libraries are in the APK and that native-lib extraction is on. The exact order of these steps is in the `android` job of [`.github/workflows/build.yml`](.github/workflows/build.yml), which is authoritative if it differs from the list above.
 
 | Command | What it does |
 |---|---|
@@ -252,7 +284,7 @@ bun run build:android    # arm64 APK (the default build)
 | `bun run build:android:split` | One APK per ABI (needs all four Rust Android targets) |
 | `bun run build:android:universal` | One APK with all four ABIs; several times larger (needs all four targets) |
 
-No ffmpeg is bundled on Android. Audio conversion uses the small Kotlin plugin in [`src-tauri/plugins/keepsake-media`](src-tauri/plugins/keepsake-media), built on Android's own `MediaExtractor`, `MediaCodec` and `MediaMuxer`.
+The bundled ffmpeg on Android is used only by yt-dlp (merging streams and audio extraction on the self-contained route). WAV conversion and the legacy TikTok/Instagram mux use the small Kotlin plugin in [`src-tauri/plugins/keepsake-media`](src-tauri/plugins/keepsake-media), built on Android's own `MediaExtractor`, `MediaCodec` and `MediaMuxer`.
 
 **Docker build (no local Android toolchain):** [`docker/android/build-android.ps1`](docker/android/build-android.ps1) builds an image with JDK 17, the SDK, NDK, Rust 1.90.0 and Bun, then builds the arm64 APK into `apk-out/`. Pass `-AllAbis` for the universal APK and every ABI split. With a release keystore in `%USERPROFILE%\.keepsake` (`keepsake-release.jks` plus `keystore.password`), it is mounted read-only and the APK is release-signed; otherwise the APK is debug-signed and for testing only.
 
@@ -310,7 +342,8 @@ On Windows and Linux, `Ctrl` is the modifier.
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl` + `1` / `2` / `3` / `4` | Go to Home / Downloads / Library / Settings |
+| `Ctrl` + `1` / `2` / `3` / `4` / `5` / `6` | Go to Home / Downloads / Library / Favorites / Sources / Settings |
+| `Ctrl` + `7` | Go to the Editor |
 | `Ctrl` + `L` | Focus the link field on Home |
 | `Ctrl` + `V` | On Home (outside a text field): paste the clipboard link and fetch it |
 | `Ctrl` + `Enter` | On Home: start the download |
@@ -460,11 +493,11 @@ Folder access from the picker lasts for one session. Pick the folder again in Se
 <details>
 <summary><b>Android: where are MP3, FLAC and OPUS? Why do I sometimes get 360p?</b></summary>
 
-On Android, TikTok and Instagram downloads run on the phone through the bundled yt-dlp. When a post serves video and audio as separate streams, Keepsake combines them on the phone without re-encoding. Audio from TikTok and Instagram is M4A only; there is no MP3 on Android. The app is about 30-45 MB per install because it carries Python and yt-dlp.
+On Android, TikTok and Instagram downloads run on the phone through the bundled yt-dlp. When a post serves video and audio as separate streams, Keepsake combines them on the phone without re-encoding. Audio from TikTok and Instagram is M4A only; there is no MP3 on Android. The app is about 35-50 MB per install (an estimate) because it carries Python, yt-dlp, QuickJS-NG and a minimal ffmpeg.
 
 For YouTube, Android offers M4A and WAV only for now. M4A is the original audio with no conversion; WAV is decoded on the phone by Android's own media codecs. MP3 needs an encoder Android does not include, and FLAC and Opus encoders are missing on some supported Android versions.
 
-Video is normally every quality the link offers: Keepsake mints a PO token in the app's WebView and combines the separate video and audio streams on the phone (MP4 or WebM, no re-encoding). If that token cannot be minted, YouTube refuses the high-quality URLs and Keepsake falls back to the 360p progressive MP4, which needs no token. Check Settings > Components > **Copy diagnostics**: "PO token ready" means the high-quality path is working. For MP3, FLAC and OPUS, use the desktop app.
+Video is normally every quality the link offers through the bundled yt-dlp. If Copy diagnostics does not show `ready: yes` for it, or YouTube answers with a bot check, see [docs/ANDROID_SELFCONTAINED.md](docs/ANDROID_SELFCONTAINED.md#troubleshooting-by-problems-word); Keepsake then uses the fallback path: it mints a PO token in the app's WebView and combines the separate video and audio streams on the phone (MP4 or WebM, no re-encoding). If that token cannot be minted, YouTube refuses the high-quality URLs and Keepsake falls back to the 360p progressive MP4, which needs no token. Check Settings > Components > **Copy diagnostics**: "PO token ready" means the fallback's high-quality path is working. For MP3, FLAC and OPUS, use the desktop app.
 
 </details>
 
@@ -499,10 +532,11 @@ These packages install the sidecars (`yt-dlp`, `ffmpeg`, `qjs`) next to the app 
 Keepsake is built on these projects:
 
 - [Tauri](https://tauri.app): the app shell and plugins
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp): extraction and downloads on desktop, and TikTok/Instagram on Android (Unlicense)
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp): extraction and downloads on desktop, and YouTube/TikTok/Instagram on Android (Unlicense)
+- [yt-dlp-ejs](https://github.com/yt-dlp/ejs): yt-dlp's YouTube challenge solver scripts on Android (Unlicense AND MIT AND ISC; includes meriyah and astring)
 - [Chaquopy](https://chaquo.com/chaquopy/): runs Python and yt-dlp inside the Android app (MIT)
-- [FFmpeg](https://ffmpeg.org): merging and conversion on desktop. The bundled build is a minimal **LGPL** configuration from [ffmpeg-ytdl-minimal-build](https://github.com/Abdullah-Masood-05/ffmpeg-ytdl-minimal-build)
-- [QuickJS-NG](https://github.com/quickjs-ng/quickjs): the JavaScript runtime yt-dlp uses for YouTube on desktop (MIT)
+- [FFmpeg](https://ffmpeg.org): merging and conversion on desktop and, for yt-dlp, on Android. The bundled build is a minimal **LGPL-2.1-or-later** configuration (with [LAME](https://lame.sourceforge.io) and [Opus](https://opus-codec.org)) from [ffmpeg-ytdl-minimal-build](https://github.com/Abdullah-Masood-05/ffmpeg-ytdl-minimal-build) on desktop and the same configuration built with the NDK on Android
+- [QuickJS-NG](https://github.com/quickjs-ng/quickjs): the JavaScript runtime yt-dlp uses for YouTube on desktop and Android (MIT)
 - [youtubei.js](https://github.com/LuanRT/YouTube.js): YouTube info and Android downloads
 - Android's built-in `MediaExtractor`, `MediaCodec` and `MediaMuxer`: audio conversion on Android
 - [React](https://react.dev), [motion](https://motion.dev), [Tailwind CSS](https://tailwindcss.com), [Vite](https://vite.dev) and [Bun](https://bun.sh)
@@ -522,4 +556,6 @@ Issues and pull requests are welcome.
 
 ## License
 
-Keepsake is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). You may use, copy, modify and share it free of charge for any noncommercial purpose. Commercial use is not permitted: you may not sell Keepsake, or any product or service built on it, without a separate commercial license from the authors. Bundled third-party tools (yt-dlp, FFmpeg, QuickJS-NG) keep their own licenses, listed above.
+Keepsake is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). You may use, copy, modify and share it free of charge for any noncommercial purpose. Commercial use is not permitted: you may not sell Keepsake, or any product or service built on it, without a separate commercial license from the authors.
+
+Bundled third-party components (yt-dlp, yt-dlp-ejs, FFmpeg with LAME and Opus, QuickJS-NG, and on Android Chaquopy, CPython and certifi) keep their own licenses. Keepsake's license covers Keepsake's own code only and places no restriction on them. FFmpeg (LGPL-2.1-or-later) and QuickJS-NG (MIT) run as separate programs; Keepsake does not link to them. The full list, the license texts and where to get the corresponding FFmpeg, LAME and Opus source are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); the Android app also carries the license texts under `assets/licenses/`.

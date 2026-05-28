@@ -7,6 +7,9 @@
  *   (android-media.ts). MP3/FLAC/Opus are not available on Android yet and are rejected here.
  * - Android TikTok/Instagram: in-process yt-dlp (Chaquopy) through android-ytdlp.ts, one single-file format, no
  *   progress events (indeterminate). M4A from a muxed MP4 goes through the app cache and the transcode plugin.
+ * - Android YouTube, self-contained route (info.ytdlpFull, plan 11 WP-F2): one ytdlp_download with the desktop
+ *   selectors (selectionArgs, android variant); yt-dlp + the bundled ffmpeg merge the file. WAV = M4A then the
+ *   transcode plugin. Any non-final failure falls back once to youtubei.js (runDirect).
  * - Web: same fetch path into a Blob -> <a download>. (CORS blocks YouTube in a plain browser; dev only.) No conversion.
  *
  * VERIFIED (node_modules/@tauri-apps/plugin-fs/dist-js/index.d.ts 2.7.1): `open(path, { write, create, truncate })`
@@ -44,7 +47,7 @@ import {
   type ResolvedPair,
   type ResolvedStream,
 } from "./youtube";
-import { cancelYtdlp, downloadYtdlp } from "./ytdlp";
+import { cancelYtdlp, downloadYtdlp, isFormatPart, selectionArgs } from "./ytdlp";
 
 const CHUNK = 10 * 1024 * 1024;
 const CHUNK_TIMEOUT_MS = 120_000;
@@ -577,6 +580,14 @@ async function ytdlpOutDir(req: DownloadRequest): Promise<string> {
 }
 
 const codeOf = (e: unknown) => toAppError(e).code as string;
+
+/**
+ * File base name for ytdlp_download. Rust rejects a fileName starting with "." and yt-dlp adds ".<ext>.part": keep
+ * the base short (code points, so no half surrogate pair; 50 x 4 UTF-8 bytes stays under the 255-byte name limit)
+ * and free of leading dots. TikTok titles are whole captions.
+ */
+const ytdlpBaseName = (title: string) =>
+  Array.from(safeName(title)).slice(0, 50).join("").replace(/^[.\s]+/, "").trim() || "download";
 const nameFor = (target: string, ext: string) => target.slice(target.lastIndexOf("/") + 1, target.length - (ext.length + 1));
 
 async function runAndroidYtdlpJob(
@@ -600,10 +611,7 @@ async function runAndroidYtdlpJob(
     emit(p);
   };
   emitStage("downloading", audioFmt ? "audio" : "video");
-  // Rust rejects a fileName starting with "." and yt-dlp adds ".<ext>.part": keep the base short (code points,
-  // so no half surrogate pair; 50 x 4 UTF-8 bytes stays under the 255-byte name limit) and free of leading dots.
-  // TikTok titles are whole captions.
-  const base = Array.from(safeName(info.title)).slice(0, 50).join("").replace(/^[.\s]+/, "").trim() || "download";
+  const base = ytdlpBaseName(info.title);
 
   const done = (path: string, bytes: number): DownloadProgress => ({
     id: req.id,
@@ -696,6 +704,120 @@ async function runAndroidYtdlpJob(
   }
 }
 
+// ---------------- Android yt-dlp, self-contained route (YouTube) ----------------
+
+/** Errors any route would hit again: the full route never falls back on these (plan 11 section 8). */
+const FINAL_CODES: ReadonlySet<string> = new Set(["cancelled", "no_space", "permission", "too_large", "not_found", "login_required"]);
+
+/** Every extension the full route can leave under the chosen name (merge mp4/mkv, unmerged webm, M4A). */
+const FULL_EXTS = ["mp4", "mkv", "webm", "m4a"] as const;
+
+/**
+ * First `base`, `base (1)`, ... for which no `<name>.<ext>` exists in `dir` for any of `exts`. The final extension
+ * is only known after yt-dlp merges (mp4 or mkv), and the bridge runs with overwrites off, so an existing file of any
+ * of them would be taken as "already downloaded".
+ */
+async function uniqueBase(dir: string, base: string, exts: readonly string[]): Promise<string> {
+  for (let i = 0; i < 1000; i++) {
+    const name = `${base}${i ? ` (${i})` : ""}`;
+    let free = true;
+    for (const ext of exts) {
+      if (await exists(await join(dir, `${name}.${ext}`))) {
+        free = false;
+        break;
+      }
+    }
+    if (free) return name;
+  }
+  return `${base}-${Date.now()}`;
+}
+
+/**
+ * Android YouTube through the self-contained yt-dlp (bundled QuickJS + ffmpeg, info.ytdlpFull): one ytdlp_download
+ * with the desktop selectors (selectionArgs, android variant). yt-dlp picks, downloads and merges, and returns the
+ * final path (.mp4, or .mkv when the streams do not fit MP4). M4A: the same selectors as desktop. WAV: M4A into the
+ * app cache, then the native transcode. No byte progress from the native side (indeterminate bar, stage only).
+ */
+async function runAndroidYtdlpFull(
+  req: DownloadRequest,
+  emit: Emit,
+  signal: AbortSignal,
+  info: VideoInfo,
+): Promise<DownloadProgress> {
+  const [kind, value = ""] = req.formatId.split(":");
+  if (kind !== "video" && kind !== "audio") formatError("This format isn't available for this link on Android.", req.formatId);
+  const audioFmt = kind === "audio" ? value || "m4a" : undefined;
+  if (audioFmt === "mp3") formatError(MP3_TEXT, req.formatId);
+  if (audioFmt && audioFmt !== "m4a" && audioFmt !== "wav") {
+    formatError(`${audioFmt.toUpperCase()} isn't available on Android yet. Choose M4A.`, req.formatId);
+  }
+  if (signal.aborted) fail("cancelled");
+  // WAV is an M4A download plus the native transcode, so yt-dlp always gets the M4A selectors for audio.
+  const args = selectionArgs({ ...req, info, formatId: audioFmt ? "audio:m4a" : req.formatId }, { platform: "android" });
+
+  const onAbort = () => void cancelAndroid(req.id);
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    const dl = (outDir: string, fileName: string) =>
+      runWithRetry(() => downloadAndroid({ url: info.url, args, full: true, outDir, fileName, jobId: req.id }), {
+        signal,
+        retries: 2,
+        delays: [2000, 6000],
+      });
+    const dir = await ytdlpOutDir(req);
+    const emitStage = (status: DownloadProgress["status"], stage: "video" | "audio", downloadedBytes = 0) =>
+      emit({ id: req.id, status, downloadedBytes, stage });
+    const base = ytdlpBaseName(info.title);
+    const done = (path: string, bytes: number): DownloadProgress => ({
+      id: req.id,
+      status: "done",
+      downloadedBytes: bytes,
+      totalBytes: bytes,
+      percent: 100,
+      filePath: path,
+    });
+
+    if (audioFmt !== "wav") {
+      emitStage("downloading", audioFmt ? "audio" : "video");
+      const name = await uniqueBase(dir, base, FULL_EXTS);
+      const { path, bytes } = await dl(dir, name);
+      if (signal.aborted) {
+        await remove(path).catch(() => undefined);
+        fail("cancelled");
+      }
+      if (isFormatPart(path, name)) {
+        // Defence in depth (the bridge already rejects this): an unmerged video-only/audio-only part is not a result.
+        await remove(path).catch(() => undefined);
+        fail("ffmpeg_missing", "yt-dlp did not merge video and audio.");
+      }
+      return done(path, bytes);
+    }
+
+    const tmpDir = await join(await appCacheDir(), `ytdlp-${safeName(req.id, 60)}`);
+    let outPath: string | undefined;
+    try {
+      // A leftover from an earlier attempt would be taken as already downloaded (overwrites off): start clean.
+      await remove(tmpDir, { recursive: true }).catch(() => undefined);
+      await mkdir(tmpDir, { recursive: true });
+      emitStage("downloading", "audio");
+      const { path, bytes } = await dl(tmpDir, "source");
+      if (signal.aborted) fail("cancelled");
+      emitStage("converting", "audio", bytes);
+      outPath = await uniquePath(dir, base, "wav");
+      const res = await transcodeAudio({ input: path, output: outPath, format: "wav" });
+      if (signal.aborted) fail("cancelled");
+      return done(res.path, bytes);
+    } catch (e) {
+      if (outPath) await remove(outPath).catch(() => undefined);
+      throw e;
+    } finally {
+      await remove(tmpDir, { recursive: true }).catch(() => undefined);
+    }
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 // ---------------- Android gallery / folder staging ----------------
 
 const EXT_KIND: Record<string, "video" | "audio" | "image"> = {
@@ -722,6 +844,15 @@ const isInside = (p: string, dir: string) => {
 
 /** Routes a request on Android (yt-dlp or direct); desktop never reaches here. */
 const routeRequest = (r: DownloadRequest, em: Emit, signal: AbortSignal): Promise<DownloadProgress> => {
+  if (platform() === "android" && r.info?.source === "ytdlp" && r.info.ytdlpFull === true) {
+    // The full route is YouTube only. Full info for any other link is dropped so the legacy route re-fetches its own.
+    if (!isYouTubeUrl(r.url)) return runAndroidYtdlp({ ...r, info: undefined }, em, signal);
+    // Any non-final failure goes to youtubei.js once, with fresh info (the full info lists formats it cannot use).
+    return runAndroidYtdlpFull(r, em, signal, r.info).catch((e: unknown) => {
+      if (signal.aborted || FINAL_CODES.has(codeOf(e))) throw e;
+      return runDirect({ ...r, info: undefined }, em, signal);
+    });
+  }
   if (platform() === "android" && isAndroidYtdlpSupported(r.url)) return runAndroidYtdlp(r, em, signal);
   if (platform() === "android" && r.info?.source === "ytdlp") {
     // Info came from the (currently disabled) yt-dlp route: if its download fails, retry through youtubei.js.

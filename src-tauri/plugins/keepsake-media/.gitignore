@@ -3,3 +3,7 @@
 /android/.tauri
 /android/build
 /android/.gradle
+# Android executables (libqjs.so, libffmpeg.so): fetched/built in CI by scripts/fetch-android-binaries.sh
+# and scripts/build-android-*.sh, never committed (like src-tauri/binaries).
+/android/src/main/jniLibs/
+/android/.native-cache/

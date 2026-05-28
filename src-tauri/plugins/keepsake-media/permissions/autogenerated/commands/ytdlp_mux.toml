@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-ytdlp-mux"
+description = "Enables the ytdlp_mux command without any pre-configured scope."
+commands.allow = ["ytdlp_mux"]
+
+[[permission]]
+identifier = "deny-ytdlp-mux"
+description = "Denies the ytdlp_mux command without any pre-configured scope."
+commands.deny = ["ytdlp_mux"]

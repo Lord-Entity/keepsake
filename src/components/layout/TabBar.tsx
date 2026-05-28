@@ -9,7 +9,9 @@ import { TAB_ITEMS } from "./nav-items";
  * Phone navigation (UI_MOBILE.md): 64px row plus the bottom safe-area inset,
  * 24px icons, 12px labels, 48px+ touch targets. The active pill is notched on its
  * lower edge with an accent bead seated in the notch; both slide (layoutId).
- * Five slots: Home, Downloads, Library, Favorites, Settings (Sources lives on Home).
+ * Six slots: Home, Downloads, Library, Editor, Favorites, Settings (Sources lives on
+ * Home). At 360dp each slot is ~58dp wide, so labels truncate rather than wrap on
+ * the narrowest phones; the min-w-12 floor keeps every target at 48dp.
  */
 export function TabBar() {
   const page = usePage();
@@ -64,7 +66,7 @@ export function TabBar() {
                   )}
                 </span>
               </span>
-              {item.label}
+              <span className="max-w-full truncate px-0.5">{item.label}</span>
             </motion.button>
           );
         })}

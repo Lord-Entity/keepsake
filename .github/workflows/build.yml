@@ -1,10 +1,18 @@
 # Single source of truth for Keepsake cloud builds.
 #
-#   check    typecheck, lint, bun tests (if any), frontend build, cargo test
-#   windows  NSIS installer                      (needs: check)  DISABLED (if: false)
-#   linux    deb, rpm, AppImage                  (needs: check)  DISABLED (if: false)
-#   android  arm64-v8a split APK, test-signed, Chaquopy + yt-dlp (TikTok/Instagram)  (needs: check)
-#   release  draft GitHub Release, v* tags only  (needs: android)
+#   check           typecheck, lint, bun tests (if any), pytest (Android bridge), yt-dlp-ejs pin
+#                   assert, frontend build, cargo test
+#   windows         NSIS installer                      (needs: check)  DISABLED (if: false)
+#   linux           deb, rpm, AppImage                  (needs: check)  DISABLED (if: false)
+#   android-ffmpeg  libffmpeg.so (FFmpeg minimal LGPL, NDK arm64) built by
+#                   scripts/build-android-ffmpeg.sh, cached on the script + lock file hash.
+#                   Runs in parallel with check.
+#   android         arm64-v8a split APK, test-signed, Chaquopy + yt-dlp + yt-dlp-ejs, bundled
+#                   libqjs.so + libffmpeg.so, APK verification  (needs: check, android-ffmpeg)
+#                   Still runs when android-ffmpeg fails: the APK is then built WITHOUT ffmpeg
+#                   (loud error annotation + job summary), so a phone test build always exists.
+#   release         draft GitHub Release, v* tags only  (needs: android, android-ffmpeg; never
+#                   runs if ffmpeg failed). Includes the FFmpeg/LAME/Opus source tarballs (LGPL).
 #
 # Only the Android build runs for now. Remove `if: false` from windows/linux and put them back in
 # `release.needs` to re-enable desktop artifacts.
@@ -86,6 +94,54 @@ jobs:
           else
             echo "$tests"
             bun test
+          fi
+
+      # Host Python for the Android bridge's pure modules (no yt_dlp import, no device needed).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests (pytest, Android Python bridge)
+        env:
+          PYTHONPATH: src-tauri/plugins/keepsake-media/android/src/main/python
+        run: |
+          python -m pip install --disable-pip-version-check "pytest==8.4.2"
+          python -m pytest -q src-tauri/plugins/keepsake-media/android/src/test/python
+
+      # yt-dlp checks the EJS solver's version and hashes against its own vendored table, so the
+      # gradle `yt-dlp-ejs` pin must equal the `yt-dlp-ejs==` pin in the pinned yt-dlp's pyproject.
+      # The pyproject pin is read from the yt-dlp wheel's METADATA (Requires-Dist), fetched from
+      # PyPI with pip's own retries. Chaquopy downloads the same wheel from PyPI during the APK
+      # build, so this adds no new network dependency; no hash table to keep in sync by hand.
+      - name: Assert yt-dlp-ejs pin equals the pinned yt-dlp's pin
+        run: |
+          G=src-tauri/plugins/keepsake-media/android/build.gradle.kts
+          ytdlp="$(sed -n 's/.*install("yt-dlp==\([^"]*\)").*/\1/p' "$G")"
+          ejs="$(sed -n 's/.*install("yt-dlp-ejs==\([^"]*\)").*/\1/p' "$G")"
+          echo "gradle: yt-dlp=[$ytdlp] yt-dlp-ejs=[$ejs]"
+          if [ -z "$ytdlp" ] || [ -z "$ejs" ] || [ "$(printf '%s\n' "$ytdlp" | wc -l)" != 1 ] || [ "$(printf '%s\n' "$ejs" | wc -l)" != 1 ]; then
+            echo "::error file=$G::expected exactly one install(\"yt-dlp==X\") and one install(\"yt-dlp-ejs==Y\")"
+            exit 1
+          fi
+          WHL="$RUNNER_TEMP/ytdlp-wheel"
+          python -m pip download --disable-pip-version-check --no-deps --only-binary=:all: \
+            --retries 5 --timeout 60 -d "$WHL" "yt-dlp==$ytdlp"
+          want="$(python - "$WHL" <<'PY'
+          import glob, re, sys, zipfile
+          whl = glob.glob(sys.argv[1] + "/yt_dlp-*.whl")
+          assert len(whl) == 1, whl
+          z = zipfile.ZipFile(whl[0])
+          meta = [n for n in z.namelist() if n.endswith(".dist-info/METADATA")]
+          assert len(meta) == 1, meta
+          pins = set(re.findall(r"(?im)^Requires-Dist:\s*yt[-_.]dlp[-_.]ejs\s*==\s*([^\s;,]+)", z.read(meta[0]).decode()))
+          assert len(pins) == 1, "yt-dlp-ejs pins in METADATA: %r" % pins
+          print(pins.pop())
+          PY
+          )"
+          echo "yt-dlp $ytdlp pins yt-dlp-ejs==$want"
+          if [ "$want" != "$ejs" ]; then
+            echo "::error file=$G::yt-dlp-ejs==$ejs but yt-dlp $ytdlp requires yt-dlp-ejs==$want. Bump both pins together."
+            exit 1
           fi
 
       # Produces dist/ (frontendDist) so the Rust crate compiles the same way as in a release build.
@@ -250,12 +306,119 @@ jobs:
             done
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # No fetch-binaries here: tauri.android.conf.json sets "externalBin": [] (no sidecars).
+  # FFmpeg 7.1.1 minimal LGPL (+ LAME, Opus), cross-built with the NDK for arm64-v8a as libffmpeg.so.
+  # Cached on the build recipe + lock file (exact key, no restore-keys: a changed recipe always
+  # rebuilds). The cache dir also keeps the sha256-verified source tarballs, which v* tags attach
+  # to the release (LGPL corresponding source). Runs in parallel with `check`.
+  # A failure here is red and blocks a release, but `android` still builds an APK without ffmpeg.
+  android-ffmpeg:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ env.KEEPSAKE_DIR }}
+    env:
+      NDK_VERSION: "27.2.12479018"
+      # Absolute, so the build script and actions/cache agree on it.
+      KEEPSAKE_ANDROID_CACHE: ${{ github.workspace }}/.android-native-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache libffmpeg.so build
+        id: ffcache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.android-native-cache
+          key: android-ffmpeg-ndk${{ env.NDK_VERSION }}-${{ hashFiles('scripts/build-android-ffmpeg.sh', 'scripts/binaries.lock.json') }}
+
+      - name: Install Android NDK
+        if: ${{ steps.ffcache.outputs.cache-hit != 'true' }}
+        run: |
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(command -v sdkmanager)"; fi
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install "ndk;$NDK_VERSION"
+          echo "ANDROID_NDK_HOME=$SDK/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$SDK/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Build libffmpeg.so (scripts/build-android-ffmpeg.sh)
+        if: ${{ steps.ffcache.outputs.cache-hit != 'true' }}
+        run: bash scripts/build-android-ffmpeg.sh
+
+      # Collects the output into one place, whether the script left it in the cache dir or in
+      # jniLibs, and checks it is an aarch64 ELF before anyone downloads it.
+      - name: Collect and check libffmpeg.so
+        run: |
+          JNI=src-tauri/plugins/keepsake-media/android/src/main/jniLibs/arm64-v8a
+          OUT="$RUNNER_TEMP/ffmpeg-out"
+          mkdir -p "$OUT" "$KEEPSAKE_ANDROID_CACHE"
+          if [ -f "$JNI/libffmpeg.so" ]; then cp "$JNI/libffmpeg.so" "$KEEPSAKE_ANDROID_CACHE/libffmpeg.so"; fi
+          [ -f "$KEEPSAKE_ANDROID_CACHE/libffmpeg.so" ] || { echo "::error::build-android-ffmpeg.sh produced no libffmpeg.so"; exit 1; }
+          cp "$KEEPSAKE_ANDROID_CACHE/libffmpeg.so" "$OUT/libffmpeg.so"
+          python3 - "$OUT/libffmpeg.so" <<'PY'
+          import struct, sys
+          b = open(sys.argv[1], "rb").read(64)
+          if b[:4] != b"\x7fELF" or b[4] != 2 or struct.unpack_from("<H", b, 18)[0] != 183:
+              sys.exit("::error::libffmpeg.so is not a 64-bit aarch64 ELF")
+          PY
+          ls -l "$OUT" "$KEEPSAKE_ANDROID_CACHE" "$KEEPSAKE_ANDROID_CACHE/sources" || true
+          {
+            echo "### Android ffmpeg"
+            echo ""
+            echo "libffmpeg.so: $(stat -c %s "$OUT/libffmpeg.so") bytes, sha256 \`$(sha256sum "$OUT/libffmpeg.so" | cut -d' ' -f1)\` (cache hit: ${{ steps.ffcache.outputs.cache-hit == 'true' }})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-ffmpeg-arm64
+          path: ${{ runner.temp }}/ffmpeg-out/libffmpeg.so
+          if-no-files-found: error
+          retention-days: 14
+
+      # LGPL-2.1 section 6: the exact FFmpeg/LAME/Opus sources ship next to the APK on the release.
+      # The `keepsake-` prefix makes the release job pick this artifact up.
+      - name: Stage source tarballs for the release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          S="$KEEPSAKE_ANDROID_CACHE/sources"
+          ls -l "$S"
+          ls -1 "$S" > "$RUNNER_TEMP/sources.txt"
+          for want in ffmpeg lame opus; do
+            grep -qi "^$want" "$RUNNER_TEMP/sources.txt" || { echo "::error::no $want source tarball in $S"; exit 1; }
+          done
+          mkdir -p "$RUNNER_TEMP/ffmpeg-sources"
+          cp "$S"/* "$RUNNER_TEMP/ffmpeg-sources/"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        with:
+          name: keepsake-android-ffmpeg-sources
+          path: ${{ runner.temp }}/ffmpeg-sources/*
+          if-no-files-found: error
+
+      - name: Report ffmpeg failure
+        if: ${{ failure() }}
+        run: |
+          echo "::error title=android-ffmpeg failed::libffmpeg.so was not built. The android job still builds an APK WITHOUT ffmpeg (test only); releases are blocked."
+          {
+            echo "## :x: libffmpeg.so build FAILED"
+            echo ""
+            echo "The APK from this run has no ffmpeg (legacy yt-dlp route only). Releases are blocked until this job is green."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # No desktop fetch-binaries here: tauri.android.conf.json sets "externalBin": [] (no sidecars).
+  # The Android executables (libqjs.so, libffmpeg.so) are jniLibs of the keepsake-media plugin
+  # instead (plan 11, section 3.1).
   # Builds a RELEASE arm64-v8a APK (realistic size) and signs it with a throwaway key generated
   # in this job, the same way docker/android/build.sh does without /keys. TEST ONLY: each run has
   # a new key, so a newer CI APK will not install over an older one without uninstalling first.
   android:
-    needs: check
+    needs: [check, android-ffmpeg]
+    # Also runs when android-ffmpeg failed, so a phone-testable APK (without ffmpeg) still comes
+    # out. The ffmpeg job is then red, and this job adds an error annotation and summary banner.
+    if: ${{ !cancelled() && needs.check.result == 'success' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -264,6 +427,7 @@ jobs:
     env:
       NDK_VERSION: "27.2.12479018"
       BUILD_TOOLS: "37.0.0"
+      JNI_DIR: src-tauri/plugins/keepsake-media/android/src/main/jniLibs/arm64-v8a
     steps:
       - uses: actions/checkout@v4
 
@@ -342,6 +506,66 @@ jobs:
           done
           echo "launcher icons copied and verified"
 
+      # Before the fetch script, which keeps a libffmpeg.so already in jniLibs when the lock has
+      # no url for it.
+      - name: Download libffmpeg.so (android-ffmpeg job)
+        if: ${{ needs.android-ffmpeg.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: android-ffmpeg-arm64
+          path: ${{ env.KEEPSAKE_DIR }}/${{ env.JNI_DIR }}
+
+      # QuickJS-NG (yt-dlp's JS runtime for the EJS solver) as libqjs.so, sha256-pinned in
+      # scripts/binaries.lock.json. libqjs.so is required; a missing libffmpeg.so is only reported.
+      - name: Fetch Android binaries (libqjs.so, sha256-verified)
+        env:
+          KEEPSAKE_ANDROID_REQUIRE: libqjs.so
+        run: bash scripts/fetch-android-binaries.sh
+
+      # libqjs.so is required (hard fail). A missing libffmpeg.so is LOUD but not fatal, so the
+      # APK still builds for phone testing; the app then reports the full route as not ready.
+      - name: Check bundled executables (jniLibs)
+        env:
+          FFMPEG_JOB_RESULT: ${{ needs.android-ffmpeg.result }}
+        run: |
+          ls -l "$JNI_DIR"
+          # Artifacts do not keep the exec bit.
+          chmod 755 "$JNI_DIR"/*.so
+          [ -f "$JNI_DIR/libqjs.so" ] || { echo "::error::libqjs.so missing after fetch-android-binaries.sh"; exit 1; }
+          if [ -f "$JNI_DIR/libffmpeg.so" ]; then
+            echo "HAVE_FFMPEG=1" >> "$GITHUB_ENV"
+          else
+            echo "HAVE_FFMPEG=0" >> "$GITHUB_ENV"
+            echo "::error title=APK built WITHOUT libffmpeg.so::android-ffmpeg job result: $FFMPEG_JOB_RESULT. This APK has no ffmpeg: yt-dlp cannot merge, and the self-contained route reports not ready (legacy fallback only). Test build only; release is blocked."
+            {
+              echo "## :warning: APK built WITHOUT libffmpeg.so"
+              echo ""
+              echo "The \`android-ffmpeg\` job result was **$FFMPEG_JOB_RESULT**. This APK falls back to the legacy yt-dlp route. Fix the ffmpeg build before tagging a release."
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # ELF, aarch64 (e_machine 183) is required. 16 KiB LOAD alignment is warned about only:
+          # the libs are extracted at install (legacy packaging), so it matters for 16 KiB-page devices.
+          for f in "$JNI_DIR"/*.so; do
+            python3 - "$f" <<'PY'
+          import struct, sys
+          p = sys.argv[1]
+          b = open(p, "rb").read()
+          if b[:4] != b"\x7fELF" or b[4] != 2 or b[5] != 1:
+              sys.exit("::error::%s is not a 64-bit little-endian ELF" % p)
+          e_machine, = struct.unpack_from("<H", b, 18)
+          if e_machine != 183:
+              sys.exit("::error::%s e_machine=%d, expected 183 (aarch64)" % (p, e_machine))
+          phoff, = struct.unpack_from("<Q", b, 32)
+          phentsize, phnum = struct.unpack_from("<HH", b, 54)
+          aligns = [struct.unpack_from("<Q", b, phoff + i * phentsize + 48)[0]
+                    for i in range(phnum) if struct.unpack_from("<I", b, phoff + i * phentsize)[0] == 1]
+          print("%s: aarch64 ELF, %d bytes, LOAD align %s" % (p, len(b), [hex(a) for a in aligns]))
+          if not aligns or min(aligns) < 0x4000:
+              print("::warning::%s LOAD segments are not 16 KiB aligned: %s" % (p, [hex(a) for a in aligns]))
+          PY
+          done
+
       - name: Build release APK (arm64-v8a, split per ABI)
         run: bun run tauri android build --apk --split-per-abi --target aarch64 --ci
 
@@ -377,7 +601,8 @@ jobs:
               *)           abi="$name" ;;
             esac
             dest="$OUT/keepsake-$VERSION-$abi-testsigned.apk"
-            "$BT/zipalign" -f -p 4 "$f" "$RUNNER_TEMP/aligned.apk"
+            # -P 16: uncompressed .so files 16 KiB page-aligned (checked again after upload).
+            "$BT/zipalign" -f -P 16 4 "$f" "$RUNNER_TEMP/aligned.apk"
             "$BT/apksigner" sign --ks "$KS" --ks-pass "pass:$PASS" --key-pass "pass:$PASS" \
               --ks-key-alias "$ALIAS" --out "$dest" "$RUNNER_TEMP/aligned.apk"
             rm -f "$RUNNER_TEMP/aligned.apk" "$dest.idsig"
@@ -400,22 +625,92 @@ jobs:
               echo "| $(basename "$f") | $(numfmt --to=iec --suffix=B "$bytes") | $bytes |"
             done
             echo ""
+            for f in apk-out/*.apk; do
+              echo "APK bytes: $(basename "$f") $(stat -c %s "$f")"
+              echo ""
+            done
+            echo "Bundled executables (uncompressed bytes in jniLibs): $(stat -c '%n=%s' "$JNI_DIR"/*.so | sed 's#.*/##' | tr '\n' ' ')"
+            echo ""
             echo "Signed with a per-run CI test key. For testing only; not for distribution."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Uploaded before the checks below, so a phone-testable APK exists even if a check fails.
       - uses: actions/upload-artifact@v4
         with:
           name: keepsake-android-apk
           path: ${{ env.KEEPSAKE_DIR }}/apk-out/*.apk
           if-no-files-found: error
 
+      # Plan 11 WP-I. Any miss fails the job (and so blocks a release). Exceptions: libffmpeg.so
+      # when HAVE_FFMPEG=0 (already reported above), and the Chaquopy asset path guess.
+      - name: Verify APK (native libs, extractNativeLibs, 16 KiB alignment, yt-dlp-ejs)
+        run: |
+          BT="$ANDROID_HOME/build-tools/$BUILD_TOOLS"
+          G=src-tauri/plugins/keepsake-media/android/build.gradle.kts
+          EJS_PIN="$(sed -n 's/.*install("yt-dlp-ejs==\([^"]*\)").*/\1/p' "$G")"
+          for apk in apk-out/*.apk; do
+            echo "=== $apk ($(stat -c %s "$apk") bytes)"
+            # 1. Executables packaged as lib/arm64-v8a/lib*.so. Legacy packaging stores them deflated.
+            unzip -v "$apk" 'lib/arm64-v8a/*' > "$RUNNER_TEMP/libs.txt" || true
+            cat "$RUNNER_TEMP/libs.txt"
+            grep -q 'lib/arm64-v8a/libqjs\.so$' "$RUNNER_TEMP/libs.txt" || { echo "::error::$apk: lib/arm64-v8a/libqjs.so missing"; exit 1; }
+            if grep -q 'lib/arm64-v8a/libffmpeg\.so$' "$RUNNER_TEMP/libs.txt"; then
+              echo "libffmpeg.so present"
+            elif [ "$HAVE_FFMPEG" = 1 ]; then
+              echo "::error::$apk: lib/arm64-v8a/libffmpeg.so missing although it was in jniLibs"; exit 1
+            else
+              echo "::warning::$apk: no libffmpeg.so (built without ffmpeg, see the error above)"
+            fi
+            # 2. extractNativeLibs must not be false (exec is only allowed from nativeLibraryDir).
+            "$BT/aapt2" dump xmltree --file AndroidManifest.xml "$apk" > "$RUNNER_TEMP/manifest.txt"
+            line="$(grep -m1 'extractNativeLibs' "$RUNNER_TEMP/manifest.txt" || true)"
+            echo "manifest: ${line:-<extractNativeLibs not set>}"
+            case "$line" in
+              "") echo "::notice::$apk: extractNativeLibs not set (platform default is true)" ;;
+              *=true*|*0xffffffff*) echo "extractNativeLibs=true" ;;
+              *) echo "::error::$apk: extractNativeLibs is not true: $line (useLegacyPackaging patch missing?)"; exit 1 ;;
+            esac
+            # useLegacyPackaging=true stores .so entries deflated; "Stored" means the patch did not apply.
+            if grep -q 'Stored.*lib/arm64-v8a/libqjs\.so$' "$RUNNER_TEMP/libs.txt"; then
+              echo "::warning::$apk: libqjs.so is stored uncompressed: useLegacyPackaging is probably off"
+            fi
+            # 3. 16 KiB page alignment (Android 15+ devices with 16 KiB pages, future Play upload).
+            #    Only uncompressed .so entries are checked; with legacy packaging the ELF p_align check
+            #    in "Check bundled executables" is what covers 16 KiB devices.
+            "$BT/zipalign" -c -P 16 -v 4 "$apk" > "$RUNNER_TEMP/zipalign.txt" 2>&1 \
+              || { tail -n 30 "$RUNNER_TEMP/zipalign.txt"; echo "::error::$apk: zipalign -c -P 16 4 failed"; exit 1; }
+            echo "zipalign -P 16: OK"
+            # 4. yt_dlp_ejs inside Chaquopy's pip requirements (assets/chaquopy/requirements-*.imy, zip
+            #    files). The asset path is the only guess here: if no such asset exists, warn only.
+            python3 - "$apk" "$EJS_PIN" <<'PY'
+          import io, re, sys, zipfile
+          apk, pin = sys.argv[1], sys.argv[2]
+          outer = zipfile.ZipFile(apk)
+          imys = [n for n in outer.namelist() if re.fullmatch(r"assets/chaquopy/requirements[^/]*\.imy", n)]
+          print("Chaquopy requirement assets:", imys)
+          if not imys:
+              print("::warning::%s: no assets/chaquopy/requirements*.imy (asset path guess failed); yt_dlp_ejs NOT checked" % apk)
+              sys.exit(0)
+          names = []
+          for n in imys:
+              names += zipfile.ZipFile(io.BytesIO(outer.read(n))).namelist()
+          if not any(n.startswith("yt_dlp_ejs/") for n in names):
+              sys.exit("::error::%s: yt_dlp_ejs/ not found in %s" % (apk, imys))
+          dist = sorted({n.split("/")[0] for n in names if re.match(r"yt_dlp_ejs-[^/]+\.dist-info/", n)})
+          print("yt_dlp_ejs present; dist-info:", dist)
+          if dist and dist != ["yt_dlp_ejs-%s.dist-info" % pin]:
+              sys.exit("::error::%s: yt_dlp_ejs %s dist-info not found (got %s)" % (apk, pin, dist))
+          PY
+          done
+
   # Runs only for version tags (git tag v2.1.0 && git push origin v2.1.0). Collects every
   # platform artifact into a DRAFT GitHub Release, so you review it before publishing.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     # Android-only for now: windows and linux are disabled above. Add them back to this list
-    # when those jobs are re-enabled.
-    needs: [android]
+    # when those jobs are re-enabled. android-ffmpeg is listed so a release never ships an APK
+    # without ffmpeg; its keepsake-android-ffmpeg-sources artifact (LGPL sources) is attached.
+    needs: [android, android-ffmpeg]
     runs-on: ubuntu-latest
     permissions:
       contents: write

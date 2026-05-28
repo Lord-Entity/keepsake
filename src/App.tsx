@@ -8,6 +8,7 @@ import { Titlebar } from "./components/layout/Titlebar";
 import { Button, IconButton } from "./components/ui/Button";
 import { Fab } from "./components/ui/Fab";
 import { Toasts } from "./components/ui/Toasts";
+import { pageForKey } from "./components/layout/nav-items";
 import { AddLinkDialog } from "./pages/AddLink";
 import { cancelAll, clearFinished, useHasFinished } from "./state/downloads";
 import { refreshBinaries, versionsLine } from "./state/engine";
@@ -15,13 +16,14 @@ import { isMac } from "./state/format";
 import { useIsNarrowWindow, useIsPhone } from "./state/hooks";
 import { initLibrary } from "./state/library";
 import { showWindow } from "./state/native";
-import { emit, emitOn, navigate, openAddLink, PAGES, usePage, type Page } from "./state/nav";
+import { emit, emitOn, navigate, openAddLink, usePage, type Page } from "./state/nav";
 import { initSettings, toggleDarkLight, updateSettings, useSettings } from "./state/settings";
 
 // Pages load on demand so the first paint only pulls the shell.
 const HomePage = lazy(() => import("./pages/Home").then((m) => ({ default: m.HomePage })));
 const DownloadsPage = lazy(() => import("./pages/Downloads").then((m) => ({ default: m.DownloadsPage })));
 const LibraryPage = lazy(() => import("./pages/Library").then((m) => ({ default: m.LibraryPage })));
+const EditorPage = lazy(() => import("./pages/Editor").then((m) => ({ default: m.EditorPage })));
 const FavoritesPage = lazy(() => import("./pages/Favorites").then((m) => ({ default: m.FavoritesPage })));
 const SourcesPage = lazy(() => import("./pages/Sources").then((m) => ({ default: m.SourcesPage })));
 const SettingsPage = lazy(() => import("./pages/Settings").then((m) => ({ default: m.SettingsPage })));
@@ -168,7 +170,7 @@ function Shell() {
     }
   }, [narrowWindow, collapsedPref]);
 
-  // Keyboard shortcuts (UI_CONTENT.md section 7). Mod+1..6 follow the sidebar order.
+  // Keyboard shortcuts (UI_CONTENT.md section 7). Mod+1..7 jump to pages (keys live in nav-items).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = isMac ? e.metaKey : e.ctrlKey;
@@ -184,12 +186,13 @@ function Shell() {
         }
         return;
       }
+      const target = pageForKey(k);
       if (k === "b" && !phone) {
         e.preventDefault();
         toggleSidebar();
-      } else if (k >= "1" && k <= String(PAGES.length)) {
+      } else if (target) {
         e.preventDefault();
-        navigate(PAGES[Number(k) - 1]);
+        navigate(target);
       } else if (k === "l") {
         e.preventDefault();
         emitOn("home", "focus-paste");
@@ -241,8 +244,9 @@ function Shell() {
       </Button>
     ) : null;
 
+  // No FAB on Settings, nor on Editor where it would cover the timeline and export bar.
   const fab =
-    page === "settings" ? null : (
+    page === "settings" || page === "editor" ? null : (
       <Fab
         phone={phone}
         className={
@@ -322,6 +326,8 @@ function PageView({ page, phone, onSupportedSites }: { page: Page; phone: boolea
       return <DownloadsPage phone={phone} />;
     case "library":
       return <LibraryPage phone={phone} />;
+    case "editor":
+      return <EditorPage phone={phone} />;
     case "favorites":
       return <FavoritesPage phone={phone} />;
     case "sources":

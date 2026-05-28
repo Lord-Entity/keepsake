@@ -61,6 +61,11 @@ export interface VideoInfo {
   playlistCount?: number;
   /** Which backend produced this info. "ytdlp" = desktop sidecar, or Chaquopy yt-dlp on Android (TikTok/Instagram). */
   source: "youtubei" | "ytdlp";
+  /**
+   * Android only: true when the info came from the self-contained yt-dlp route (bundled JS runtime + EJS + ffmpeg),
+   * so formats are unfiltered (HLS/DASH kept) and the download goes through yt-dlp's own selectors and merge.
+   */
+  ytdlpFull?: boolean;
 }
 
 /** One choice in the FormatPicker. */

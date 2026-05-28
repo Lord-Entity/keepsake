@@ -14,7 +14,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.7", features = [] }
 
 [dependencies]
-tauri = { version = "2.12", features = [] }
+# protocol-asset: editor previews via convertFileSrc. The static asset scope is empty; plugin-dialog
+# grants each picked file at runtime (tauri::scope::Scopes::allow_file covers the asset scope).
+tauri = { version = "2.12", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2.8"
 tauri-plugin-opener = "2.7"
 # unsafe-headers: let the engine send Origin/Referer as youtube.com instead of the

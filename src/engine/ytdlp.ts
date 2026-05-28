@@ -313,6 +313,53 @@ export function keepTempOnFailure(jobId: string, outDir: string): string {
 const FILE_TEMPLATE = "%(title).80B [%(id)s].%(ext)s";
 const PLAYLIST_TEMPLATE = "%(playlist_title)s/%(playlist_index)s - %(title).80B [%(id)s].%(ext)s";
 
+/** Format-selection argv shared by desktop (buildDownloadArgs) and Android (self-contained yt-dlp). Video and audio only. */
+export function selectionArgs(
+  req: Pick<DownloadRequest, "formatId" | "info" | "streamId" | "preferH264" | "embedVideoMeta" | "audioBitrate" | "embedThumbnail">,
+  opts: { platform: "desktop" | "android"; heightFallback?: boolean },
+): string[] {
+  const [kind, value = ""] = req.formatId.split(":");
+  const a: string[] = [];
+  if (kind === "video") {
+    const h = value === "best" ? 0 : Number.parseInt(value, 10) || 0;
+    const cap = h ? `[height<=${h}]` : "";
+    if (opts.platform === "android") {
+      a.push("-f", `bestvideo${cap}+bestaudio/best${cap}/best`);
+      if (req.preferH264) a.push("-S", "res,fps,vcodec:h264,acodec:aac");
+      a.push("--merge-output-format", "mp4/mkv");
+      return a;
+    }
+    const picked = !opts.heightFallback && req.streamId && req.info?.streams.find((st) => st.id === req.streamId);
+    if (picked) {
+      a.push("-f", picked.kind === "video-only" ? `${picked.id}+bestaudio[ext=m4a]/${picked.id}+bestaudio` : picked.id);
+    } else {
+      a.push("-f", `bestvideo${cap}+bestaudio/best${cap}/best`);
+      if (req.preferH264) a.push("-S", "res,fps,vcodec:h264,acodec:aac");
+    }
+    a.push("--merge-output-format", "mp4/mkv");
+    // Each embed pass rewrites the whole video file, so video embeds are opt-in (Settings, default off).
+    if (req.embedVideoMeta === true) a.push("--embed-thumbnail", "--convert-thumbnails", "jpg", "--embed-metadata");
+    return a;
+  }
+  if (kind === "audio") {
+    const fmt = value || "mp3";
+    if (opts.platform === "android") {
+      // WAV is transcoded from the M4A afterwards by the caller.
+      if (fmt === "m4a" || fmt === "wav") return ["-f", "bestaudio[ext=m4a]/bestaudio/best", "-x", "--audio-format", "m4a"];
+      return fail("format_unavailable", req.formatId);
+    }
+    a.push(...audioSelection(fmt, req.info));
+    if (fmt === "mp3" || fmt === "opus") a.push("--audio-quality", `${req.audioBitrate ?? 192}K`);
+    // Python bug not ported: never embed into WebM. Embed cover art for mp3/m4a only (Settings, default on).
+    if (req.embedThumbnail !== false && (fmt === "mp3" || fmt === "m4a")) {
+      a.push("--embed-thumbnail", "--convert-thumbnails", "jpg");
+    }
+    a.push("--embed-metadata");
+    return a;
+  }
+  return fail("format_unavailable", req.formatId);
+}
+
 /** Build the yt-dlp argument list for a download (exported for tests). */
 export function buildDownloadArgs(
   req: DownloadRequest,
@@ -356,28 +403,9 @@ export function buildDownloadArgs(
   const [kind, value = ""] = req.formatId.split(":");
 
   if (kind === "video") {
-    a.push("-o", outTmpl);
-    const h = value === "best" ? 0 : Number.parseInt(value, 10) || 0;
-    const cap = h ? `[height<=${h}]` : "";
-    const picked = !opts.heightFallback && req.streamId && req.info?.streams.find((st) => st.id === req.streamId);
-    if (picked) {
-      a.push("-f", picked.kind === "video-only" ? `${picked.id}+bestaudio[ext=m4a]/${picked.id}+bestaudio` : picked.id);
-    } else {
-      a.push("-f", `bestvideo${cap}+bestaudio/best${cap}/best`);
-      if (req.preferH264) a.push("-S", "res,fps,vcodec:h264,acodec:aac");
-    }
-    a.push("--merge-output-format", "mp4/mkv");
-    // Each embed pass rewrites the whole video file, so video embeds are opt-in (Settings, default off).
-    if (req.embedVideoMeta === true) a.push("--embed-thumbnail", "--convert-thumbnails", "jpg", "--embed-metadata");
+    a.push("-o", outTmpl, ...selectionArgs(req, { platform: "desktop", heightFallback: opts.heightFallback }));
   } else if (kind === "audio") {
-    const fmt = value || "mp3";
-    a.push("-o", outTmpl, ...audioSelection(fmt, req.info));
-    if (fmt === "mp3" || fmt === "opus") a.push("--audio-quality", `${req.audioBitrate ?? 192}K`);
-    // Python bug not ported: never embed into WebM. Embed cover art for mp3/m4a only (Settings, default on).
-    if (req.embedThumbnail !== false && (fmt === "mp3" || fmt === "m4a")) {
-      a.push("--embed-thumbnail", "--convert-thumbnails", "jpg");
-    }
-    a.push("--embed-metadata");
+    a.push("-o", outTmpl, ...selectionArgs(req, { platform: "desktop", heightFallback: opts.heightFallback }));
   } else if (kind === "thumb") {
     a.push("--skip-download", "--write-thumbnail", "-o", "thumbnail:%(title).80B [%(id)s]_thumb.%(ext)s");
     if (value === "png" || value === "jpg") a.push("--convert-thumbnails", value);
@@ -413,6 +441,63 @@ export function parseProgressLine(line: string): Partial<DownloadProgress> | nul
     playlistIndex: num(pIdx),
     playlistCount: num(nEntries),
   };
+}
+
+/** yt-dlp names a per-format part `<stem> [<id>].f<format_id>.<ext>` (prepend_extension); both templates end in `[%(id)s]`. */
+const PART_RE = /\]\.f[^.\\/]+\.[A-Za-z0-9]+$/;
+
+/**
+ * True for a yt-dlp per-format part (`.f137.mp4`, `.f251.webm`): never a deliverable file (exported for tests).
+ * `name`: the literal file name given to yt-dlp (Android `<name>.%(ext)s`), checked exactly as `<name>.f<id>.<ext>`.
+ */
+export function isFormatPart(path: string, name?: string): boolean {
+  if (!name) return PART_RE.test(path);
+  const file = path.split(/[\\/]/).pop() ?? "";
+  return file.startsWith(`${name}.`) && /^f[^.\\/]+\.[A-Za-z0-9]+$/.test(file.slice(name.length + 1));
+}
+
+/**
+ * Watches yt-dlp output for a skipped merge (exported for tests). A video that downloaded `.fNNN` parts must run
+ * the `Merger` postprocessor before its `after_move` print; without it (ffmpeg not found, a warning that
+ * `--no-warnings` hides and `-i` makes non-fatal) yt-dlp moves the bare video-only and audio-only parts into the
+ * output folder and still exits 0. `done()` returns those parts for that video (empty when it merged), then resets.
+ */
+export function mergeTracker() {
+  let parts = new Set<string>();
+  let merged = false;
+  return {
+    line(line: string): void {
+      const i = line.indexOf("KEEPSAKE|");
+      if (i >= 0) {
+        const file = line.slice(i).split("|").slice(9).join("|").trim();
+        if (isFormatPart(file)) parts.add(file);
+      } else if (line.includes("KEEPSAKE_PP|") && line.split("|")[2]?.trim() === "Merger") {
+        merged = true;
+      }
+    },
+    done(finalPath: string): string[] {
+      const left = merged ? [] : [...parts];
+      if (isFormatPart(finalPath) && !left.includes(finalPath)) left.push(finalPath);
+      parts = new Set();
+      merged = false;
+      return left;
+    },
+  };
+}
+
+/** Slash- and case-insensitive form of a path, for prefix checks only. */
+function normPath(p: string): string {
+  return p.replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
+}
+
+const mergeError = (): AppError =>
+  appError("ffmpeg_missing", "Video and audio were downloaded separately but not merged; the parts were deleted.");
+
+/** Where yt-dlp moved a part from `tempDir` into `outDir` (`-P temp:` / `-P home:` keep the relative path). */
+export function movedPartPath(part: string, tempDir: string, outDir: string): string {
+  const t = normPath(tempDir);
+  if (!normPath(part).startsWith(`${t}/`)) return part;
+  return `${outDir.replace(/[\\/]+$/, "")}${sep(outDir)}${part.slice(tempDir.replace(/[\\/]+$/, "").length + 1)}`;
 }
 
 /**
@@ -468,10 +553,22 @@ async function downloadOnce(
   const files: string[] = [];
   const errors: string[] = [];
   const failedIdx = new Set<string>();
+  const merge = mergeTracker();
+  const unmerged: string[] = [];
   const r = await runYtdlp(
     req.id,
     args,
     (line) => {
+      merge.line(line);
+      if (line.startsWith("KEEPSAKE_DONE|")) {
+        const left = merge.done(line.slice("KEEPSAKE_DONE|".length));
+        if (left.length > 0) {
+          // Skipped merge: the parts are not a result. Count the video as failed, delete them below.
+          unmerged.push(...left);
+          failedIdx.add(String(last.playlistIndex ?? `unmerged-${unmerged.length}`));
+          return;
+        }
+      }
       const p = parseProgressLine(line);
       if (p) {
         last = { ...last, ...p, id: req.id };
@@ -492,13 +589,25 @@ async function downloadOnce(
     tempDir,
     isCancelled,
   );
+  // Deliver exactly one file per video: never leave unmerged video-only/audio-only parts in the user's folder.
+  if (unmerged.length > 0) {
+    // Loaded lazily: tests mock "@tauri-apps/api/core" process-wide without `Resource`, which plugin-fs links against.
+    const fs = await import("@tauri-apps/plugin-fs").catch(() => undefined);
+    for (const part of new Set(unmerged.map((p) => movedPartPath(p, tempDir, outDir)))) {
+      await fs?.remove(part).catch(() => undefined);
+    }
+  }
   if (isCancelled()) return { ...last, status: "cancelled", error: appError("cancelled") };
   const finalPath = files[files.length - 1];
   const count = last.playlistCount;
+  if (!(count && count > 1) && unmerged.length > 0) {
+    return { ...last, status: "failed", error: mergeError() };
+  }
   if (count && count > 1) {
     // Playlist: "N videos, M failed"; all failed = error.
     if (files.length === 0) {
-      return { ...last, status: "failed", error: friendlyError(lastError(errors.length ? errors : r.stderr)) };
+      const err = unmerged.length > 0 && errors.length === 0 ? mergeError() : friendlyError(lastError(errors.length ? errors : r.stderr));
+      return { ...last, status: "failed", error: err };
     }
     const failed = failedIdx.size;
     const err =

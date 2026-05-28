@@ -295,6 +295,90 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the editor_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-editor-cancel",
+          "markdownDescription": "Enables the editor_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the editor_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-editor-cancel",
+          "markdownDescription": "Denies the editor_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the editor_export_video command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-editor-export-video",
+          "markdownDescription": "Enables the editor_export_video command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the editor_export_video command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-editor-export-video",
+          "markdownDescription": "Denies the editor_export_video command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the editor_probe command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-editor-probe",
+          "markdownDescription": "Enables the editor_probe command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the editor_probe command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-editor-probe",
+          "markdownDescription": "Denies the editor_probe command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the folder_pick command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-folder-pick",
+          "markdownDescription": "Enables the folder_pick command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the folder_pick command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-folder-pick",
+          "markdownDescription": "Denies the folder_pick command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the folder_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-folder-save",
+          "markdownDescription": "Enables the folder_save command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the folder_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-folder-save",
+          "markdownDescription": "Denies the folder_save command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the folder_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-folder-status",
+          "markdownDescription": "Enables the folder_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the folder_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-folder-status",
+          "markdownDescription": "Denies the folder_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the gallery_publish command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-gallery-publish",
+          "markdownDescription": "Enables the gallery_publish command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the gallery_publish command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-gallery-publish",
+          "markdownDescription": "Denies the gallery_publish command without any pre-configured scope."
+        },
+        {
           "description": "Enables the open_file command without any pre-configured scope.",
           "type": "string",
           "const": "allow-open-file",
@@ -305,6 +389,30 @@
           "type": "string",
           "const": "deny-open-file",
           "markdownDescription": "Denies the open_file command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the register_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-register-listener",
+          "markdownDescription": "Enables the register_listener command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the register_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-register-listener",
+          "markdownDescription": "Denies the register_listener command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-listener",
+          "markdownDescription": "Enables the remove_listener command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-listener",
+          "markdownDescription": "Denies the remove_listener command without any pre-configured scope."
         },
         {
           "description": "Enables the transcode command without any pre-configured scope.",
@@ -319,10 +427,70 @@
           "markdownDescription": "Denies the transcode command without any pre-configured scope."
         },
         {
-          "description": "Allows the transcode command (Android audio conversion to M4A or WAV) and open_file (open a download in another app).\n#### This default permission set includes:\n\n- `allow-transcode`\n- `allow-open-file`",
+          "description": "Enables the ytdlp_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ytdlp-cancel",
+          "markdownDescription": "Enables the ytdlp_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ytdlp_cancel command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ytdlp-cancel",
+          "markdownDescription": "Denies the ytdlp_cancel command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ytdlp_download command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ytdlp-download",
+          "markdownDescription": "Enables the ytdlp_download command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ytdlp_download command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ytdlp-download",
+          "markdownDescription": "Denies the ytdlp_download command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ytdlp_info command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ytdlp-info",
+          "markdownDescription": "Enables the ytdlp_info command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ytdlp_info command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ytdlp-info",
+          "markdownDescription": "Denies the ytdlp_info command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ytdlp_mux command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ytdlp-mux",
+          "markdownDescription": "Enables the ytdlp_mux command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ytdlp_mux command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ytdlp-mux",
+          "markdownDescription": "Denies the ytdlp_mux command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ytdlp_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ytdlp-status",
+          "markdownDescription": "Enables the ytdlp_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ytdlp_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ytdlp-status",
+          "markdownDescription": "Denies the ytdlp_status command without any pre-configured scope."
+        },
+        {
+          "description": "Allows the transcode command (Android audio conversion to M4A or WAV) and open_file (open a download in another app), and ytdlp_status / ytdlp_info / ytdlp_download / ytdlp_cancel / ytdlp_mux (yt-dlp with bundled QuickJS and ffmpeg for TikTok, Instagram and YouTube on Android), gallery_publish (save a finished download to the Android Gallery via MediaStore), folder_pick / folder_status / folder_save (save into a user-chosen folder through the Storage Access Framework), editor_probe / editor_export_video / editor_cancel (video crop, trim and mute export on Media3 Transformer), and register_listener / remove_listener (the keepsake-editor-progress plugin event).\n#### This default permission set includes:\n\n- `allow-transcode`\n- `allow-open-file`\n- `allow-ytdlp-status`\n- `allow-ytdlp-info`\n- `allow-ytdlp-download`\n- `allow-ytdlp-cancel`\n- `allow-ytdlp-mux`\n- `allow-gallery-publish`\n- `allow-folder-pick`\n- `allow-folder-status`\n- `allow-folder-save`\n- `allow-editor-probe`\n- `allow-editor-export-video`\n- `allow-editor-cancel`\n- `allow-register-listener`\n- `allow-remove-listener`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Allows the transcode command (Android audio conversion to M4A or WAV) and open_file (open a download in another app).\n#### This default permission set includes:\n\n- `allow-transcode`\n- `allow-open-file`"
+          "markdownDescription": "Allows the transcode command (Android audio conversion to M4A or WAV) and open_file (open a download in another app), and ytdlp_status / ytdlp_info / ytdlp_download / ytdlp_cancel / ytdlp_mux (yt-dlp with bundled QuickJS and ffmpeg for TikTok, Instagram and YouTube on Android), gallery_publish (save a finished download to the Android Gallery via MediaStore), folder_pick / folder_status / folder_save (save into a user-chosen folder through the Storage Access Framework), editor_probe / editor_export_video / editor_cancel (video crop, trim and mute export on Media3 Transformer), and register_listener / remove_listener (the keepsake-editor-progress plugin event).\n#### This default permission set includes:\n\n- `allow-transcode`\n- `allow-open-file`\n- `allow-ytdlp-status`\n- `allow-ytdlp-info`\n- `allow-ytdlp-download`\n- `allow-ytdlp-cancel`\n- `allow-ytdlp-mux`\n- `allow-gallery-publish`\n- `allow-folder-pick`\n- `allow-folder-status`\n- `allow-folder-save`\n- `allow-editor-probe`\n- `allow-editor-export-video`\n- `allow-editor-cancel`\n- `allow-register-listener`\n- `allow-remove-listener`"
         }
       ]
     }

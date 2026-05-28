@@ -12,6 +12,7 @@ import { RadioGroup } from "../components/ui/RadioGroup";
 import { Switch } from "../components/ui/Switch";
 import { getPlatform, healthOf, refreshBinaries, useBinaries, versionsLine } from "../state/engine";
 import { collectDiagnostics } from "../engine/diagnostics";
+import { androidYtdlpStatus, type YtdlpStatus } from "../engine/android-ytdlp";
 import { pickAndroidFolder } from "../engine/android-folder";
 import { GALLERY_SAVE } from "../engine/android-gallery";
 import { useWidth } from "../state/hooks";
@@ -50,6 +51,21 @@ export function SettingsPage({ phone, onSupportedSites }: { phone: boolean; onSu
   useEffect(() => {
     if (platform === "android") void androidFolders().then((l) => setAndroidDirs(l.filter((f) => f.key !== "gallery")));
   }, [platform]);
+  const [ytdlp, setYtdlp] = useState<YtdlpStatus | null | undefined>(undefined);
+  useEffect(() => {
+    if (platform !== "android") return;
+    let alive = true;
+    void androidYtdlpStatus().then((st) => {
+      if (alive) setYtdlp(st);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [platform]);
+  const recheckYtdlp = () => {
+    setYtdlp(undefined);
+    void androidYtdlpStatus({ refresh: true }).then(setYtdlp);
+  };
   const reduced = useReducedMotion();
   const ref = useRef<HTMLDivElement>(null);
   const width = useWidth(ref);
@@ -243,7 +259,10 @@ export function SettingsPage({ phone, onSupportedSites }: { phone: boolean; onSu
             <Button size="sm" variant="ghost" icon="copy" className="shrink-0" onClick={() => void copyDiagnostics()}>
               Copy diagnostics
             </Button>
-            <Button size="sm" variant="ghost" icon="retry" className="shrink-0" onClick={() => void refreshBinaries()}>
+            <Button size="sm" variant="ghost" icon="retry" className="shrink-0" onClick={() => {
+                void refreshBinaries();
+                if (platform === "android") recheckYtdlp();
+              }}>
               Check
             </Button>
           </div>
@@ -266,6 +285,46 @@ export function SettingsPage({ phone, onSupportedSites }: { phone: boolean; onSu
             {healthText}
           </Badge>
         </div>
+        {platform === "android" && (
+          <dl className="mt-3 flex min-w-0 flex-col gap-1.5">
+            {ytdlp === undefined ? (
+              <Skeleton className="h-3 w-40" />
+            ) : ytdlp === null ? (
+              <span className="text-fg-2">Status unavailable</span>
+            ) : (
+              <>
+                {(
+                  [
+                    ["yt-dlp", ytdlp.ytdlp],
+                    ["EJS solver", ytdlp.ejs],
+                    ["JS runtime", ytdlp.jsRuntime],
+                    ["ffmpeg", ytdlp.ffmpeg],
+                  ] as const
+                ).map(([label, value]) => (
+                  <div key={label} className="flex min-w-0 items-baseline gap-2">
+                    <dt className="w-24 shrink-0 text-fg-2">{label}</dt>
+                    <dd
+                      className={`min-w-0 truncate font-mono text-[12px] ${value ? "text-fg-2" : "text-danger"}`}
+                      title={value ?? "missing"}
+                    >
+                      {value ?? "missing"}
+                    </dd>
+                  </div>
+                ))}
+                <div className="flex min-w-0 items-baseline gap-2">
+                  <dt className="w-24 shrink-0 text-fg-2">Self-contained</dt>
+                  <dd
+                    className={`min-w-0 truncate font-mono text-[12px] ${ytdlp.ready ? "text-fg-2" : "text-danger"}`}
+                    title={ytdlp.problems.join(", ")}
+                  >
+                    {ytdlp.ready ? "Ready" : "Not ready"}
+                    {ytdlp.problems.length > 0 ? ` (${ytdlp.problems.join(", ")})` : ""}
+                  </dd>
+                </div>
+              </>
+            )}
+          </dl>
+        )}
         <button
           type="button"
           onClick={onSupportedSites}

@@ -52,20 +52,26 @@ class OpenArgs {
   lateinit var path: String
 }
 
-/** Arguments of the `ytdlpInfo` command: {url}. */
+/** Arguments of the `ytdlpInfo` command: {url, full?}. `full` enables the bundled JS runtime / ffmpeg route. */
 @InvokeArg
 class YtdlpInfoArgs {
   lateinit var url: String
+  var full: Boolean = false
 }
 
-/** Arguments of the `ytdlpDownload` command: {url, formatId, outDir, fileName?, jobId}. */
+/**
+ * Arguments of the `ytdlpDownload` command: {url, formatId?, args?, outDir, fileName?, jobId, full?}.
+ * Exactly one of formatId (one concrete id, or two joined by one "+") and args (selection argv) is set.
+ */
 @InvokeArg
 class YtdlpDownloadArgs {
   lateinit var url: String
-  lateinit var formatId: String
+  var formatId: String? = null
+  var args: Array<String>? = null
   lateinit var outDir: String
   var fileName: String? = null
   lateinit var jobId: String
+  var full: Boolean = false
 }
 
 /** Arguments of the `ytdlpCancel` command: {jobId}. */
@@ -111,6 +117,32 @@ class FolderSaveArgs {
   lateinit var treeUri: String
   lateinit var fileName: String
   lateinit var mime: String
+}
+
+/** Arguments of `editorProbe`: {uri} (content:// URI or absolute file path). */
+@InvokeArg
+class EditorProbeArgs {
+  lateinit var uri: String
+}
+
+/** Crop rectangle of `editorExportVideo`, in display-oriented source pixels. */
+@InvokeArg
+class EditorCropArgs {
+  var x: Double = 0.0
+  var y: Double = 0.0
+  var w: Double = 0.0
+  var h: Double = 0.0
+}
+
+/** Arguments of `editorExportVideo`: {uri, outPath, crop?, trimStart?, trimEnd?, audio}. Times in seconds. */
+@InvokeArg
+class EditorExportArgs {
+  lateinit var uri: String
+  lateinit var outPath: String
+  var crop: EditorCropArgs? = null
+  var trimStart: Double? = null
+  var trimEnd: Double? = null
+  var audio: Boolean = true
 }
 
 internal class MediaError(message: String, val code: String = "unknown") : Exception(message)
@@ -265,7 +297,23 @@ class KeepsakeMediaPlugin(private val activity: Activity) : Plugin(activity) {
     return f
   }
 
-  /** TikTok/Instagram metadata through yt-dlp (Python). Resolves {ok, info}; rejects "ytdlp:<code>: <message>". */
+  /**
+   * Self-check of the bundled yt-dlp route. Resolves {ytdlp, ejs, jsRuntime, ffmpeg, ready, problems};
+   * rejects "ytdlp:unknown: <message>" only when Python itself fails.
+   */
+  @Command
+  fun ytdlpStatus(invoke: Invoke) {
+    KeepsakeYtdlp.infoExecutor.execute {
+      try {
+        val r = KeepsakeYtdlp.status(activity)
+        invoke.resolve(JSObject(r.toString()))
+      } catch (e: Throwable) {
+        invoke.reject("ytdlp:unknown: ${e.message ?: e.toString()}")
+      }
+    }
+  }
+
+  /** TikTok/Instagram/YouTube metadata through yt-dlp (Python). Resolves {ok, info}; rejects "ytdlp:<code>: <message>". */
   @Command
   fun ytdlpInfo(invoke: Invoke) {
     val args = try {
@@ -276,7 +324,7 @@ class KeepsakeMediaPlugin(private val activity: Activity) : Plugin(activity) {
     }
     KeepsakeYtdlp.infoExecutor.execute {
       try {
-        val r = KeepsakeYtdlp.info(activity, args.url)
+        val r = KeepsakeYtdlp.info(activity, args.url, args.full)
         invoke.resolve(JSObject(r.toString()))
       } catch (e: YtdlpError) {
         invoke.reject("ytdlp:${e.code}: ${e.message}")
@@ -286,7 +334,10 @@ class KeepsakeMediaPlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
-  /** Downloads one concrete yt-dlp format into outDir. Resolves {path, bytes}; rejects "ytdlp:<code>: <message>". */
+  /**
+   * Downloads into outDir: one concrete yt-dlp format (formatId, "a" or "a+b") or a selection argv (args).
+   * Resolves {path, bytes}; rejects "ytdlp:<code>: <message>".
+   */
   @Command
   fun ytdlpDownload(invoke: Invoke) {
     val args = try {
@@ -295,11 +346,19 @@ class KeepsakeMediaPlugin(private val activity: Activity) : Plugin(activity) {
       invoke.reject("ytdlp:unknown: Invalid ytdlp_download arguments: ${e.message}")
       return
     }
+    val formatId = args.formatId?.takeIf { it.isNotEmpty() }
+    val selection = args.args?.toList()?.takeIf { it.isNotEmpty() }
+    if ((formatId == null) == (selection == null)) {
+      invoke.reject("ytdlp:unknown: Invalid ytdlp_download arguments: exactly one of formatId and args is required.")
+      return
+    }
     KeepsakeYtdlp.executor.execute {
       try {
         val dir = checkedPath(args.outDir, "output folder")
         if (!dir.isDirectory && !dir.mkdirs()) throw MediaError("Can't create folder ${dir.path}", "permission")
-        val r = KeepsakeYtdlp.download(activity, args.url, args.formatId, dir.path, args.fileName, args.jobId)
+        val r = KeepsakeYtdlp.download(
+          activity, args.url, formatId, dir.path, args.fileName, args.jobId, selection, args.full,
+        )
         val ret = JSObject()
         ret.put("path", r.getString("path"))
         ret.put("bytes", r.getLong("bytes"))
@@ -538,6 +597,126 @@ class KeepsakeMediaPlugin(private val activity: Activity) : Plugin(activity) {
       } catch (e: Throwable) {
         folderReject(invoke, e)
       }
+    }
+  }
+
+  // ---------------- editor (KeepsakeEditor, Media3 Transformer) ----------------
+
+  private fun editorReject(invoke: Invoke, e: Throwable) {
+    val code = when (e) {
+      is EditorError -> e.code.takeIf { it in EDITOR_CODES } ?: "export_failed"
+      is SecurityException -> "permission"
+      else -> "export_failed"
+    }
+    invoke.reject("editor:$code: ${e.message ?: e.toString()}")
+  }
+
+  /** The video to edit: a content:// URI (picker grant) or a file inside the allowed roots. */
+  private fun editorSource(raw: String): Uri {
+    if (raw.startsWith("content://")) {
+      val u = try { Uri.parse(raw) } catch (e: Exception) { null }
+      if (u == null || u.scheme != "content" || u.authority.isNullOrEmpty()) {
+        throw EditorError("Invalid video address.", "unsupported")
+      }
+      return u
+    }
+    val f = try {
+      checkedPath(raw, "video")
+    } catch (e: MediaError) {
+      throw EditorError(e.message ?: "The video path is not allowed.", "permission")
+    }
+    if (!f.isFile) throw EditorError("Video file not found: ${f.path}", "unsupported")
+    return Uri.fromFile(f)
+  }
+
+  /**
+   * Export target: an .mp4 inside the allowed roots (app cache for gallery/folder staging, or the
+   * legacy-mode Downloads/save folder). Canonical, so no ".." or symlink escape.
+   */
+  private fun editorOutput(raw: String): File {
+    val c = try {
+      checkedPath(raw, "output")
+    } catch (e: MediaError) {
+      throw EditorError(e.message ?: "The output path is not allowed.", "permission")
+    }
+    if (!c.name.lowercase(Locale.ROOT).endsWith(".mp4")) {
+      throw EditorError("The output must be an .mp4 file: $raw", "unsupported")
+    }
+    return c
+  }
+
+  /** Resolves {width, height, duration (s), hasAudio, rotation}; width/height are display-oriented. */
+  @Command
+  fun editorProbe(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(EditorProbeArgs::class.java)
+    } catch (e: Exception) {
+      invoke.reject("editor:unsupported: Invalid editor_probe arguments: ${e.message}")
+      return
+    }
+    worker.execute {
+      try {
+        val p = KeepsakeEditor.probe(activity, editorSource(args.uri))
+        val ret = JSObject()
+        ret.put("width", p.width)
+        ret.put("height", p.height)
+        ret.put("duration", p.durationMs / 1000.0)
+        ret.put("hasAudio", p.hasAudio)
+        ret.put("rotation", p.rotation)
+        invoke.resolve(ret)
+      } catch (e: Throwable) {
+        editorReject(invoke, e)
+      }
+    }
+  }
+
+  /**
+   * Crops / trims / mutes a video into an H.264+AAC MP4 at outPath. Resolves {path}; rejects
+   * "editor:<code>: <message>". Emits "keepsake-editor-progress" {fraction} while running.
+   */
+  @Command
+  fun editorExportVideo(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(EditorExportArgs::class.java)
+    } catch (e: Exception) {
+      invoke.reject("editor:unsupported: Invalid editor_export_video arguments: ${e.message}")
+      return
+    }
+    worker.execute {
+      try {
+        val src = editorSource(args.uri)
+        val out = editorOutput(args.outPath)
+        val crop = args.crop?.let { KeepsakeEditor.CropRect(it.x, it.y, it.w, it.h) }
+        val req = KeepsakeEditor.Request(src, out, crop, args.trimStart, args.trimEnd, args.audio)
+        KeepsakeEditor.export(
+          activity,
+          req,
+          { fraction ->
+            val ev = JSObject()
+            ev.put("fraction", fraction)
+            trigger(EDITOR_PROGRESS_EVENT, ev)
+          },
+          { file ->
+            val ret = JSObject()
+            ret.put("path", file.absolutePath)
+            invoke.resolve(ret)
+          },
+          { err -> editorReject(invoke, err) },
+        )
+      } catch (e: Throwable) {
+        editorReject(invoke, e)
+      }
+    }
+  }
+
+  /** Cancels the running export (its call rejects with editor:cancelled). Resolves {}. */
+  @Command
+  fun editorCancel(invoke: Invoke) {
+    try {
+      KeepsakeEditor.cancel()
+      invoke.resolve(JSObject())
+    } catch (e: Throwable) {
+      editorReject(invoke, e)
     }
   }
 
@@ -816,5 +995,7 @@ class KeepsakeMediaPlugin(private val activity: Activity) : Plugin(activity) {
     const val MAX_IDLE_POLLS = 500 // x 10 ms = 5 s without output after end of input
     const val MAX_WAV_DATA = 0xFFFFFFFFL - 36L
     val FOLDER_CODES = setOf("permission", "not_found", "no_space", "source_missing", "bad_uri", "io")
+    val EDITOR_CODES = setOf("unsupported", "cancelled", "no_space", "permission", "export_failed")
+    const val EDITOR_PROGRESS_EVENT = "keepsake-editor-progress"
   }
 }

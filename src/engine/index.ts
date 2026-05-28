@@ -5,11 +5,11 @@
  * satisfies `AppError` ({ code, message, detail, cookiesHint }). Use `toAppError(e)` to get a plain object.
  */
 import type { BinaryStatus, VideoInfo } from "../lib/types";
-import { fetchAndroidInfo, isAndroidYtdlpSupported } from "./android-ytdlp";
+import { fetchAndroidInfo, fetchAndroidYouTubeInfo, isAndroidYtdlpSupported } from "./android-ytdlp";
 import { EngineError, fail, toAppError } from "./errors";
 import { isDesktop, platform } from "./platform";
 import { fetchYouTubeInfo, isYouTubeUrl } from "./youtube";
-import { tryYouTubeViaYtdlp, youtubeRoute } from "./youtube-ytdlp";
+import { androidYtdlpReady, youtubeRoute } from "./youtube-ytdlp";
 import { canonicalYoutubeUrl } from "./youtube-urls";
 import { binaryVersions, fetchInfoYtdlp } from "./ytdlp";
 
@@ -57,11 +57,17 @@ async function fetchInfoInner(url: string, opts: FetchInfoOptions): Promise<Vide
       if (!canonicalYoutubeUrl(url) && /[?&]list=|\/playlist/i.test(url)) {
         fail("unsupported_url", "Playlists can be downloaded in the desktop app only.");
       }
-      // The yt-dlp route is currently off (it cannot mint a PO token); youtubei.js + section 1.3 does the work.
-      if (youtubeRoute(url) === "ytdlp") {
-        const info = await tryYouTubeViaYtdlp(url, opts.signal);
-        if (info) return info;
+      // Self-contained yt-dlp (bundled JS runtime + EJS + ffmpeg) when the build flag is on and the phone reports
+      // ready; any failure other than a cancel falls back to youtubei.js (today's path).
+      const canon = canonicalYoutubeUrl(url);
+      if (canon && youtubeRoute(url, await androidYtdlpReady()) === "ytdlp") {
         if (opts.signal?.aborted) fail("cancelled");
+        try {
+          return await fetchAndroidYouTubeInfo(canon, opts.signal, { full: true });
+        } catch (e) {
+          if (opts.signal?.aborted || toAppError(e).code === "cancelled") fail("cancelled");
+          console.warn("[keepsake] self-contained yt-dlp info failed, using youtubei.js:", toAppError(e).code);
+        }
       }
       return fetchYouTubeInfo(url);
     }

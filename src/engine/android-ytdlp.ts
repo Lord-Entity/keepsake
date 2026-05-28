@@ -12,8 +12,14 @@
  * VERIFIED (node_modules/@tauri-apps/api/core.d.ts 2.12.4): `invoke<T>(cmd, args?)`; plugin commands are
  *   addressed as "plugin:<name>|<command>".
  * INFERRED: Tauri may wrap the plugin's reject text, so mapYtdlpError searches for the "ytdlp:<code>:" marker.
- * No ffmpeg on Android: only single http(s) files are offered (no merge, no HLS/DASH). cookiesHint is always false
- * here because Android has no Settings > Cookies. Must not import download.ts, index.ts or formats.ts (no cycles).
+ * Legacy route (TikTok / Instagram, and YouTube when the self-contained route is not ready): only single http(s)
+ * files are offered (no HLS/DASH) and video-only + audio-only pairs are merged by the native muxer.
+ * Self-contained route (plan-docs 11, YouTube only in this release): `ytdlp_status` reports the bundled QuickJS-NG,
+ * EJS solver and ffmpeg; `ytdlp_info { url, full: true }` keeps every format; `ytdlp_download { url, args, full }`
+ * lets yt-dlp select and merge with its own ffmpeg.
+ *   command "ytdlp_status",   args {},                                         resolves YtdlpStatus
+ * cookiesHint is always false here because Android has no Settings > Cookies. Must not import download.ts,
+ * index.ts or formats.ts (no cycles).
  */
 import { invoke } from "@tauri-apps/api/core";
 import type { AppError, AppErrorCode, StreamInfo, VideoInfo } from "../lib/types";
@@ -47,6 +53,12 @@ export const YTDLP_ERROR_CODES: readonly string[] = [
   "empty",
   "unknown",
 ];
+
+/**
+ * Extra codes the self-contained route can send (plan-docs 11 section 3.7). Kept out of YTDLP_ERROR_CODES so that
+ * list stays the legacy contract; mapYtdlpError accepts both.
+ */
+export const YTDLP_FULL_ERROR_CODES: readonly string[] = ["js_runtime_missing", "ytdlp_missing", "bot_check"];
 
 export interface YtdlpFormat {
   format_id: string;
@@ -100,6 +112,9 @@ const ANDROID_TEXT: Record<string, string> = {
   mux_failed: "Keepsake couldn't combine the video and audio. Try a different quality.",
   empty: "No downloadable video was found on this page.",
   unknown: "Something went wrong while saving. Tap Retry.",
+  js_runtime_missing: "Keepsake's built-in YouTube helper couldn't start. Reinstall Keepsake.",
+  ytdlp_missing: "Keepsake's built-in downloader tools are missing or damaged. Reinstall Keepsake.",
+  bot_check: "YouTube asked to confirm you're not a bot. Try again later or use the desktop app.",
 };
 
 const MISSING_TEXT = "TikTok and Instagram downloads aren't available in this build. Reinstall Keepsake.";
@@ -137,12 +152,17 @@ export function isAndroidYtdlpSupported(url: string): boolean {
 /** format_ids marked as watermarked, per converted info (format_note is not part of StreamInfo). */
 const watermarked = new WeakMap<VideoInfo, Set<string>>();
 
-/** Pure: reduced yt-dlp info -> VideoInfo (source "ytdlp"). Drops formats whose protocol is not http/https. */
-export function ytdlpInfoToVideoInfo(info: YtdlpInfo, requestedUrl: string): VideoInfo {
+/**
+ * Pure: reduced yt-dlp info -> VideoInfo (source "ytdlp"). Legacy: drops formats whose protocol is not http/https.
+ * `full` (self-contained route): keeps HLS/DASH formats too (yt-dlp downloads and ffmpeg merges them) and marks the
+ * result `ytdlpFull: true`.
+ */
+export function ytdlpInfoToVideoInfo(info: YtdlpInfo, requestedUrl: string, opts: { full?: boolean } = {}): VideoInfo {
+  const full = opts.full === true;
   const marked = new Set<string>();
   const streams: StreamInfo[] = [];
   for (const f of info.formats) {
-    if (f.protocol !== "https" && f.protocol !== "http") continue;
+    if (!full && f.protocol !== "https" && f.protocol !== "http") continue;
     if (f.vcodec === "none" && f.acodec === "none") continue;
     if ((f.format_note && /watermark/i.test(f.format_note)) || /^download/i.test(f.format_id)) marked.add(f.format_id);
     const kind = f.vcodec === "none" ? "audio-only" : f.acodec === "none" ? "video-only" : "progressive";
@@ -183,6 +203,7 @@ export function ytdlpInfoToVideoInfo(info: YtdlpInfo, requestedUrl: string): Vid
     streams,
     previewOnly: false,
     source: "ytdlp",
+    ...(full ? { ytdlpFull: true } : {}),
   };
   watermarked.set(out, marked);
   return out;
@@ -411,7 +432,7 @@ export function pickYtdlpFormat(info: VideoInfo, uiFormatId: string): YtdlpPick 
 export function mapYtdlpError(message: string): AppError {
   const text = typeof message === "string" ? message : rawText(message);
   const m = /ytdlp:([a-z_]+):\s*([\s\S]*)/.exec(text);
-  if (m && YTDLP_ERROR_CODES.includes(m[1])) {
+  if (m && (YTDLP_ERROR_CODES.includes(m[1]) || YTDLP_FULL_ERROR_CODES.includes(m[1]))) {
     // Marker-less "unknown" still maps below; known codes map here.
     const code = m[1];
     const detail = m[2].replace(/\s+/g, " ").trim().slice(0, 300) || undefined;
@@ -464,22 +485,41 @@ export async function fetchAndroidInfo(url: string, signal?: AbortSignal): Promi
   return ytdlpInfoToVideoInfo(r.info as YtdlpInfo, url);
 }
 
-/** Invokes ytdlp_download. Rejects with EngineError. Validates the response shape. */
+/**
+ * Invokes ytdlp_download. Rejects with EngineError. Validates the response shape.
+ * Exactly one of `formatId` (a concrete yt-dlp format id, legacy route) or `args` (selection argv from
+ * ytdlp.ts selectionArgs, self-contained route) must be given; otherwise rejects "unknown" without invoking.
+ * `full: true` asks the bridge to enable the bundled JS runtime and ffmpeg. Omitted keys are not sent, so a legacy
+ * call sends exactly { url, formatId, outDir, fileName?, jobId } as before.
+ */
 export async function downloadAndroid(args: {
   url: string;
-  formatId: string;
+  formatId?: string;
+  args?: string[];
+  full?: boolean;
   outDir: string;
   fileName?: string;
   jobId?: string;
 }): Promise<{ path: string; bytes: number }> {
+  const hasFormat = typeof args.formatId === "string";
+  const hasArgs = Array.isArray(args.args) && args.args.length > 0;
+  if (hasFormat === hasArgs) {
+    throw new EngineError({
+      code: "unknown",
+      message: ANDROID_TEXT.unknown,
+      detail: "ytdlp_download needs exactly one of formatId or args",
+      cookiesHint: false,
+    });
+  }
   let res: unknown;
   try {
     res = await invoke<unknown>("plugin:keepsake-media|ytdlp_download", {
       url: args.url,
-      formatId: args.formatId,
+      ...(hasFormat ? { formatId: args.formatId } : { args: [...(args.args ?? [])] }),
       outDir: args.outDir,
       ...(args.fileName ? { fileName: args.fileName } : {}),
       jobId: args.jobId ?? "job",
+      ...(args.full === true ? { full: true } : {}),
     });
   } catch (e) {
     throw new EngineError(mapYtdlpError(rawText(e)));
@@ -604,10 +644,14 @@ export function filterYouTubeMuxableFormats(info: YtdlpInfo): YtdlpInfo {
 export const filterYouTubeMp4Formats = filterYouTubeMuxableFormats;
 
 /**
- * Invokes ytdlp_info for a YouTube link (Android only) and returns muxable formats (source "ytdlp").
- * Rejects with EngineError. Callers fall back to youtubei.js on any rejection.
+ * Invokes ytdlp_info for a YouTube link (Android only), source "ytdlp". Rejects with EngineError. Callers fall back
+ * to youtubei.js on any rejection other than "cancelled".
+ * Legacy (`full` unset): sends { url } and keeps only formats the native muxer can write.
+ * `full: true` (self-contained route): sends { url, full: true }, keeps every format (HLS/DASH included, no muxable
+ * filter) and marks the info `ytdlpFull: true`.
  */
-export async function fetchAndroidYouTubeInfo(url: string, signal?: AbortSignal): Promise<VideoInfo> {
+export async function fetchAndroidYouTubeInfo(url: string, signal?: AbortSignal, opts: { full?: boolean } = {}): Promise<VideoInfo> {
+  const full = opts.full === true;
   if (platform() !== "android" || !isAndroidYouTubeYtdlpHost(url)) throw new EngineError(appError("unsupported_url", url));
   if (signal?.aborted) fail("cancelled");
   let onAbort: (() => void) | undefined;
@@ -617,7 +661,10 @@ export async function fetchAndroidYouTubeInfo(url: string, signal?: AbortSignal)
   });
   let res: unknown;
   try {
-    res = await Promise.race([invoke<unknown>("plugin:keepsake-media|ytdlp_info", { url }), aborted]);
+    res = await Promise.race([
+      invoke<unknown>("plugin:keepsake-media|ytdlp_info", full ? { url, full: true } : { url }),
+      aborted,
+    ]);
   } catch (e) {
     if (e instanceof EngineError) throw e;
     throw new EngineError(mapYtdlpError(rawText(e)));
@@ -630,8 +677,82 @@ export async function fetchAndroidYouTubeInfo(url: string, signal?: AbortSignal)
     throw badInfo();
   }
   const raw = r.info as YtdlpInfo;
-  const out = ytdlpInfoToVideoInfo(filterYouTubeMuxableFormats(raw), url);
+  const out = full
+    ? ytdlpInfoToVideoInfo(raw, url, { full: true })
+    : ytdlpInfoToVideoInfo(filterYouTubeMuxableFormats(raw), url);
   // Kept for formats.ts consumers; the higher heights are no longer dropped, so nothing reads a "desktop only" note.
   rawMaxHeight.set(out, Math.max(0, ...raw.formats.map((f) => (f.vcodec && f.vcodec !== "none" ? f.height ?? 0 : 0))));
   return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Self-contained route status (plan-docs 11 section 3.7).
+// ---------------------------------------------------------------------------------------------------------------
+
+/** Result of `ytdlp_status`: what the bundled yt-dlp found on this phone. Offline; no network. */
+export interface YtdlpStatus {
+  /** yt_dlp.version.__version__ */
+  ytdlp: string;
+  /** yt-dlp-ejs version, null when not importable. */
+  ejs: string | null;
+  /** JS runtime info, e.g. "quickjs-ng 0.18.0", null when not runnable. */
+  jsRuntime: string | null;
+  /** First line of `libffmpeg.so -version`, null when not runnable. */
+  ffmpeg: string | null;
+  /** All four present and the EJS version matches the pin. */
+  ready: boolean;
+  /** Short machine words, e.g. "qjs_missing", "ffmpeg_exec_denied", "ejs_missing". */
+  problems: string[];
+}
+
+/** Cold status runs Python start-up plus two small processes; a hung bridge must not block YouTube fetches. */
+const STATUS_TIMEOUT_MS = 30_000;
+
+let statusPromise: Promise<YtdlpStatus | null> | undefined;
+
+const strOrNull = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v : null);
+
+/** Pure: validates a raw `ytdlp_status` response. null when the shape is wrong. `ready` needs every part present. */
+function parseStatus(res: unknown): YtdlpStatus | null {
+  if (!res || typeof res !== "object") return null;
+  const r = res as Record<string, unknown>;
+  if (typeof r.ytdlp !== "string" || typeof r.ready !== "boolean") return null;
+  const s: YtdlpStatus = {
+    ytdlp: r.ytdlp,
+    ejs: strOrNull(r.ejs),
+    jsRuntime: strOrNull(r.jsRuntime),
+    ffmpeg: strOrNull(r.ffmpeg),
+    ready: false,
+    problems: Array.isArray(r.problems) ? r.problems.filter((p): p is string => typeof p === "string").slice(0, 20) : [],
+  };
+  s.ready = r.ready === true && !!s.ytdlp && s.ejs !== null && s.jsRuntime !== null && s.ffmpeg !== null;
+  return s;
+}
+
+async function loadStatus(): Promise<YtdlpStatus | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), STATUS_TIMEOUT_MS);
+  });
+  try {
+    // invoke() can throw synchronously when the Tauri bridge is missing; the async wrapper catches that too.
+    const res = await Promise.race([invoke<unknown>("plugin:keepsake-media|ytdlp_status", {}), timeout]);
+    return parseStatus(res);
+  } catch {
+    // Old plugin without the command, missing permission, or a Python error: "not ready".
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Status of the self-contained yt-dlp (Android only). Cached for the session; `refresh: true` asks again.
+ * Resolves null off Android, on any error (old plugin, missing permission, bad response) and on timeout.
+ * Never rejects.
+ */
+export function androidYtdlpStatus(opts: { refresh?: boolean } = {}): Promise<YtdlpStatus | null> {
+  if (platform() !== "android") return Promise.resolve(null);
+  if (opts.refresh === true || !statusPromise) statusPromise = loadStatus();
+  return statusPromise;
 }

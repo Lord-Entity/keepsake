@@ -231,3 +231,82 @@ describe("listFormats before a fetch", () => {
     expect(byMode(all, "video")).toEqual([]);
   });
 });
+
+const full = (over = {}) => info({ source: "ytdlp", ytdlpFull: true, ...over });
+
+describe("listFormats on Android, self-contained yt-dlp route (ytdlpFull)", () => {
+  beforeEach(() => {
+    current = "android";
+  });
+
+  test("lists Best + every height, M4A and WAV; no thumbnails, no MP3, nothing disabled", () => {
+    const all = listFormats(full());
+    expect(ids(all)).toEqual(["video:best", "video:1080", "video:720", "video:360", "audio:m4a", "audio:wav"]);
+    expect(byMode(all, "thumbnail")).toEqual([]);
+    expect(all.some((o) => o.id === "audio:mp3")).toBe(false);
+    expect(enabled(all).length).toBe(all.length);
+  });
+
+  test("video rows equal the desktop rows", () => {
+    const androidVideo = byMode(listFormats(full()), "video");
+    current = "windows";
+    const desktopVideo = byMode(listFormats(info({ source: "youtubei", ytdlpFull: undefined })), "video");
+    current = "android";
+    expect(androidVideo).toEqual(desktopVideo);
+  });
+
+  test("defaults: highest <= 1080, else Best; M4A audio default; one default per mode", () => {
+    const all = listFormats(full());
+    expect(byMode(all, "video").filter((o) => o.isDefault).map((o) => o.id)).toEqual(["video:1080"]);
+    expect(byMode(all, "audio").filter((o) => o.isDefault).map((o) => o.id)).toEqual(["audio:m4a"]);
+    const audio = byMode(all, "audio");
+    expect(audio.find((o) => o.id === "audio:m4a").needsConversion).toBe(false);
+    expect(audio.find((o) => o.id === "audio:wav").needsConversion).toBe(true);
+
+    const tall = full({ heights: [2160, 1440], fpsByHeight: { 2160: 30, 1440: 30 } });
+    expect(byMode(listFormats(tall), "video").filter((o) => o.isDefault).map((o) => o.id)).toEqual(["video:best"]);
+  });
+
+  test("needsMerge, ext and labels follow the desktop rules", () => {
+    const video = byMode(listFormats(full()), "video");
+    expect(video.find((o) => o.id === "video:1080").needsMerge).toBe(true);
+    expect(video.find((o) => o.id === "video:360").needsMerge).toBe(false);
+    expect(video.find((o) => o.id === "video:best").needsMerge).toBe(true);
+    expect(video.every((o) => o.ext === "mp4")).toBe(true);
+    expect(video.find((o) => o.id === "video:1080").label).toBe("1080p60 Full HD");
+  });
+
+  test("heights without a phone-muxable stream are still listed (yt-dlp merges them)", () => {
+    const tall = full({
+      heights: [2160, 1080],
+      fpsByHeight: { 2160: 30, 1080: 30 },
+      streams: [
+        { id: "313", kind: "video-only", ext: "webm", height: 2160, vcodec: "vp9" },
+        { id: "140", kind: "audio-only", ext: "m4a", acodec: "mp4a.40.2" },
+      ],
+    });
+    const video = byMode(listFormats(tall), "video");
+    expect(ids(enabled(video))).toEqual(expect.arrayContaining(["video:2160", "video:1080"]));
+  });
+
+  test("a link without video gives only M4A (default) and WAV", () => {
+    const all = listFormats(full({ hasVideo: false, heights: [], streams: [] }));
+    expect(ids(all)).toEqual(["audio:m4a", "audio:wav"]);
+    expect(all.find((o) => o.id === "audio:m4a").isDefault).toBe(true);
+  });
+
+  test("without ytdlpFull the legacy route is used (disabled MP3 row)", () => {
+    for (const flag of [false, undefined]) {
+      const mp3 = listFormats(info({ source: "ytdlp", ytdlpFull: flag })).find((o) => o.id === "audio:mp3");
+      expect(mp3).toBeDefined();
+      expect(mp3.disabledReason).toBeTruthy();
+    }
+  });
+
+  test("on desktop, ytdlpFull does not change the normal list", () => {
+    current = "windows";
+    const all = listFormats(full());
+    expect(byMode(all, "audio").length).toBe(5);
+    expect(byMode(all, "thumbnail").length).toBe(3);
+  });
+});

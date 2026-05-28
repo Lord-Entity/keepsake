@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-editor-probe"
+description = "Enables the editor_probe command without any pre-configured scope."
+commands.allow = ["editor_probe"]
+
+[[permission]]
+identifier = "deny-editor-probe"
+description = "Denies the editor_probe command without any pre-configured scope."
+commands.deny = ["editor_probe"]

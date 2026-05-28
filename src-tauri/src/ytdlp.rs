@@ -285,6 +285,27 @@ fn bundled_qjs(sidecar_dir: &Path) -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
+/// Value for `--ffmpeg-location`: the bundled ffmpeg FILE, never its folder. Given a folder, yt-dlp only looks
+/// for `ffmpeg`/`ffprobe` by those exact names, so `keepsake-ffmpeg.exe` was never found ("exe versions: none"):
+/// with `-i` yt-dlp then skipped the merge silently and moved the separate video-only and audio-only `.fNNN`
+/// files into the user's folder. Given a file whose name contains "ffmpeg", yt-dlp uses that file
+/// ("exe versions: ffmpeg 7.1.1"; checked with `-v` against the bundled yt-dlp 2026.08.19).
+fn ffmpeg_location(sidecar_dir: &Path) -> PathBuf {
+    sidecar_dir.join(exe_name("keepsake-ffmpeg"))
+}
+
+/// Error text the TS engine maps to code `ffmpeg_missing` (needs "ffmpeg" and "not found").
+const FFMPEG_MISSING: &str =
+    "ffmpeg not found: the bundled ffmpeg is missing, so video and audio cannot be merged. Reinstall Keepsake.";
+
+/// True when the job asks yt-dlp to merge or convert (it would otherwise skip that step silently under `-i`).
+fn needs_ffmpeg(args: &[String]) -> bool {
+    const FLAGS: [&str; 4] = ["--merge-output-format", "-x", "--embed-thumbnail", "--convert-thumbnails"];
+    args.iter()
+        .take_while(|a| *a != "--")
+        .any(|a| FLAGS.contains(&a.as_str()))
+}
+
 /// True when the URL after `--` is a YouTube host (yt-dlp needs a JS runtime for its challenges).
 fn is_youtube_job(args: &[String]) -> bool {
     let Some(i) = args.iter().position(|a| a == "--") else {
@@ -508,8 +529,12 @@ fn run_blocking(
         None if is_youtube_job(&args) => return Err(JS_RUNTIME_MISSING.into()),
         None => {}
     }
+    let ffmpeg = ffmpeg_location(&dir);
+    if needs_ffmpeg(&args) && !ffmpeg.is_file() {
+        return Err(FFMPEG_MISSING.into());
+    }
     cmd.arg("--ffmpeg-location")
-        .arg(&dir)
+        .arg(&ffmpeg)
         .args(&args)
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUNBUFFERED", "1")
@@ -960,6 +985,25 @@ mod tests {
         assert!(temp_dir_for_job(&good, "job2").is_none());
         assert!(temp_dir_for_job(base, "job1").is_none());
         assert!(temp_dir_for_job(".keepsake-tmp/job1", "job1").is_none());
+    }
+
+    #[test]
+    fn ffmpeg_location_is_the_file_not_the_folder() {
+        let dir = std::env::temp_dir();
+        let p = ffmpeg_location(&dir);
+        assert_eq!(p.parent(), Some(dir.as_path()));
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        // yt-dlp maps a file to the `ffmpeg` program only when its name contains "ffmpeg".
+        assert!(name.contains("ffmpeg") && !name.contains("ffprobe"));
+        assert_eq!(name, exe_name("keepsake-ffmpeg"));
+    }
+
+    #[test]
+    fn merge_and_convert_jobs_need_ffmpeg() {
+        assert!(needs_ffmpeg(&s(&["-f", "137+bestaudio", "--merge-output-format", "mp4/mkv", "--", "u"])));
+        assert!(needs_ffmpeg(&s(&["-f", "bestaudio", "-x", "--audio-format", "mp3", "--", "u"])));
+        assert!(!needs_ffmpeg(&s(&["-J", "--flat-playlist", "--", "https://x/-x"])));
+        assert!(!needs_ffmpeg(&s(&["--skip-download", "--write-thumbnail", "--", "--merge-output-format"])));
     }
 
     #[test]

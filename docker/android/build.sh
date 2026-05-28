@@ -5,7 +5,8 @@
 #   - Android NDK 27.2.12479018 (NDK_HOME set)
 #   - Rust 1.90.0 with the aarch64-linux-android target
 #   - Bun 1.4.x (1.4.4 in the image)
-#   - rsync, perl, zipalign + apksigner (build-tools), keytool (JDK)
+#   - rsync, perl, unzip, zipalign + apksigner + aapt2 (build-tools), keytool (JDK)
+#   - BUILD_FFMPEG=1 (optional): build libffmpeg.so via scripts/build-android-ffmpeg.sh (needs ANDROID_NDK_HOME); cached in /cache/android-native/<recipe hash>
 # Output: arm64-v8a split APK only (tauri android build --apk --split-per-abi --target aarch64).
 #   Set ALL_ABIS=1 to also build the universal APK and every split ABI.
 # Signing: release-signed only if a keystore is mounted at /keys; otherwise the APK is signed
@@ -89,7 +90,7 @@ sign_debug() { # $1 in-apk, $2 out-apk
       -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" >/dev/null
   fi
   local tmp; tmp=$(mktemp --suffix=.apk)
-  zipalign -f -p 4 "$1" "$tmp"
+  zipalign -f -P 16 4 "$1" "$tmp"
   apksigner sign --ks $DEBUG_KS --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey --out "$2" "$tmp"
   rm -f "$tmp" "$2.idsig"
 }
@@ -113,6 +114,26 @@ collect() { # $1 = mode (universal|split)
   done < <(find "$GEN/app/build/outputs/apk" -name '*.apk')
 }
 
+JNI=src-tauri/plugins/keepsake-media/android/src/main/jniLibs/arm64-v8a
+# Same contract as CI: the build scripts write <cache>/libffmpeg.so (+ .sha256, sources/), and
+# fetch-android-binaries.sh copies it from there. Keyed on the recipe + lock, like the CI cache.
+FF_KEY=$(cat scripts/build-android-ffmpeg.sh scripts/binaries.lock.json | sha256sum | cut -d' ' -f1)
+export KEEPSAKE_ANDROID_CACHE=/cache/android-native/$FF_KEY
+mkdir -p "$JNI" "$KEEPSAKE_ANDROID_CACHE"
+if [[ ! -f "$JNI/libffmpeg.so" && ! -f "$KEEPSAKE_ANDROID_CACHE/libffmpeg.so" && "${BUILD_FFMPEG:-0}" == "1" ]]; then
+  log "Building libffmpeg.so (BUILD_FFMPEG=1, cache $KEEPSAKE_ANDROID_CACHE)"
+  bash scripts/build-android-ffmpeg.sh
+fi
+
+log "Fetching Android binaries (sha256-verified)"
+KEEPSAKE_ANDROID_REQUIRE=libqjs.so bash scripts/fetch-android-binaries.sh
+
+if [[ -f "$JNI/libffmpeg.so" ]]; then HAVE_FFMPEG=1; else
+  HAVE_FFMPEG=0
+  echo "!!!!!!!! WARNING: $JNI/libffmpeg.so is missing (set BUILD_FFMPEG=1 to build it, or place a pre-built one there). !!!!!!!!"
+  echo "!!!!!!!! The APK will be built WITHOUT ffmpeg: the yt-dlp merge/full route will report not ready. !!!!!!!!"
+fi
+
 rm -f /out/*.apk
 if [[ "${ALL_ABIS:-0}" == "1" ]]; then
   log "ALL_ABIS=1: adding the remaining Rust Android targets"
@@ -135,10 +156,47 @@ else
 fi
 
 log "Verify"
+die() { echo "VERIFY FAILED: $*" >&2; exit 1; }
+verify_apk() { # $1 = apk
+  local a=$1 n t line v e found=0 ok=0
+  n=$(basename "$a"); t=$(mktemp -d)
+  if [[ "$n" == *arm64* || "$n" == *universal* ]]; then
+    unzip -l "$a" > "$t/list" || die "$n: cannot list"
+    grep -q 'lib/arm64-v8a/libqjs\.so' "$t/list" || die "$n: lib/arm64-v8a/libqjs.so missing"
+    if [[ "$HAVE_FFMPEG" == 1 ]]; then
+      grep -q 'lib/arm64-v8a/libffmpeg\.so' "$t/list" || die "$n: lib/arm64-v8a/libffmpeg.so missing"
+    else echo "WARNING: $n has no libffmpeg.so (built without ffmpeg)"; fi
+  fi
+  line=$(aapt2 dump xmltree --file AndroidManifest.xml "$a" | grep extractNativeLibs | head -n1 || true)
+  if [[ -z "$line" ]]; then echo "extractNativeLibs not set (platform default true)"
+  else
+    v=${line%% (Raw*}; v=${v##*=}; v=${v#\(type *\)}
+    case "$v" in
+      false|0x0|0x00000000) die "$n: extractNativeLibs is false ($line)" ;;
+      true|0xffffffff) echo "extractNativeLibs=true" ;;
+      *) die "$n: unrecognised extractNativeLibs value: $line" ;;
+    esac
+  fi
+  zipalign -c -P 16 -v 4 "$a" > "$t/za.log" 2>&1 || { tail -n 20 "$t/za.log" >&2; die "$n: zipalign -c -P 16 4 failed (not 16 KiB aligned)"; }
+  unzip -Z1 "$a" 'assets/chaquopy/*' > "$t/ents" 2>/dev/null || true
+  while IFS= read -r e; do
+    [[ "$(basename "$e")" == requirements*.imy ]] || continue
+    found=1
+    unzip -p "$a" "$e" > "$t/tmp.zip"
+    unzip -Z1 "$t/tmp.zip" > "$t/rl" 2>/dev/null || true
+    if grep -q '^yt_dlp_ejs/' "$t/rl"; then ok=1; fi
+  done < "$t/ents"
+  if [[ $found == 0 ]]; then echo "WARNING: $n: no assets/chaquopy/requirements*.imy found (path guess failed); yt_dlp_ejs not checked"
+  elif [[ $ok == 0 ]]; then die "$n: yt_dlp_ejs/ not in any Chaquopy requirements*.imy"
+  else echo "yt_dlp_ejs present"; fi
+  rm -rf "$t"
+  echo "$n: $(stat -c %s "$a") bytes"
+}
 for a in /out/*.apk; do
   echo "--- $a"
   apksigner verify --print-certs "$a" | grep -E "Signer #1 certificate (DN|SHA-256 digest)" || true
   apksigner verify "$a" && echo "verifies OK"
+  verify_apk "$a"
 done
 ls -l /out
 [[ "$SIGNED_BY_GRADLE" == 1 ]] || echo "!!!!!!!! NOTE: APKs signed with the Android DEBUG key (no keystore supplied). TEST ONLY - DO NOT DISTRIBUTE. !!!!!!!!"

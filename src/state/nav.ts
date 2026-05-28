@@ -1,13 +1,14 @@
 import { useEffect } from "react";
 import { createStore, useStore } from "./store";
 
-export type Page = "home" | "downloads" | "library" | "favorites" | "sources" | "settings";
-/** Sidebar order; Mod+1..6 follow it. */
-export const PAGES: Page[] = ["home", "downloads", "library", "favorites", "sources", "settings"];
+export type Page = "home" | "downloads" | "library" | "editor" | "favorites" | "sources" | "settings";
+/** Sidebar order. Shortcuts are bound per item in nav-items (Editor is Mod+7 so 1..6 stay stable). */
+export const PAGES: Page[] = ["home", "downloads", "library", "editor", "favorites", "sources", "settings"];
 export const PAGE_TITLES: Record<Page, string> = {
   home: "Home",
   downloads: "Downloads",
   library: "Library",
+  editor: "Editor",
   favorites: "Favorites",
   sources: "Sources",
   settings: "Settings",

@@ -67,5 +67,70 @@
         "sha256": "91fe89916d3b0a6c01c4dc8382a99c3c1fd91ecfc214aa81ca051902bcce590d"
       }
     }
+  },
+  "android": {
+    "_comment": [
+      "Android (arm64-v8a) executables for the in-process yt-dlp, read by scripts/fetch-android-binaries.sh/.ps1 and scripts/build-android-*.sh.",
+      "Not a 'triples' entry on purpose: fetch-binaries.sh would then demand every desktop sidecar for Android.",
+      "Each lib is placed at <jniLibsDir>/<name>; AGP packages it as lib/arm64-v8a/<name> and Android extracts it to nativeLibraryDir (the only app-owned exec location).",
+      "libqjs.so: the QuickJS-NG release asset, renamed. sha256 = the digest GitHub lists for the asset (release API 'digest' field); no SHA256SUMS file exists.",
+      "libffmpeg.so: no upstream Android build exists, so it has no url/sha256 here. CI builds it with scripts/build-android-ffmpeg.sh from the pinned 'sources' (configure flags mirror ffmpeg-ytdl-minimal-build build.sh, LGPL). If a release asset is published later, its hash must come from that release's SHA256SUMS.txt.",
+      "sources: sha256 of each upstream tarball. ffmpeg cross-checked with Homebrew, lame with Debian lame_3.100-6.dsc, opus with xiph SHA256SUMS.txt (2026-11-16). quickjs-ng is GitHub's tag archive: no independent hash exists and GitHub does not promise byte-stable archives; a mismatch fails the (fallback-only) qjs build loudly.",
+      "yt-dlp-ejs is NOT here: it is a pip pin in src-tauri/plugins/keepsake-media/android/build.gradle.kts and must move together with the yt-dlp pin."
+    ],
+    "abi": "arm64-v8a",
+    "jniLibsDir": "src-tauri/plugins/keepsake-media/android/src/main/jniLibs/arm64-v8a",
+    "cacheDir": "src-tauri/plugins/keepsake-media/android/.native-cache",
+    "libs": {
+      "libqjs.so": {
+        "version": "v0.18.0 (QuickJS-NG)",
+        "source": "https://github.com/quickjs-ng/quickjs/releases/tag/v0.18.0 (qjs-linux-aarch64: static-PIE musl, LOAD align 64 KiB)",
+        "url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.18.0/qjs-linux-aarch64",
+        "sha256": "2c005c7171424a598d31c53c8dc4a0ae2e4958eb6fbb37908c885a307c78187c",
+        "bytes": 2546640,
+        "license": "MIT",
+        "pinned": true,
+        "buildScript": "scripts/build-android-qjs.sh"
+      },
+      "libffmpeg.so": {
+        "version": "FFmpeg 7.1.1 minimal LGPL (+ LAME 3.100, Opus 1.5.2 static), NDK arm64 API 24",
+        "source": "built in CI by scripts/build-android-ffmpeg.sh from the pinned sources below",
+        "url": "",
+        "sha256": "",
+        "license": "LGPL-2.1-or-later",
+        "pinned": false,
+        "buildScript": "scripts/build-android-ffmpeg.sh"
+      }
+    },
+    "sources": {
+      "ffmpeg": {
+        "version": "7.1.1",
+        "url": "https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz",
+        "sha256": "733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1",
+        "bytes": 11019500,
+        "license": "LGPL-2.1-or-later (configured without --enable-gpl/--enable-nonfree)"
+      },
+      "lame": {
+        "version": "3.100",
+        "url": "https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz",
+        "sha256": "ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e",
+        "bytes": 1524133,
+        "license": "LGPL-2.0-or-later"
+      },
+      "opus": {
+        "version": "1.5.2",
+        "url": "https://downloads.xiph.org/releases/opus/opus-1.5.2.tar.gz",
+        "sha256": "65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1",
+        "bytes": 7839412,
+        "license": "BSD-3-Clause"
+      },
+      "quickjs-ng": {
+        "version": "v0.18.0",
+        "url": "https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.18.0.tar.gz",
+        "sha256": "28bcd89aa3683fd2a946537e5ce3f11cc46b5cbf3383c7561aaef3df5ff9f1dd",
+        "bytes": 910210,
+        "license": "MIT"
+      }
+    }
   }
 }

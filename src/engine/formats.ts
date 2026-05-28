@@ -8,6 +8,7 @@
  *   conversion) and WAV (AAC decoded to PCM). MP3, FLAC and Opus need encoders Android does not ship yet.
  * - Android, TikTok/Instagram (yt-dlp via Chaquopy, info.source === "ytdlp"): "Best available" plus every height in
  *   bestStreamsByHeight (shared with pickYtdlpFormat), audio M4A and WAV (MP3 shown disabled), no thumbnails.
+ * - Android, YouTube through the self-contained yt-dlp route (info.ytdlpFull): the desktop video rows (yt-dlp + bundled ffmpeg merge), audio M4A and WAV, no MP3 yet, no thumbnails.
  * - Web (dev preview without Tauri): progressive MP4 at or below 360p and thumbnails; no audio (nothing can extract
  *   or convert it in the browser).
  */
@@ -292,9 +293,20 @@ function androidYtdlpOptions(info: VideoInfo): FormatOption[] {
   return out;
 }
 
+/**
+ * Android self-contained yt-dlp route (YouTube, bundled QuickJS + ffmpeg): yt-dlp selects and merges like desktop,
+ * so the rows are the desktop video rows (every height + Best available), plus audio M4A (first, so the default
+ * when there is no video) and WAV (WAV = M4A download then the native transcode). No MP3 (phase 3), no thumbnails.
+ */
+function androidFullOptions(info: VideoInfo): FormatOption[] {
+  const video = info.hasVideo ? desktopVideoOptions(info) : [];
+  return [...video, ...audioOptions("android")];
+}
+
 /** All picker options for a fetched link (or the pre-fetch placeholders when `info` is null). */
 export function listFormats(info: VideoInfo | null | undefined): FormatOption[] {
   const p = platform();
+  if (p === "android" && info?.source === "ytdlp" && info.ytdlpFull === true) return androidFullOptions(info);
   if (p === "android" && info?.source === "ytdlp") return androidYtdlpOptions(info);
   return [...videoOptions(info, p), ...audioOptions(p), ...thumbOptions()];
 }

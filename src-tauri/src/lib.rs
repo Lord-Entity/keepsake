@@ -3,6 +3,7 @@
 #[cfg(desktop)]
 use tauri::Manager;
 
+mod editor;
 mod ytdlp;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -41,7 +42,11 @@ pub fn run() {
             ytdlp::cancel_ytdlp,
             ytdlp::binary_status,
             ytdlp::list_installed_browsers,
-            ytdlp::sweep_stale_temp
+            ytdlp::sweep_stale_temp,
+            // Desktop editor; each command rejects with "editor:unsupported" on Android.
+            editor::editor_probe,
+            editor::edit_video,
+            editor::cancel_edit, editor::editor_capabilities
         ])
         .build(tauri::generate_context!())
         .expect("error while building Keepsake")
@@ -49,6 +54,7 @@ pub fn run() {
             // Kill running yt-dlp trees when the app exits.
             if let tauri::RunEvent::Exit = event {
                 ytdlp::kill_all(app);
+                editor::kill_all();
             }
         });
 }
