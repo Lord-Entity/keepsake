@@ -8,7 +8,21 @@ import { useEffect, useRef, type RefObject } from "react";
  * - focus moves into the panel on open and returns to the opener on close
  */
 const stack: symbol[] = [];
+/** Each open modal's current Esc handler, so non-keyboard callers (Android back) can close the top one. */
+const escapers = new Map<symbol, { current: (() => void) | undefined }>();
 let locks = 0;
+
+/**
+ * Close the top-most open modal the way Esc would. Returns true when a modal is open,
+ * even if it has no Esc action right now (e.g. ActionModal's result phase): the press is
+ * consumed rather than acting on the page behind the modal.
+ */
+export function closeTopModal(): boolean {
+  const id = stack[stack.length - 1];
+  if (!id) return false;
+  escapers.get(id)?.current?.();
+  return true;
+}
 let savedOverflow = "";
 
 const FOCUSABLE =
@@ -38,6 +52,7 @@ export function useModal(
     if (!open) return;
     const id = Symbol("modal");
     stack.push(id);
+    escapers.set(id, escRef);
     const prev = document.activeElement as HTMLElement | null;
 
     if (locks++ === 0) {
@@ -92,6 +107,7 @@ export function useModal(
       window.removeEventListener("keydown", onKey, true);
       const i = stack.indexOf(id);
       if (i >= 0) stack.splice(i, 1);
+      escapers.delete(id);
       if (--locks === 0) document.body.style.overflow = savedOverflow;
       if (prev?.isConnected) prev.focus?.({ preventScroll: true });
     };

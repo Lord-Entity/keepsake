@@ -1,9 +1,11 @@
 import { motion, useReducedMotion } from "motion/react";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
-import { Logo } from "../ui/Icon";
+import { MicroSplash } from "../ui/illustrations/MicroSplash";
 import { Progress } from "../ui/Progress";
 import { t } from "../ui/motion";
+
+const WORD = Array.from("Keepsake");
 
 /** Startup loader (UI_THEME_MOTION.md section 3). App controls timing and exit. */
 export function Splash({
@@ -34,10 +36,36 @@ export function Splash({
         animate={{ opacity: 1, scale: 1 }}
         transition={t.slow}
       >
-        <Logo size={72} />
+        {/* Kip drops in, pops his lid and cheers; sits sadly if startup failed. */}
+        <MicroSplash size={120} state={error ? "error" : "boot"} />
         <div className="flex flex-col items-center gap-1">
-          <p className="text-lg font-semibold text-fg">Keepsake</p>
-          <p className="text-sm text-fg-2">Downloads with a memory.</p>
+          <p className="text-lg font-semibold text-fg">
+            <span className="sr-only">Keepsake</span>
+            {WORD.map((ch, i) => (
+              <motion.span
+                key={i}
+                aria-hidden="true"
+                className="inline-block"
+                initial={reduced ? { opacity: 0 } : { opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={
+                  reduced
+                    ? { duration: 0.2 }
+                    : { type: "spring", stiffness: 520, damping: 14, delay: 0.3 + i * 0.04 }
+                }
+              >
+                {ch}
+              </motion.span>
+            ))}
+          </p>
+          <motion.p
+            className="text-sm text-fg-2"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.3, delay: reduced ? 0 : 0.55 }}
+          >
+            Downloads with a memory.
+          </motion.p>
         </div>
       </motion.div>
       {error ? (

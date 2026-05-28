@@ -9,6 +9,7 @@ import { Select } from "../ui/Fields";
 import { Icon } from "../ui/Icon";
 import { Segmented } from "../ui/Segmented";
 import { Switch } from "../ui/Switch";
+import "../ui/illustrations/CardSurface.css";
 import { t } from "../ui/motion";
 
 const BITRATES: AudioBitrate[] = [128, 192, 256, 320];
@@ -142,7 +143,7 @@ export function FormatPicker({
         ]}
       />
 
-      <div className="scroll-y flex min-h-0 flex-1 flex-col gap-3">
+      <div className="scroll-y flex min-h-0 flex-1 flex-col gap-3 rounded-[16px_16px_16px_6px] border border-line/70 bg-inset/40 p-3">
         {!info ? (
           <p className="text-fg-2">Fetch a video first</p>
         ) : mode === "video" ? (
@@ -243,7 +244,7 @@ export function FormatPicker({
         variant="primary"
         size={fill ? "lg" : "md"}
         icon="download"
-        className={`w-full shrink-0 ${pulse && canDownload ? "motion-safe:animate-pulse" : ""}`}
+        className={`w-full shrink-0 ${pulse && canDownload ? "ks-ready-glow" : ""}`}
         disabled={!canDownload}
         title={`${DOWNLOAD_LABEL[mode]} (${MOD}+Enter)`}
         onClick={download}

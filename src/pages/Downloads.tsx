@@ -1,6 +1,6 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useMemo, useState } from "react";
-import { DownloadRow } from "../components/features/DownloadRow";
+import { DownloadCard } from "../components/features/DownloadCard";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Segmented } from "../components/ui/Segmented";
@@ -13,7 +13,7 @@ import { PAGE_STACK } from "../components/layout/page";
 
 type Filter = "all" | "active" | "done" | "failed";
 
-/** Only the first N rows animate; long lists render plainly to stay cheap. */
+/** Only the first N cards animate; long lists render plainly to stay cheap. */
 const ANIMATE_LIMIT = 200;
 
 export function DownloadsPage({ phone }: { phone: boolean }) {
@@ -72,33 +72,29 @@ export function DownloadsPage({ phone }: { phone: boolean }) {
           ]}
         />
       </div>
-      <section className="card shape-drop flex min-w-0 flex-col px-4 py-1">
+      {/* Every download is its own animated card; cards enter, leave and reorder with the shared list motion. */}
+      <section aria-label="Downloads" className={`grid min-w-0 grid-cols-1 ${phone ? "gap-3" : "gap-4 2xl:grid-cols-2"}`}>
         {shown.length === 0 ? (
           <motion.p
             key={filter}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={t.base}
-            className="py-8 text-center text-fg-2"
+            className="card shape-drop py-8 text-center text-fg-2"
           >
             Nothing here
           </motion.p>
         ) : shown.length > ANIMATE_LIMIT ? (
           shown.map((j) => (
-            <div key={j.id} className="border-b border-line last:border-b-0">
-              <DownloadRow job={j} phone={phone} canReveal={canReveal} />
+            <div key={j.id} className="min-w-0">
+              <DownloadCard job={j} phone={phone} canReveal={canReveal} />
             </div>
           ))
         ) : (
           <AnimatePresence>
             {shown.map((j, i) => (
-              <motion.div
-                key={j.id}
-                layout={!reduced}
-                {...listItem(reduced, i)}
-                className="min-w-0 border-b border-line last:border-b-0"
-              >
-                <DownloadRow job={j} phone={phone} canReveal={canReveal} />
+              <motion.div key={j.id} layout={!reduced} {...listItem(reduced, i)} className="min-w-0">
+                <DownloadCard job={j} phone={phone} canReveal={canReveal} />
               </motion.div>
             ))}
           </AnimatePresence>

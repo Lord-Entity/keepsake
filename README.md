@@ -70,6 +70,7 @@ Keepsake is a [Tauri 2](https://v2.tauri.app) app. The interface is React 19 wit
 - **Dark and light themes**, or follow the system setting.
 - **Keyboard shortcuts** for every page and the main actions.
 - **Responsive layout:** sidebar on desktop, bottom tab bar on phones.
+- **Android back button:** closes the open dialog or sheet first, then returns to Home; on Home it shows "Press back again to exit", and a second press within 2 seconds leaves the app (on Android 12 and newer, Android moves the app to the background rather than closing it).
 
 ## Screens
 
@@ -92,8 +93,10 @@ The **Editor** tab makes quick edits to a photo or video on your device. It does
 | | How it works |
 |---|---|
 | Photos (all platforms) | Cropped and encoded inside the app (canvas), so no extra tools are needed. EXIF rotation is applied first. |
-| Video on Windows / Linux | The bundled ffmpeg trims and mutes by stream copy, so a trim starts at the nearest earlier keyframe. **Cropping a video needs a full ffmpeg build** (with libx264 or a hardware H.264 encoder) on your PATH, because the bundled minimal LGPL ffmpeg has no video encoder. With one installed, trims are frame-accurate too. The Editor shows which of these your setup supports. See [docs/EDITOR_DESKTOP_ENCODER.md](docs/EDITOR_DESKTOP_ENCODER.md). |
+| Video on Windows / Linux | The bundled ffmpeg trims and mutes by stream copy, so a trim starts at the nearest earlier keyframe. The bundled minimal LGPL ffmpeg has no video encoder, so **cropping runs inside the app with nothing to install**: the web engine decodes, crops and re-encodes to H.264 with WebCodecs (usually faster than real time), or, where WebCodecs has no H.264 encoder, records the cropped clip in real time; ffmpeg then copies the result into the final MP4. The fast path reads the clip into memory, so it is limited to about 768 MB of source up to the trim end. Windows N editions need the Media Feature Pack, and Linux needs the GStreamer H.264 plugins for in-app cropping; without them, trim and mute still work. A full ffmpeg on your PATH (libx264 or a hardware H.264 encoder) is used first when present and also makes trims frame-accurate. The Editor shows which of these your setup supports. See [docs/EDITOR_DESKTOP_ENCODER.md](docs/EDITOR_DESKTOP_ENCODER.md). |
 | Video on Android | AndroidX Media3 Transformer in the native `keepsake-media` plugin re-encodes to H.264/AAC MP4 with the phone's hardware codecs. Crop and trim are frame-accurate. The result is saved the same way as downloads (Gallery, your chosen folder, or the save folder). |
+
+Audio-only files (M4A, MP3 and so on) cannot be edited; the Editor accepts photos and videos only.
 
 Developer notes: [`src/editor/CONTRACT.md`](src/editor/CONTRACT.md).
 
@@ -244,7 +247,9 @@ bun run lint
 bun run dev          # starts the app in development mode
 ```
 
-Unit tests: `bun test` (engine tests in [`src/engine/__tests__`](src/engine/__tests__); they need no network and start no processes) and `cd src-tauri && cargo test` (Rust).
+Unit tests: `bun test` (engine tests in [`src/engine/__tests__`](src/engine/__tests__), editor tests in [`src/editor/__tests__`](src/editor/__tests__); they need no network and start no processes), `cd src-tauri && cargo test` (Rust) and `python -m pytest -q src-tauri/plugins/keepsake-media/android/src/test/python` (Android Python bridge, with `PYTHONPATH=src-tauri/plugins/keepsake-media/android/src/main/python`).
+
+Testing on a device: the Android phone checklist is in [docs/ANDROID_SELFCONTAINED.md](docs/ANDROID_SELFCONTAINED.md#how-to-test-on-a-phone). Every known open risk, with the exact CI step or device test that checks it, is in [docs/RISK_REGISTER.md](docs/RISK_REGISTER.md).
 
 `bun run dev:web` starts only the Vite front end in a browser. It is for UI work: the browser's CORS rules block real fetches, so links fail with a "browser preview" error.
 
@@ -298,11 +303,14 @@ Release APKs must be signed before Android installs them. Follow [Tauri's Androi
 
 | Job | Runner | Builds | Artifacts |
 |---|---|---|---|
-| `check` | `ubuntu-22.04` | Typecheck, lint, `bun test`, front-end build, `cargo test` | none |
-| `windows` | `windows-latest` (MSVC) | `tauri build --bundles nsis` | `keepsake-windows-nsis` |
-| `linux` | `ubuntu-22.04` | `tauri build --bundles deb,rpm,appimage` | `keepsake-linux-deb`, `keepsake-linux-rpm`, `keepsake-linux-appimage` |
-| `android` | `ubuntu-latest` (JDK 17, SDK, NDK) | `tauri android init --ci`, then an arm64 APK build | `keepsake-android-apk` |
-| `release` | `ubuntu-latest` | Runs on `v*` tags only, after the three builds | Draft GitHub Release with every installer |
+| `check` | `ubuntu-22.04` | Typecheck, lint, `bun test`, pytest (Android Python bridge), front-end build, `cargo test` | none |
+| `windows` | `windows-latest` (MSVC) | `tauri build --bundles nsis`, then `scripts/verify-bundle.ps1` (checks the bundled sidecars) | `keepsake-windows-nsis` |
+| `linux` | `ubuntu-22.04` | `tauri build --bundles deb,rpm,appimage`, then `scripts/verify-bundle.sh` (checks the bundled sidecars) | `keepsake-linux-deb`, `keepsake-linux-rpm`, `keepsake-linux-appimage` |
+| `android-ffmpeg` | `ubuntu-latest` (NDK) | Builds `libffmpeg.so` (FFmpeg, LAME, Opus) | `android-ffmpeg-arm64`; on tags also `keepsake-android-ffmpeg-sources` |
+| `android` | `ubuntu-latest` (JDK 17, SDK, NDK) | `tauri android init --ci`, then an arm64 APK build and APK checks (native libs, extractNativeLibs, 16 KiB alignment, yt-dlp-ejs) | `keepsake-android-apk` |
+| `release` | `ubuntu-latest` | Runs on `v*` tags only, after the builds | Draft GitHub Release with every installer |
+
+The `windows` and `linux` jobs were switched off earlier (`if: false`, "Android-only builds for now") and are enabled again; they run on every push to `main` and every pull request, which costs CI minutes.
 
 You can build the APK entirely in GitHub Actions without installing the Android toolchain: push, open the **Actions** tab, and download `keepsake-android-apk` from the run's **Artifacts**.
 
@@ -406,7 +414,8 @@ The engine API and the yt-dlp argument contract are documented in [`src/engine/C
 │   └── styles/                   Theme CSS
 └── src-tauri/
     ├── src/                      lib.rs, main.rs, ytdlp.rs (yt-dlp launcher)
-    ├── plugins/keepsake-media/   Android audio plugin (Kotlin: MediaExtractor, MediaCodec, MediaMuxer)
+    ├── plugins/keepsake-media/   Android plugin (Kotlin + Python): audio conversion, mux, Gallery and folder saves,
+    │                             Media3 video editor, and the bundled yt-dlp bridge (Chaquopy)
     ├── capabilities/             desktop.json, mobile.json
     ├── binaries/                 Sidecars yt-dlp, ffmpeg, qjs (downloaded, not committed)
     ├── icons/

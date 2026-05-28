@@ -91,6 +91,21 @@ export function drawMatrix(crop: CropRect, probe: MediaProbe, natW: number, natH
   return [0, -ky, kx, 0, -crop.x, ky * w - crop.y];
 }
 
+/** Diagnostics line for the dev console and error details: recorder pieces and the format it would pick. */
+export function webCropInfo(audio: boolean): string {
+  const rec = typeof MediaRecorder;
+  const cap = typeof HTMLCanvasElement === "function" ? typeof HTMLCanvasElement.prototype.captureStream : "no-canvas";
+  let mime = "n/a";
+  if (rec === "function") {
+    try {
+      mime = pickRecorderMime((m) => MediaRecorder.isTypeSupported(m), audio) ?? "none";
+    } catch (e) {
+      mime = `threw(${e instanceof Error ? e.message : String(e)})`;
+    }
+  }
+  return `MediaRecorder=${rec} captureStream=${cap} document=${typeof document} mime=${mime}`;
+}
+
 /** True when this webview can record a cropped video (MediaRecorder + canvas capture). */
 export function webCropSupported(): boolean {
   return (

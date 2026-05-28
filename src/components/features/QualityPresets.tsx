@@ -1,4 +1,5 @@
 import type { FormatOption } from "../../lib/types";
+import { CardChipGlyph } from "../ui/illustrations/CardChipGlyph";
 
 export type PresetKey = "best" | "1080" | "720" | "audio";
 
@@ -58,9 +59,12 @@ export function QualityPresets({
             disabled={off}
             title={f ? f.label : "Not offered for this link"}
             onClick={() => onChange(on ? null : p.key)}
-            className={`flex h-12 min-w-0 flex-col items-center justify-center rounded-md border px-1 transition-colors duration-150 disabled:opacity-45 ${on ? "border-accent-border bg-accent-soft text-accent" : "border-line bg-inset text-fg hover:border-line-strong"}`}
+            className={`flex h-12 min-w-0 flex-col items-center justify-center rounded-[14px_14px_14px_6px] border px-1 transition-[color,background-color,border-color,box-shadow,scale] duration-150 active:scale-[0.97] motion-reduce:active:scale-100 disabled:opacity-45 ${on ? "border-accent-border bg-accent-soft text-accent shadow-sm" : "border-line bg-inset text-fg hover:border-line-strong"}`}
           >
-            <span className="text-[13px] leading-4 font-semibold">{p.label}</span>
+            <span className="flex items-center gap-1 text-[13px] leading-4 font-semibold">
+              <CardChipGlyph name={p.key} active={on} className="size-3.5 shrink-0" />
+              {p.label}
+            </span>
             <span className={`tabular truncate text-[10px] leading-3 ${on ? "text-accent" : "text-fg-3"}`}>
               {f ? f.ext.toUpperCase() : "n/a"}
             </span>

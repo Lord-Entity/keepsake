@@ -1,0 +1,306 @@
+/*
+ * Micro toast icons (MicroSuccess / MicroError / MicroInfo / MicroWarning).
+ *
+ * Every motion lives inside `prefers-reduced-motion: no-preference`; with reduced
+ * motion each icon shows its final pose. Transform boxes and origins are declared
+ * outside the media query. view-box origins are in viewBox units (80 x 80).
+ */
+.mt-icon {
+  display: block;
+  overflow: visible;
+}
+
+.mt-bob,
+.mt-stamp,
+.mt-spark,
+.mt-lid {
+  transform-box: fill-box;
+}
+.mt-bob {
+  transform-origin: 50% 100%;
+}
+.mt-stamp {
+  transform-origin: 50% 100%;
+}
+.mt-spark,
+.mt-lid {
+  transform-origin: 50% 50%;
+}
+
+/* Fixed pivots, in viewBox units. */
+.mt-tip,
+.mt-orbit-in,
+.mt-orbit,
+.mt-bulb-pop,
+.mt-bulb-sway,
+.mt-rays,
+.mt-halo,
+.mt-sign-raise,
+.mt-sign-wobble {
+  transform-box: view-box;
+}
+.mt-tip {
+  transform-origin: 64px 54px;
+}
+.mt-orbit-in,
+.mt-orbit {
+  transform-origin: 46px 22px;
+}
+.mt-bulb-pop,
+.mt-rays,
+.mt-halo {
+  transform-origin: 58px 20px;
+}
+.mt-bulb-sway {
+  transform-origin: 58px 36px;
+}
+.mt-sign-raise,
+.mt-sign-wobble {
+  transform-origin: 57px 51px;
+}
+
+/* Check stroke: pathLength is 1, so the static frame is fully drawn. */
+.mt-check {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+}
+.mt-halo {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .mt-bob {
+    animation: mt-bob 3.2s ease-in-out 1s infinite;
+  }
+
+  /* Success */
+  .mt-stamp {
+    animation: mt-stamp 0.7s cubic-bezier(0.3, 0.9, 0.4, 1) 0.12s both;
+  }
+  .mt-check {
+    animation: mt-draw 0.35s ease-out 0.55s both;
+  }
+  .mt-spark {
+    animation:
+      mt-pop 0.5s ease-out 0.6s both,
+      mt-twinkle 2.8s ease-in-out 1.2s infinite;
+  }
+  .mt-spark-2 {
+    animation-delay: 0.75s, 2s;
+  }
+
+  /* Error */
+  .mt-tip {
+    animation: mt-tip 0.9s ease-in-out 0.12s both;
+  }
+  .mt-lid {
+    animation: mt-lid 0.6s cubic-bezier(0.3, 0.9, 0.4, 1) 0.4s both;
+  }
+  .mt-orbit-in {
+    animation: mt-fade-in 0.5s ease-out 0.7s both;
+  }
+  .mt-orbit {
+    animation: mt-spin 4s linear infinite;
+  }
+
+  /* Info */
+  .mt-bulb-pop {
+    animation: mt-bulb-pop 0.6s cubic-bezier(0.3, 1.4, 0.5, 1) 0.15s both;
+  }
+  .mt-halo {
+    animation: mt-flash 0.8s ease-out 0.4s both;
+  }
+  .mt-rays {
+    animation:
+      mt-fade-in 0.4s ease-out 0.5s both,
+      mt-rays 2.4s ease-in-out 1s infinite;
+  }
+  .mt-bulb-sway {
+    animation: mt-sway 4s ease-in-out 1s infinite;
+  }
+
+  /* Warning */
+  .mt-sign-raise {
+    animation: mt-raise 0.7s cubic-bezier(0.3, 1.3, 0.5, 1) 0.12s both;
+  }
+  .mt-sign-wobble {
+    animation: mt-wobble 2.6s ease-in-out 0.9s infinite;
+  }
+}
+
+@keyframes mt-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1.8px);
+  }
+}
+@keyframes mt-stamp {
+  0% {
+    transform: translateY(-20px) scale(1.4);
+    opacity: 0;
+  }
+  50% {
+    transform: translateY(0) scale(1.08, 0.78);
+    opacity: 1;
+  }
+  75% {
+    transform: scale(0.96, 1.08);
+  }
+  100% {
+    transform: none;
+    opacity: 1;
+  }
+}
+@keyframes mt-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes mt-pop {
+  from {
+    transform: scale(0);
+    opacity: 0;
+  }
+  70% {
+    transform: scale(1.25);
+    opacity: 1;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+@keyframes mt-twinkle {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+}
+@keyframes mt-tip {
+  0% {
+    transform: rotate(80deg);
+  }
+  40% {
+    transform: rotate(-12deg);
+  }
+  58% {
+    transform: rotate(5deg);
+  }
+  74% {
+    transform: rotate(-3deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+@keyframes mt-lid {
+  0% {
+    transform: translate(14px, -18px) rotate(50deg);
+    opacity: 0;
+  }
+  60% {
+    transform: translate(0, 2px) rotate(-8deg);
+    opacity: 1;
+  }
+  100% {
+    transform: none;
+    opacity: 1;
+  }
+}
+@keyframes mt-fade-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes mt-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes mt-bulb-pop {
+  0% {
+    transform: scale(0) translateY(6px);
+    opacity: 0;
+  }
+  70% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+  100% {
+    transform: none;
+    opacity: 1;
+  }
+}
+@keyframes mt-flash {
+  0% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  30% {
+    opacity: 0.85;
+    transform: scale(1.3);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.6);
+  }
+}
+@keyframes mt-rays {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.94);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+@keyframes mt-sway {
+  0%,
+  100% {
+    transform: rotate(-5deg);
+  }
+  50% {
+    transform: rotate(5deg);
+  }
+}
+@keyframes mt-raise {
+  0% {
+    transform: translateY(16px) rotate(-14deg);
+    opacity: 0;
+  }
+  60% {
+    transform: translateY(-2px) rotate(6deg);
+    opacity: 1;
+  }
+  100% {
+    transform: none;
+    opacity: 1;
+  }
+}
+@keyframes mt-wobble {
+  0%,
+  100% {
+    transform: rotate(-7deg);
+  }
+  50% {
+    transform: rotate(7deg);
+  }
+}

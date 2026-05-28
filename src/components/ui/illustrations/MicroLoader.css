@@ -1,0 +1,192 @@
+/*
+ * "Kip is working" micro loader. viewBox is 0 0 100 100, Kip stands at (50, 82),
+ * orbit centre (50, 56). Hop loop is 1.2s; the orbit takes two hops (2.4s) so
+ * both loops close seamlessly. Static styles (no motion) show Kip standing with
+ * the sparkle parked at 3 o'clock.
+ */
+.ml-svg {
+  display: block;
+  flex: none;
+  overflow: visible;
+}
+
+.ml-hop,
+.ml-lid,
+.ml-bow,
+.ml-blink,
+.ml-shadow,
+.ml-spark,
+.ml-twinkle {
+  transform-box: fill-box;
+}
+.ml-hop {
+  transform-origin: 50% 100%;
+}
+.ml-lid {
+  transform-origin: 50% 100%;
+}
+.ml-bow {
+  transform-origin: 50% 100%;
+}
+.ml-blink,
+.ml-shadow,
+.ml-spark,
+.ml-twinkle {
+  transform-origin: 50% 50%;
+}
+/* Orbit turns about Kip's centre, measured from the viewBox origin (0 0). */
+.ml-orbit {
+  transform-box: view-box;
+  transform-origin: 50px 56px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ml-hop {
+    animation: ml-hop 1.2s ease-in-out infinite;
+  }
+  .ml-lid {
+    animation: ml-lid 1.2s ease-in-out infinite;
+  }
+  .ml-bow {
+    animation: ml-bow 1.2s ease-in-out infinite;
+  }
+  .ml-shadow {
+    animation: ml-shadow 1.2s ease-in-out infinite;
+  }
+  .ml-blink {
+    animation: ml-blink 3.6s ease-in-out infinite;
+  }
+  .ml-orbit {
+    animation: ml-orbit 2.4s linear infinite;
+  }
+  .ml-spark {
+    animation: ml-counter 2.4s linear infinite;
+  }
+  .ml-twinkle {
+    animation: ml-twinkle 1.2s ease-in-out infinite;
+  }
+}
+
+@keyframes ml-hop {
+  0% {
+    transform: translateY(0) scale(1, 1);
+  }
+  12% {
+    transform: translateY(0) scale(1.08, 0.88);
+  }
+  28% {
+    transform: translateY(-9px) scale(0.94, 1.08);
+  }
+  45% {
+    transform: translateY(-15px) scale(0.98, 1.02);
+  }
+  62% {
+    transform: translateY(-5px) scale(0.95, 1.06);
+  }
+  72% {
+    transform: translateY(0) scale(1.1, 0.86);
+  }
+  84% {
+    transform: translateY(0) scale(0.97, 1.03);
+  }
+  94%,
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
+}
+@keyframes ml-lid {
+  0%,
+  28% {
+    transform: translateY(0) rotate(0deg);
+  }
+  48% {
+    transform: translateY(-5px) rotate(-4deg);
+  }
+  64% {
+    transform: translateY(-3px) rotate(2deg);
+  }
+  72% {
+    transform: translateY(1.5px) rotate(0deg);
+  }
+  82% {
+    transform: translateY(-1.5px) rotate(0deg);
+  }
+  90%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+}
+@keyframes ml-bow {
+  0%,
+  38%,
+  100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(-9deg);
+  }
+  64% {
+    transform: rotate(7deg);
+  }
+  78% {
+    transform: rotate(-4deg);
+  }
+  90% {
+    transform: rotate(0deg);
+  }
+}
+@keyframes ml-shadow {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  12% {
+    transform: scale(1.05);
+    opacity: 1;
+  }
+  45% {
+    transform: scale(0.68);
+    opacity: 0.45;
+  }
+  72% {
+    transform: scale(1.15);
+    opacity: 1;
+  }
+  84% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+@keyframes ml-blink {
+  0%,
+  44%,
+  50%,
+  100% {
+    transform: scaleY(1);
+  }
+  47% {
+    transform: scaleY(0.1);
+  }
+}
+@keyframes ml-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes ml-counter {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+@keyframes ml-twinkle {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.75);
+    opacity: 0.7;
+  }
+}

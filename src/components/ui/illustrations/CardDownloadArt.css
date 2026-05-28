@@ -1,0 +1,119 @@
+/* Card download art: ring + mini Kip. All motion is opt-in via no-preference. */
+.cdl-arc {
+  transition:
+    stroke-dashoffset 400ms ease,
+    stroke 300ms ease;
+}
+.cdl-spin,
+.cdl-gear,
+.cdl-dot,
+.cdl-arrow,
+.cdl-drip,
+.cdl-z,
+.cdl-pop {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .cdl-spin {
+    animation: cdl-spin 1.4s linear infinite;
+  }
+  .cdl-gear {
+    animation: cdl-spin 3.2s linear infinite;
+  }
+  .cdl-dot {
+    animation: cdl-dot 1.2s ease-in-out infinite;
+  }
+  .cdl-arrow {
+    animation: cdl-arrow 1.3s ease-in infinite;
+  }
+  .cdl-drip {
+    animation: cdl-drip 2s ease-in infinite;
+  }
+  .cdl-z {
+    animation: cdl-z 3s ease-out infinite;
+  }
+  .cdl-pop {
+    animation: cdl-pop 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .cdl-rise {
+    animation: cdl-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+}
+
+@keyframes cdl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes cdl-dot {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes cdl-arrow {
+  0% {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes cdl-drip {
+  0%,
+  20% {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  40% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+}
+@keyframes cdl-z {
+  0% {
+    opacity: 0;
+    transform: translate(0, 4px);
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(3px, -6px);
+  }
+}
+@keyframes cdl-pop {
+  0% {
+    transform: scale(0.88);
+  }
+  60% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes cdl-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

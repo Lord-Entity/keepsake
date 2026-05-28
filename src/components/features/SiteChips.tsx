@@ -1,33 +1,30 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useState } from "react";
-import { Icon, type IconName } from "../ui/Icon";
+import { CardChipGlyph } from "../ui/illustrations/CardChipGlyph";
 import { t } from "../ui/motion";
 
 type SiteKey = "youtube" | "tiktok" | "instagram";
 
-const SITES: { key: SiteKey; label: string; icon: IconName; hint: string }[] = [
+const SITES: { key: SiteKey; label: string; hint: string }[] = [
   {
     key: "youtube",
     label: "YouTube",
-    icon: "play",
     hint: "Videos, Shorts, music and playlists. Tap Share, then Copy link (youtu.be/… or youtube.com/watch?v=…).",
   },
   {
     key: "tiktok",
     label: "TikTok",
-    icon: "note",
     hint: "Any public video. Tap Share, then Copy link (vm.tiktok.com/… or tiktok.com/@user/video/…).",
   },
   {
     key: "instagram",
     label: "Instagram",
-    icon: "camera",
     hint: "Public Reels and video posts. Tap the ⋯ menu, then Copy link (instagram.com/reel/…).",
   },
 ];
 
 const CHIP =
-  "hit inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition-colors duration-150";
+  "hit inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium shadow-sm transition-[color,background-color,border-color] duration-150";
 
 /** Tappable site chips that explain which link to paste. */
 export function SiteChips({ onMore }: { onMore?: () => void }) {
@@ -48,7 +45,7 @@ export function SiteChips({ onMore }: { onMore?: () => void }) {
               onClick={() => setSite(on ? null : s.key)}
               className={`${CHIP} ${on ? "border-accent-border bg-accent-soft text-accent" : "border-line bg-inset text-fg-2 hover:text-fg"}`}
             >
-              <Icon name={s.icon} size={14} />
+              <CardChipGlyph name={s.key} active={on} className="size-4 shrink-0" />
               {s.label}
             </button>
           );
@@ -59,7 +56,7 @@ export function SiteChips({ onMore }: { onMore?: () => void }) {
             onClick={onMore}
             className={`${CHIP} border-line bg-inset text-fg-2 hover:text-fg`}
           >
-            <Icon name="globe" size={14} />
+            <CardChipGlyph name="more" className="size-4 shrink-0" />
             More sites
           </button>
         )}

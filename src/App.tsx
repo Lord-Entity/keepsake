@@ -1,3 +1,5 @@
+import { exit as exitApp, onBackButtonPress } from "@tauri-apps/api/app";
+import type { PluginListener } from "@tauri-apps/api/core";
 import { AnimatePresence, LayoutGroup, MotionConfig, motion, useReducedMotion } from "motion/react";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { SupportedSitesDialog } from "./components/features/SupportedSitesDialog";
@@ -8,6 +10,8 @@ import { Titlebar } from "./components/layout/Titlebar";
 import { Button, IconButton } from "./components/ui/Button";
 import { Fab } from "./components/ui/Fab";
 import { Toasts } from "./components/ui/Toasts";
+import { closeTopModal } from "./components/ui/useModal";
+import { platform } from "./engine/platform";
 import { pageForKey } from "./components/layout/nav-items";
 import { AddLinkDialog } from "./pages/AddLink";
 import { cancelAll, clearFinished, useHasFinished } from "./state/downloads";
@@ -16,8 +20,9 @@ import { isMac } from "./state/format";
 import { useIsNarrowWindow, useIsPhone } from "./state/hooks";
 import { initLibrary } from "./state/library";
 import { showWindow } from "./state/native";
-import { emit, emitOn, navigate, openAddLink, usePage, type Page } from "./state/nav";
+import { emit, emitOn, navigate, navStore, openAddLink, usePage, type Page } from "./state/nav";
 import { initSettings, toggleDarkLight, updateSettings, useSettings } from "./state/settings";
+import { notify } from "./state/toast";
 
 // Pages load on demand so the first paint only pulls the shell.
 const HomePage = lazy(() => import("./pages/Home").then((m) => ({ default: m.HomePage })));
@@ -146,6 +151,88 @@ function isTypingTarget(el: Element | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (el as HTMLElement).isContentEditable;
 }
 
+/**
+ * Close whatever floats over the page, top-most first, the way Esc would:
+ * an open dropdown list, then the top modal/sheet, then the FAB menu.
+ * Returns true when something was open (the back press is consumed).
+ */
+function closeOverlay(): boolean {
+  if (document.querySelector("[data-popover]")) {
+    // Dropdown closes on any pointerdown outside its button and list (document capture listener).
+    document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    return true;
+  }
+  if (closeTopModal()) return true;
+  if (document.querySelector("[data-fab][data-open]")) {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    return true;
+  }
+  return false;
+}
+
+/** Window (ms) in which a second back press on Home exits. */
+const EXIT_WINDOW = 2000;
+
+/**
+ * Android hardware/gesture back. Registering a handler takes over the OS default, so:
+ * close the top overlay, else go Home, else on Home "Press back again to exit".
+ * For that 2 s window the listener is unregistered, so the second press reaches the OS
+ * default (which closes the app) without needing the core:app:allow-exit permission;
+ * exit(0) is only a backup for a press that lands before the unregister completes.
+ * Registered once for the Shell's lifetime; the current page is read from the store.
+ */
+function useAndroidBack() {
+  useEffect(() => {
+    if (platform() !== "android") return;
+    let disposed = false;
+    let listener: PluginListener | null = null;
+    let armedUntil = 0;
+    let rearm: ReturnType<typeof setTimeout> | undefined;
+
+    const register = () =>
+      onBackButtonPress(onBack).then(
+        (l) => {
+          if (disposed) void l.unregister().catch(() => {});
+          else listener = l;
+        },
+        () => {
+          // Not available (older runtime or permission): the OS default stays in place.
+        },
+      );
+
+    const onBack = () => {
+      if (closeOverlay()) return;
+      if (navStore.get() !== "home") {
+        navigate("home");
+        return;
+      }
+      const now = Date.now();
+      if (now < armedUntil) {
+        void exitApp(0).catch(() => {});
+        return;
+      }
+      armedUntil = now + EXIT_WINDOW;
+      notify({ tone: "info", title: "Press back again to exit", duration: EXIT_WINDOW });
+      const l = listener;
+      listener = null;
+      if (l) void l.unregister().catch(() => {});
+      clearTimeout(rearm);
+      rearm = setTimeout(() => {
+        armedUntil = 0;
+        if (!disposed && !listener) void register();
+      }, EXIT_WINDOW);
+    };
+
+    void register();
+    return () => {
+      disposed = true;
+      clearTimeout(rearm);
+      if (listener) void listener.unregister().catch(() => {});
+      listener = null;
+    };
+  }, []);
+}
+
 /** Pages that bind Mod+F to their own search field; the shell leaves Mod+F alone there. */
 const PAGES_WITH_OWN_SEARCH: ReadonlySet<Page> = new Set<Page>(["favorites"]);
 
@@ -160,6 +247,7 @@ function Shell() {
   const hasFinished = useHasFinished();
 
   const collapsed = narrowWindow || collapsedPref;
+  useAndroidBack();
 
   const toggleSidebar = useCallback(() => {
     if (narrowWindow) {

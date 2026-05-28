@@ -1,9 +1,11 @@
 # Single source of truth for Keepsake cloud builds.
 #
 #   check           typecheck, lint, bun tests (if any), pytest (Android bridge), yt-dlp-ejs pin
-#                   assert, frontend build, cargo test
-#   windows         NSIS installer                      (needs: check)  DISABLED (if: false)
-#   linux           deb, rpm, AppImage                  (needs: check)  DISABLED (if: false)
+#                   assert, frontend build, cargo test, clippy (non-blocking)
+#   windows         NSIS installer, then scripts/verify-bundle.ps1 installs it silently and fails
+#                   if keepsake-yt-dlp/-ffmpeg/-qjs are not next to the app or do not run (needs: check)
+#   linux           deb, rpm, AppImage, then scripts/verify-bundle.sh unpacks each package and
+#                   fails if a sidecar is missing from usr/bin or does not run    (needs: check)
 #   android-ffmpeg  libffmpeg.so (FFmpeg minimal LGPL, NDK arm64) built by
 #                   scripts/build-android-ffmpeg.sh, cached on the script + lock file hash.
 #                   Runs in parallel with check.
@@ -11,11 +13,13 @@
 #                   libqjs.so + libffmpeg.so, APK verification  (needs: check, android-ffmpeg)
 #                   Still runs when android-ffmpeg fails: the APK is then built WITHOUT ffmpeg
 #                   (loud error annotation + job summary), so a phone test build always exists.
-#   release         draft GitHub Release, v* tags only  (needs: android, android-ffmpeg; never
-#                   runs if ffmpeg failed). Includes the FFmpeg/LAME/Opus source tarballs (LGPL).
+#   release         draft GitHub Release, v* tags only  (needs: windows, linux, android,
+#                   android-ffmpeg; never runs if one failed). Includes the FFmpeg/LAME/Opus source
+#                   tarballs (LGPL).
 #
-# Only the Android build runs for now. Remove `if: false` from windows/linux and put them back in
-# `release.needs` to re-enable desktop artifacts.
+# windows/linux were switched off (`if: false`, commit 9c0697a "Android-only builds for now") by
+# choice, not because a step was broken. They are back on: the Windows installer is the build the
+# user relies on, and CI must prove every sidecar is inside it.
 #
 # Every build job writes artifact sizes to its job summary.
 # Builds are NOT code-signed (see README.md). No signing secrets are used here.
@@ -61,6 +65,8 @@ jobs:
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xz-utils
 
       - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          components: clippy
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -164,11 +170,16 @@ jobs:
         working-directory: ${{ env.KEEPSAKE_DIR }}/src-tauri
         run: cargo test
 
+      # Advisory only: reports lints as annotations, never fails the job.
+      - name: cargo clippy (non-blocking)
+        continue-on-error: true
+        working-directory: ${{ env.KEEPSAKE_DIR }}/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
   windows:
-    # Disabled for now: Android-only builds. Remove this line to re-enable.
-    if: false
     needs: check
     runs-on: windows-latest
+    timeout-minutes: 90
     defaults:
       run:
         shell: pwsh
@@ -228,11 +239,15 @@ jobs:
           $md = @("### Windows sizes", "", "| File | Size | Bytes |", "|---|---|---|") + $rows
           $md -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
+      # After the upload, so the installer is downloadable even when this check fails.
+      # Installs silently (currentUser) and fails if a sidecar is missing, altered or does not run.
+      - name: Verify bundled sidecars in the installer
+        run: ./scripts/verify-bundle.ps1 -BundleDir src-tauri/target/release/bundle/nsis -Triple x86_64-pc-windows-msvc
+
   linux:
-    # Disabled for now: Android-only builds. Remove this line to re-enable.
-    if: false
     needs: check
     runs-on: ubuntu-22.04
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
@@ -240,11 +255,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # rpm: rpm2cpio + cpio for scripts/verify-bundle.sh (unpacks the .rpm).
       - name: Linux system packages (Tauri v2 prerequisites)
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xz-utils
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xz-utils \
+            rpm cpio
 
       - uses: dtolnay/rust-toolchain@1.90.0
 
@@ -269,7 +286,12 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      # NO_STRIP: linuxdeploy (AppImage) strips ELF files in usr/bin by default. Stripping a
+      # PyInstaller one-file binary (keepsake-yt-dlp) cuts off its appended archive and breaks it.
+      # The app binary itself is already stripped by Cargo (profile.release strip = true).
       - name: Build packages (deb, rpm, AppImage)
+        env:
+          NO_STRIP: "true"
         run: bun run tauri build --bundles deb,rpm,appimage
 
       - uses: actions/upload-artifact@v4
@@ -305,6 +327,11 @@ jobs:
               echo "| $(basename "$f") | $(numfmt --to=iec --suffix=B "$bytes") | $bytes |"
             done
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # After the uploads, so the packages are downloadable even when this check fails.
+      # Unpacks each deb/rpm/AppImage and fails if a sidecar is missing from usr/bin or does not run.
+      - name: Verify bundled sidecars in every package
+        run: bash scripts/verify-bundle.sh src-tauri/target/release/bundle x86_64-unknown-linux-gnu
 
   # FFmpeg 7.1.1 minimal LGPL (+ LAME, Opus), cross-built with the NDK for arm64-v8a as libffmpeg.so.
   # Cached on the build recipe + lock file (exact key, no restore-keys: a changed recipe always
@@ -707,10 +734,10 @@ jobs:
   # platform artifact into a DRAFT GitHub Release, so you review it before publishing.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    # Android-only for now: windows and linux are disabled above. Add them back to this list
-    # when those jobs are re-enabled. android-ffmpeg is listed so a release never ships an APK
-    # without ffmpeg; its keepsake-android-ffmpeg-sources artifact (LGPL sources) is attached.
-    needs: [android, android-ffmpeg]
+    # Every platform must be green (including the bundled-sidecar checks). android-ffmpeg is listed
+    # so a release never ships an APK without ffmpeg; its keepsake-android-ffmpeg-sources artifact
+    # (LGPL sources) is attached.
+    needs: [windows, linux, android, android-ffmpeg]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -1,15 +1,19 @@
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion, type PanInfo } from "motion/react";
+import { useEffect, useRef, useState, type ComponentType } from "react";
 import { useIsPhone } from "../../state/hooks";
 import { dismissToast, useToasts, type Toast, type ToastTone } from "../../state/toast";
-import { Icon, type IconName } from "./Icon";
 import { IconButton } from "./Button";
+import { MicroError } from "./illustrations/MicroError";
+import { MicroInfo } from "./illustrations/MicroInfo";
+import { MicroSuccess } from "./illustrations/MicroSuccess";
+import { MicroWarning } from "./illustrations/MicroWarning";
 
-const ICON: Record<ToastTone, IconName> = {
-  success: "check",
-  error: "alert",
-  warning: "alert",
-  info: "bolt",
+/** A small animated Kip moment per tone: stamp, tipped box, bright idea, warning sign. */
+const ART: Record<ToastTone, ComponentType<{ size?: number; className?: string }>> = {
+  success: MicroSuccess,
+  error: MicroError,
+  warning: MicroWarning,
+  info: MicroInfo,
 };
 
 const TONE: Record<ToastTone, { chip: string; bar: string; text: string }> = {
@@ -22,8 +26,13 @@ const TONE: Record<ToastTone, { chip: string; bar: string; text: string }> = {
 /** At most this many toasts on screen; older ones beyond the newest 3 are dropped, not queued. */
 const MAX_VISIBLE = 3;
 
-/** Short slide-in: quick ease-out, no overshoot. */
-const SLIDE_IN = { duration: 0.22, ease: [0.2, 0.8, 0.2, 1] as const };
+/** Slide in on a lively spring that lands with a small bounce; leave on a quick ease. */
+const SLIDE_IN = { type: "spring", stiffness: 460, damping: 24, mass: 0.9 } as const;
+const LEAVE = { duration: 0.2, ease: [0.4, 0, 1, 1] as const };
+
+/** Phone swipe-to-dismiss: past this distance (px) or fling speed (px/s) the toast goes. */
+const SWIPE_DISTANCE = 90;
+const SWIPE_SPEED = 500;
 
 /**
  * Floating feedback stack, newest at the bottom.
@@ -54,9 +63,24 @@ function ToastCard({ toast, phone }: { toast: Toast; phone: boolean }) {
   const reduced = useReducedMotion();
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
-  const paused = hovered || focused;
+  const [dragging, setDragging] = useState(false);
+  // Direction of a dismissing swipe (-1 left, 1 right); 0 while not swiped away.
+  const [swiped, setSwiped] = useState<-1 | 0 | 1>(0);
+  const paused = hovered || focused || dragging;
   const remaining = useRef(toast.duration);
   const started = useRef(0);
+
+  // Dismiss one render after the swipe so the exit animation already knows its direction.
+  useEffect(() => {
+    if (swiped !== 0) dismissToast(toast.id);
+  }, [swiped, toast.id]);
+
+  const onDragEnd = (_e: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
+    setDragging(false);
+    const { x } = info.offset;
+    const v = info.velocity.x;
+    if (Math.abs(x) > SWIPE_DISTANCE || Math.abs(v) > SWIPE_SPEED) setSwiped(x + v * 0.1 < 0 ? -1 : 1);
+  };
 
   // Countdown that pauses while hovered or focused; resumes with the time left.
   useEffect(() => {
@@ -70,14 +94,30 @@ function ToastCard({ toast, phone }: { toast: Toast; phone: boolean }) {
   }, [paused, toast.id]);
 
   const tone = TONE[toast.tone];
+  const Art = ART[toast.tone];
+  const exit = reduced
+    ? { opacity: 0, transition: { duration: 0.12, ease: "linear" as const } }
+    : swiped !== 0
+      ? { opacity: 0, x: swiped * 420, transition: LEAVE }
+      : phone
+        ? { opacity: 0, y: 16, scale: 0.96, transition: LEAVE }
+        : { opacity: 0, x: 48, scale: 0.96, transition: LEAVE };
   return (
     <motion.div
       layout={reduced ? false : "position"}
       role={toast.tone === "error" ? "alert" : "status"}
-      initial={reduced ? { opacity: 0 } : phone ? { opacity: 0, y: 20, scale: 0.97 } : { opacity: 0, x: 32, scale: 0.97 }}
+      initial={reduced ? { opacity: 0 } : phone ? { opacity: 0, y: 28, scale: 0.94 } : { opacity: 0, x: 40, scale: 0.94 }}
       animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
-      exit={reduced ? { opacity: 0 } : phone ? { opacity: 0, y: 16, scale: 0.96 } : { opacity: 0, x: 48, scale: 0.96 }}
+      exit={exit}
       transition={reduced ? { duration: 0.12, ease: "linear" } : SLIDE_IN}
+      // Phone: swipe sideways to dismiss (the card snaps back if the swipe is short).
+      drag={phone ? "x" : false}
+      dragDirectionLock
+      dragConstraints={{ left: 0, right: 0 }}
+      dragElastic={0.7}
+      dragSnapToOrigin
+      onDragStart={() => setDragging(true)}
+      onDragEnd={onDragEnd}
       onPointerEnter={(e) => {
         if (e.pointerType === "mouse") setHovered(true);
       }}
@@ -92,10 +132,10 @@ function ToastCard({ toast, phone }: { toast: Toast; phone: boolean }) {
       <div className="flex items-start gap-3">
         <span
           aria-hidden="true"
-          className={`ks-toast-in motion-safe-only grid size-9 shrink-0 place-items-center rounded-full ${tone.chip}`}
+          className={`ks-toast-in motion-safe-only grid size-9 shrink-0 place-items-center overflow-visible rounded-full ${tone.chip}`}
           style={{ animationDelay: reduced ? undefined : "80ms" }}
         >
-          <Icon name={ICON[toast.tone]} size={18} />
+          <Art size={36} />
         </span>
         <div className="min-w-0 flex-1 pt-0.5">
           <p className="truncate text-[13px] leading-[18px] font-semibold text-fg">{toast.title}</p>

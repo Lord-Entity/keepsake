@@ -264,6 +264,7 @@ export async function renderPhoto(blob: Blob, job: EditJob, signal?: AbortSignal
   try {
     throwIfAborted(signal);
     const c = job.crop;
+    if (c && ![c.x, c.y, c.w, c.h].every(Number.isFinite)) throw editorError("invalid_job", "crop is not a number");
     const sx = c ? Math.min(Math.max(0, Math.round(c.x)), bmp.width - 1) : 0;
     const sy = c ? Math.min(Math.max(0, Math.round(c.y)), bmp.height - 1) : 0;
     const sw = c ? Math.max(1, Math.min(Math.round(c.w), bmp.width - sx)) : bmp.width;
@@ -289,7 +290,9 @@ export async function renderPhoto(blob: Blob, job: EditJob, signal?: AbortSignal
         quality,
       );
     } catch (e) {
-      throw editorError("export_failed", `${sw}x${sh} ${job.output}: ${rawText(e)}`);
+      // Browsers refuse big canvases (Android WebView often above ~16 MP); say so instead of a bare "failed".
+      const hint = sw * sh >= 16_000_000 ? "This picture is too large for this device to export; try cropping a smaller area. " : "";
+      throw editorError("export_failed", `${hint}${sw}x${sh} ${job.output}: ${rawText(e)}`);
     }
     throwIfAborted(signal);
     return { bytes: new Uint8Array(await out.arrayBuffer()), ext: job.output, mime };

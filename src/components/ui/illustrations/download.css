@@ -1,0 +1,411 @@
+/*
+ * DownloadStateArt styles: Kip's per-state download scenes (240 x 120 viewBox).
+ * Paints only with the --ill-* tokens from illustrations.css, so light/dark follow the
+ * same selectors. The svg root carries --dsa-p (progress 0..1) and .dsa-<state>.
+ * Static rules = the reduced-motion pose; every animation/transition sits under
+ * prefers-reduced-motion: no-preference.
+ *
+ * Layers: dsa-w-* (queued, fetching, cancelled), dsa-j-* (downloading, saving),
+ *         dsa-f-* (processing, done, failed).
+ */
+
+/* ======== Frame ======== */
+.dsa-hill {
+  opacity: 0.85;
+}
+.dsa-layer {
+  transform-box: view-box;
+  transform-origin: 120px 106px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .dsa-layer {
+    animation: dsa-enter 0.42s cubic-bezier(0.34, 1.3, 0.5, 1) both;
+  }
+}
+@keyframes dsa-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ======== waiting layers ======== */
+/*
+ * Download state art: waiting layers (DownloadArtWaiting.tsx).
+ * Layer classes: .dsa-w-queued, .dsa-w-fetching, .dsa-w-cancelled
+ * Parts: .dsa-w-kipbob .dsa-w-par(1|2) .dsa-w-ticket .dsa-w-dot(1|2|3) .dsa-w-orb .dsa-w-unorb
+ *        .dsa-w-ring(1|2) .dsa-w-mer .dsa-w-lens .dsa-w-tail .dsa-w-tag
+ * Static base = reduced-motion pose; all animation lives in no-preference.
+ */
+
+.dsa-w-kipbob,
+.dsa-w-lens,
+.dsa-w-tail,
+.dsa-w-tag,
+.dsa-w-orb,
+.dsa-w-unorb {
+  transform-box: view-box;
+}
+.dsa-w-par,
+.dsa-w-ticket,
+.dsa-w-dot,
+.dsa-w-ring,
+.dsa-w-mer {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.dsa-w-par { transform-origin: 50% 100%; }
+
+/* Orbits: origin 0 0 is the orbit centre (the outer group carries translate + squash). */
+.dsa-w-orb,
+.dsa-w-unorb { transform-origin: 0 0; }
+.dsa-w-queued { --dsa-w-orbit: 7s; }
+.dsa-w-fetching { --dsa-w-orbit: 7s; }
+.dsa-w-cancelled { --dsa-w-orbit: 12s; }
+
+.dsa-w-kipbob { transform-origin: 120px 106px; }
+.dsa-w-lens { transform-origin: 106px 86px; }
+.dsa-w-tail { transform-origin: 190px 104px; }
+.dsa-w-tag { transform-origin: 103.2px 96.7px; }
+
+/* Still pose: radar rings already out, three dots visible. */
+.dsa-w-ring1 { opacity: 0.55; }
+.dsa-w-ring2 { opacity: 0.3; transform: scale(1.3); }
+.dsa-w-ticket { transform: rotate(-4deg); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .dsa-w-kipbob { animation: dsa-w-bob 3s ease-in-out infinite; }
+  .dsa-w-cancelled .dsa-w-kipbob { animation-duration: 4s; }
+
+  /* queue shuffles forward and settles, staggered */
+  .dsa-w-par { animation: dsa-w-step 4s ease-in-out infinite; }
+  .dsa-w-par2 { animation-delay: 0.5s; }
+  .dsa-w-ticket { animation: dsa-w-flutter 2.2s ease-in-out infinite; }
+  .dsa-w-dot { animation: dsa-w-dot 1.8s ease-in-out infinite; }
+  .dsa-w-dot2 { animation-delay: 0.3s; }
+  .dsa-w-dot3 { animation-delay: 0.6s; }
+
+  /* orbits: spinner turns, each item counter-turns so it stays upright */
+  .dsa-w-orb { animation: dsa-w-spin var(--dsa-w-orbit, 7s) linear infinite; }
+  .dsa-w-unorb { animation: dsa-w-spin var(--dsa-w-orbit, 7s) linear infinite reverse; }
+
+  /* fetching */
+  .dsa-w-ring { animation: dsa-w-ring 2.6s ease-out infinite; }
+  .dsa-w-ring2 { animation-delay: 1.3s; }
+  .dsa-w-mer { animation: dsa-w-mer 3.6s ease-in-out infinite; }
+  .dsa-w-lens { animation: dsa-w-lens 2.6s ease-in-out infinite; }
+
+  /* cancelled */
+  .dsa-w-tail { animation: dsa-w-tail 2.8s ease-in-out infinite; }
+  .dsa-w-tag { animation: dsa-w-swing 2.8s ease-in-out infinite; }
+}
+
+@keyframes dsa-w-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-1.6px); }
+}
+@keyframes dsa-w-step {
+  0%, 62%, 100% { transform: translate(0, 0); }
+  70% { transform: translate(5px, -2px); }
+  80% { transform: translate(3px, 0); }
+  92% { transform: translate(3px, 0); }
+}
+@keyframes dsa-w-flutter {
+  0%, 100% { transform: rotate(-4deg) translateY(0); }
+  35% { transform: rotate(5deg) translateY(-1px); }
+  70% { transform: rotate(-7deg) translateY(0.6px); }
+}
+@keyframes dsa-w-dot {
+  0%, 100% { opacity: 0.3; transform: scale(0.7); }
+  45% { opacity: 1; transform: scale(1.2); }
+}
+@keyframes dsa-w-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes dsa-w-ring {
+  0% { opacity: 0.6; transform: scale(0.8); }
+  100% { opacity: 0; transform: scale(1.9); }
+}
+@keyframes dsa-w-mer {
+  0%, 100% { transform: scaleX(1); }
+  50% { transform: scaleX(0.3); }
+}
+@keyframes dsa-w-lens {
+  0%, 100% { transform: rotate(-3deg); }
+  50% { transform: rotate(4deg); }
+}
+@keyframes dsa-w-tail {
+  0%, 100% { transform: rotate(-5deg); }
+  50% { transform: rotate(9deg); }
+}
+@keyframes dsa-w-swing {
+  0%, 100% { transform: rotate(-9deg); }
+  50% { transform: rotate(9deg); }
+}
+
+/* ======== journey layers ======== */
+/*
+ * Download state art, journey layers (prefix dsa-j-).
+ * Classes: dsa-j-downloading, dsa-j-track, dsa-j-ribbon, dsa-j-ms, dsa-j-lit,
+ * dsa-j-walker, dsa-j-waddle, dsa-j-dust(-a/-b), dsa-j-orbit,
+ * dsa-j-saving, dsa-j-glow, dsa-j-parcel, dsa-j-ring, dsa-j-twinkle.
+ * Static base = reduced-motion pose. Needs --dsa-p (0..1) on the svg root.
+ */
+
+/* ---- Downloading ---- */
+.dsa-j-track {
+  fill: none;
+  stroke: var(--ill-ink-soft);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 0 7.2;
+  opacity: 0.35;
+}
+.dsa-j-ribbon {
+  fill: var(--ill-gold);
+  transform-box: view-box;
+  transform-origin: 24px 110px;
+  transform: scaleX(var(--dsa-p, 0));
+}
+.dsa-j-ms {
+  fill: var(--ill-paper);
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.dsa-j-ms.dsa-j-lit {
+  fill: var(--ill-gold);
+  transform: scale(1.25);
+}
+.dsa-j-walker {
+  transform-box: view-box;
+  transform: translateX(calc(var(--dsa-p, 0) * 172px));
+}
+.dsa-j-waddle {
+  transform-box: view-box;
+  transform-origin: 34px 106px;
+}
+.dsa-j-dust {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.dsa-j-orbit {
+  transform-box: view-box;
+  transform-origin: 0 0;
+}
+
+/* ---- Saving ---- */
+.dsa-j-glow {
+  opacity: 0.28;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.dsa-j-parcel {
+  transform-box: view-box;
+  transform: translateX(0);
+}
+.dsa-j-ring {
+  transform-box: view-box;
+  transform-origin: 192px 74px;
+  opacity: 0.85;
+}
+.dsa-j-twinkle {
+  opacity: 0.9;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .dsa-j-ribbon { transition: transform 0.6s ease; }
+  .dsa-j-walker { transition: transform 0.6s ease; }
+  .dsa-j-ms { transition: transform 0.35s cubic-bezier(0.34, 1.6, 0.5, 1), fill 0.3s ease; }
+
+  .dsa-j-waddle { animation: dsa-j-waddle 1.1s ease-in-out infinite; }
+  .dsa-j-dust-a { animation: dsa-j-dust 1.1s ease-out infinite; }
+  .dsa-j-dust-b { animation: dsa-j-dust 1.1s ease-out 0.55s infinite; }
+  .dsa-j-orbit { animation: dsa-j-spin 3.2s linear infinite; }
+
+  .dsa-j-glow { animation: dsa-j-glow 2.8s ease-in-out infinite; }
+  .dsa-j-parcel { animation: dsa-j-slide 2.8s ease-in-out infinite; }
+  .dsa-j-twinkle { animation: dsa-j-twinkle 2.8s ease-in-out infinite; }
+  .dsa-j-ring { animation: dsa-j-spin 6s linear infinite; }
+}
+
+@keyframes dsa-j-waddle {
+  0%, 100% { transform: translateY(0) rotate(-4deg); }
+  25% { transform: translateY(-1.5px) rotate(0deg); }
+  50% { transform: translateY(0) rotate(4deg); }
+  75% { transform: translateY(-1.5px) rotate(0deg); }
+}
+@keyframes dsa-j-dust {
+  0% { opacity: 0; transform: translateX(0) scale(0.5); }
+  25% { opacity: 0.7; }
+  100% { opacity: 0; transform: translateX(-7px) scale(1.5); }
+}
+@keyframes dsa-j-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes dsa-j-slide {
+  0% { transform: translateX(-34px); opacity: 0; }
+  8% { opacity: 1; transform: translateX(-34px); }
+  45% { transform: translateX(24px); }
+  58% { transform: translateX(19px); }
+  66%, 88% { transform: translateX(20px); opacity: 1; }
+  98%, 100% { transform: translateX(20px); opacity: 0; }
+}
+@keyframes dsa-j-glow {
+  0%, 40% { opacity: 0.2; transform: scale(0.9); }
+  58%, 76% { opacity: 0.55; transform: scale(1.2); }
+  100% { opacity: 0.2; transform: scale(0.9); }
+}
+@keyframes dsa-j-twinkle {
+  0%, 44% { opacity: 0; }
+  58%, 72% { opacity: 1; }
+  90%, 100% { opacity: 0; }
+}
+
+/* ======== finale layers ======== */
+/*
+ * Download art finale layers (prefix dsa-f-).
+ * Classes: dsa-f-processing, dsa-f-done, dsa-f-failed, dsa-f-rib(-a/-b), dsa-f-tape,
+ * dsa-f-stitch, dsa-f-roll, dsa-f-orb(+o1|o2|o3), dsa-f-hop, dsa-f-stamp, dsa-f-ripple,
+ * dsa-f-cf(1-8), dsa-f-stars, dsa-f-badge, dsa-f-retry, dsa-f-sweat.
+ * Static base = reduced-motion pose; all animation sits in no-preference.
+ */
+
+/* ---- shared orbit: items travel an ellipse (--rx / --ry), no squash distortion ---- */
+.dsa-f-orb { transform-box: view-box; }
+.dsa-f-processing .dsa-f-orb { --rx: 30px; --ry: 11px; }
+.dsa-f-done .dsa-f-orb { --rx: 26px; --ry: 7px; }
+.dsa-f-o1 { transform: translate(var(--rx), 0); }
+.dsa-f-o2 { transform: translate(calc(var(--rx) * -0.5), calc(var(--ry) * 0.866)); }
+.dsa-f-o3 { transform: translate(calc(var(--rx) * -0.5), calc(var(--ry) * -0.866)); }
+
+/* ---- processing ---- */
+.dsa-f-tape { transform-box: view-box; transform-origin: 143px 74px; }
+.dsa-f-roll { transform-box: view-box; transform-origin: 123.9px 86.16px; }
+.dsa-f-rib { stroke-dasharray: none; }
+
+/* ---- done ---- */
+.dsa-f-hop,
+.dsa-f-stamp { transform-box: view-box; }
+.dsa-f-stamp { transform-origin: 160px 94px; }
+.dsa-f-ripple,
+.dsa-f-cf { transform-box: fill-box; transform-origin: center; opacity: 0; }
+.dsa-f-cf1 { --dx: -30px; --dy: -22px; --r: 200deg; }
+.dsa-f-cf2 { --dx: -16px; --dy: -36px; --r: 90deg; }
+.dsa-f-cf3 { --dx: 30px; --dy: -24px; --r: -220deg; }
+.dsa-f-cf4 { --dx: 14px; --dy: -38px; --r: 140deg; }
+.dsa-f-cf5 { --dx: -4px; --dy: -42px; --r: -160deg; }
+.dsa-f-cf6 { --dx: 38px; --dy: -10px; --r: 180deg; }
+.dsa-f-cf7 { --dx: -40px; --dy: -8px; --r: 260deg; }
+.dsa-f-cf8 { --dx: 22px; --dy: -30px; --r: 120deg; }
+
+/* ---- failed ---- */
+.dsa-f-badge,
+.dsa-f-retry { transform-box: view-box; transform-origin: 146px 50px; }
+.dsa-f-sweat { transform-box: view-box; }
+
+@media (prefers-reduced-motion: no-preference) {
+  /* processing */
+  .dsa-f-roll { animation: dsa-f-spin 1.6s linear infinite; }
+  .dsa-f-tape { animation: dsa-f-tape 3.2s ease-in-out infinite; }
+  .dsa-f-stitch { stroke-dasharray: 3 3; animation: dsa-f-dash 1.2s linear infinite; }
+  .dsa-f-rib-a { stroke-dasharray: 7 4; animation: dsa-f-flow 1.8s linear infinite; }
+  .dsa-f-rib-b { stroke-dasharray: 7 4; animation: dsa-f-flow 1.8s linear -0.9s infinite; }
+
+  /* orbits */
+  .dsa-f-orb { animation: dsa-f-around 6s linear infinite; }
+  .dsa-f-o2 { animation-delay: -2s; }
+  .dsa-f-o3 { animation-delay: -4s; }
+  .dsa-f-done .dsa-f-orb { animation-duration: 7.5s; }
+  .dsa-f-done .dsa-f-o2 { animation-delay: -2.5s; }
+  .dsa-f-done .dsa-f-o3 { animation-delay: -5s; }
+  .dsa-f-stars { animation: dsa-f-fade-in 0.6s ease-out 1.1s 1 both; }
+
+  /* done */
+  /* Settled states (done/failed) loop a few times then rest, so a long finished list goes quiet. */
+  .dsa-f-hop { animation: dsa-f-joy 1.3s ease-in-out 4; }
+  .dsa-f-stamp { animation: dsa-f-stamp 0.6s cubic-bezier(0.3, 1.2, 0.5, 1) 1 both; }
+  .dsa-f-ripple { animation: dsa-f-ripple 0.9s ease-out 0.5s 1 both; }
+  .dsa-f-cf { animation: dsa-f-burst 1.3s ease-out 0.5s 1 both; }
+  .dsa-f-cf2 { animation-delay: 0.54s; }
+  .dsa-f-cf3 { animation-delay: 0.52s; }
+  .dsa-f-cf4 { animation-delay: 0.58s; }
+  .dsa-f-cf5 { animation-delay: 0.55s; }
+  .dsa-f-cf6 { animation-delay: 0.5s; }
+  .dsa-f-cf7 { animation-delay: 0.56s; }
+  .dsa-f-cf8 { animation-delay: 0.53s; }
+
+  /* failed */
+  .dsa-f-badge { animation: dsa-f-pulse 2.4s ease-in-out 3; }
+  .dsa-f-retry { animation: dsa-f-spin 2.4s linear 3; }
+  .dsa-f-sweat { animation: dsa-f-sweat 3s ease-in-out 3; }
+}
+
+@keyframes dsa-f-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes dsa-f-tape {
+  0% { transform: scaleX(0); opacity: 1; }
+  55%, 85% { transform: scaleX(1); opacity: 1; }
+  100% { transform: scaleX(1); opacity: 0; }
+}
+@keyframes dsa-f-dash {
+  to { stroke-dashoffset: -6; }
+}
+@keyframes dsa-f-flow {
+  to { stroke-dashoffset: -22; }
+}
+@keyframes dsa-f-around {
+  0%    { transform: translate(var(--rx), 0); }
+  8.33% { transform: translate(calc(var(--rx) * 0.866), calc(var(--ry) * 0.5)); }
+  16.67% { transform: translate(calc(var(--rx) * 0.5), calc(var(--ry) * 0.866)); }
+  25%   { transform: translate(0, var(--ry)); }
+  33.33% { transform: translate(calc(var(--rx) * -0.5), calc(var(--ry) * 0.866)); }
+  41.67% { transform: translate(calc(var(--rx) * -0.866), calc(var(--ry) * 0.5)); }
+  50%   { transform: translate(calc(var(--rx) * -1), 0); }
+  58.33% { transform: translate(calc(var(--rx) * -0.866), calc(var(--ry) * -0.5)); }
+  66.67% { transform: translate(calc(var(--rx) * -0.5), calc(var(--ry) * -0.866)); }
+  75%   { transform: translate(0, calc(var(--ry) * -1)); }
+  83.33% { transform: translate(calc(var(--rx) * 0.5), calc(var(--ry) * -0.866)); }
+  91.67% { transform: translate(calc(var(--rx) * 0.866), calc(var(--ry) * -0.5)); }
+  100%  { transform: translate(var(--rx), 0); }
+}
+@keyframes dsa-f-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes dsa-f-joy {
+  0%, 100% { transform: translateY(0); }
+  40%, 60% { transform: translateY(-6px); }
+  80% { transform: translateY(0); }
+}
+@keyframes dsa-f-stamp {
+  0% { transform: scale(1.7) rotate(-14deg); opacity: 0; }
+  60% { transform: scale(0.92) rotate(4deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+@keyframes dsa-f-ripple {
+  0% { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+@keyframes dsa-f-burst {
+  0% { opacity: 0; transform: translate(0, 0) rotate(0deg); }
+  8% { opacity: 1; }
+  55% { opacity: 1; transform: translate(var(--dx), var(--dy)) rotate(var(--r)); }
+  100% { opacity: 0; transform: translate(calc(var(--dx) * 1.15), calc(var(--dy) + 30px)) rotate(calc(var(--r) * 1.5)); }
+}
+@keyframes dsa-f-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+}
+@keyframes dsa-f-sweat {
+  0% { transform: translateY(0); opacity: 1; }
+  70% { transform: translateY(6px); opacity: 0.2; }
+  71% { transform: translateY(0); opacity: 0; }
+  85%, 100% { transform: translateY(0); opacity: 1; }
+}

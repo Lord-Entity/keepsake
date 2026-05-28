@@ -36,8 +36,24 @@ an encode, and it has neither.
   timeout) before it is used.
 - h264_vaapi is left out: it needs a device path and a `format=nv12,hwupload` filter
   chain, and Linux users with a full ffmpeg nearly always have libx264 anyway.
-- Nothing usable: crop fails with `editor:no_encoder: ...`; the UI should not get
-  that far because `editor_capabilities` reports `canReencode: false`.
+- No ffmpeg encoder: `edit_video` rejects with the plain string `editor:no_encoder: ...`
+  and the JS side crops **inside the app** (no install needed), in this order
+  (`src/editor/engine-desktop.ts` `exportInApp`):
+  1. **WebCodecs** (`engine-webcodecs.ts`): the bundled ffmpeg stream-copies the source
+     (up to the trim end + 1 s) into a plain .mp4 in the app cache; the webview decodes it
+     (VideoDecoder), crops/rotates on a canvas, encodes H.264 (VideoEncoder; Media
+     Foundation on Windows), and `mp4-mux.ts` writes the .mp4. Audio packets are copied
+     unchanged. Faster than real time. Limit: the part read into memory must be under
+     768 MB (`MAX_IN_APP_BYTES`, from the `size` editor_probe now returns), because the
+     pre-cut file is read whole with `readFile`. Since 2026-11-16 both capabilities grant
+     `fs:allow-read`, `fs:allow-seek` and `fs:allow-fstat` (they act only on a handle that
+     `open` returned, so the path scope is unchanged), so a streaming reader could lift
+     this cap later; the code does not do that yet.
+  2. **Real-time recording** (`engine-webcrop.ts`, MediaRecorder).
+  3. Neither: a clear error listing each attempt; trim and sound off still work.
+  Both outputs are moved into place by `edit_video` in copy mode (faststart).
+  `editor_capabilities` + the webview check decide what the UI offers: crop is on when
+  any path exists (note says fast vs real time).
 
 ## Should the sidecar be switched to a build with an encoder?
 
@@ -73,5 +89,5 @@ Pick one, decide on patents first:
   `bin/ffmpeg(.exe)` from the archive, verifying the archive's sha256 before
   extraction.
 
-Until then: crop needs a user-installed ffmpeg (`winget install Gyan.FFmpeg`,
-`brew install ffmpeg`, or the distro package). Trim and mute work out of the box.
+Until then crop runs through the in-app paths above; a user-installed ffmpeg is only
+used when present (it is tried first).

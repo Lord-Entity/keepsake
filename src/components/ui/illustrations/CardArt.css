@@ -1,0 +1,232 @@
+/*
+ * Card art: kind badges, corner bow, "ready" stamp and like-heart.
+ * Paints only with --ill-* tokens / currentColor. Without motion, every piece shows its calm final pose.
+ */
+.cart-play,
+.cart-bar,
+.cart-sun,
+.cart-twinkle,
+.cart-sway,
+.cart-slam,
+.cart-wobble,
+.cart-ink,
+.cart-check,
+.cart-pop,
+.cart-beat,
+.cart-dot,
+.cart-ring {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.cart-bar {
+  transform-origin: 50% 100%;
+}
+
+.cart-ink,
+.cart-dot,
+.cart-ring {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Kind badges */
+  .cart-play {
+    animation: cart-pulse 2.4s ease-in-out infinite;
+  }
+  .cart-film {
+    animation: cart-film 1.6s linear infinite;
+  }
+  .cart-bar {
+    animation: cart-bounce 0.9s ease-in-out infinite;
+  }
+  .cart-bar-2 {
+    animation-delay: 0.3s;
+  }
+  .cart-bar-3 {
+    animation-delay: 0.6s;
+  }
+  .cart-sun {
+    animation: cart-sun 3s ease-in-out infinite;
+  }
+  .cart-twinkle {
+    animation: cart-twinkle 2.4s ease-in-out infinite;
+  }
+  .cart-twinkle-2 {
+    animation-delay: 0.8s;
+  }
+  .cart-twinkle-3 {
+    animation-delay: 1.6s;
+  }
+
+  /* Corner bow */
+  .cart-sway {
+    animation: cart-sway 3.6s ease-in-out infinite;
+  }
+
+  /* Ready stamp: slam once, then idle wobble */
+  .cart-slam {
+    animation: cart-slam 520ms cubic-bezier(0.2, 1.4, 0.4, 1) both;
+  }
+  .cart-wobble {
+    animation: cart-wobble 4s ease-in-out 1.2s infinite;
+  }
+  .cart-ink {
+    animation: cart-ink 640ms ease-out 180ms both;
+  }
+  .cart-check {
+    animation: cart-draw 420ms ease-out 300ms both;
+  }
+
+  /* Heart: pop + burst on mount, then idle double-beat */
+  .cart-pop {
+    animation: cart-heart-pop 420ms ease-out both;
+  }
+  .cart-beat {
+    animation: cart-beat 4s ease-in-out 0.7s infinite;
+  }
+  .cart-dot {
+    animation: cart-fly 520ms ease-out both;
+  }
+  .cart-ring {
+    animation: cart-ring 520ms ease-out both;
+  }
+
+  @keyframes cart-pulse {
+    0%,
+    100% {
+      transform: scale(1);
+    }
+    50% {
+      transform: scale(1.12);
+    }
+  }
+  @keyframes cart-film {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-4px);
+    }
+  }
+  @keyframes cart-bounce {
+    0%,
+    100% {
+      transform: scaleY(0.45);
+    }
+    50% {
+      transform: scaleY(1);
+    }
+  }
+  @keyframes cart-sun {
+    0%,
+    100% {
+      transform: translate(0, 1px);
+    }
+    50% {
+      transform: translate(1.5px, -1.5px);
+    }
+  }
+  @keyframes cart-twinkle {
+    0%,
+    100% {
+      transform: scale(0.65);
+      opacity: 0.55;
+    }
+    50% {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+  @keyframes cart-sway {
+    0%,
+    100% {
+      transform: rotate(-6deg);
+    }
+    50% {
+      transform: rotate(6deg);
+    }
+  }
+  @keyframes cart-slam {
+    from {
+      transform: scale(1.7) rotate(-16deg);
+      opacity: 0;
+    }
+    to {
+      transform: scale(1) rotate(0deg);
+      opacity: 1;
+    }
+  }
+  @keyframes cart-wobble {
+    0%,
+    60%,
+    100% {
+      transform: rotate(0deg);
+    }
+    80% {
+      transform: rotate(3deg);
+    }
+  }
+  @keyframes cart-ink {
+    from {
+      transform: scale(0.8);
+      opacity: 0.6;
+    }
+    to {
+      transform: scale(1.35);
+      opacity: 0;
+    }
+  }
+  @keyframes cart-draw {
+    from {
+      stroke-dashoffset: 1;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+  @keyframes cart-heart-pop {
+    0% {
+      transform: scale(0.6);
+    }
+    60% {
+      transform: scale(1.25);
+    }
+    100% {
+      transform: scale(1);
+    }
+  }
+  @keyframes cart-beat {
+    0%,
+    20%,
+    100% {
+      transform: scale(1);
+    }
+    6% {
+      transform: scale(1.08);
+    }
+    13% {
+      transform: scale(1.06);
+    }
+  }
+  @keyframes cart-fly {
+    from {
+      transform: translate(0, 0);
+      opacity: 1;
+    }
+    to {
+      transform: translate(var(--dx), var(--dy));
+      opacity: 0;
+    }
+  }
+  @keyframes cart-ring {
+    from {
+      transform: scale(0.6);
+      opacity: 0.7;
+    }
+    to {
+      transform: scale(1.8);
+      opacity: 0;
+    }
+  }
+}

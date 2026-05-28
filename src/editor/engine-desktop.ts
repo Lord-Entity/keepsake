@@ -11,8 +11,11 @@
  *   Rust writes the output file itself (and validates the path). Rejections "editor:<code>[: detail]" map through
  *   mapNativeError: invalid -> invalid_job, no_encoder / no_ffmpeg -> unsupported, no_video -> probe_failed,
  *   failed -> the caller's fallback (probe_failed / export_failed), cancelled / unsupported as is.
- * - Crop without an ffmpeg encoder (the bundled build has none): edit_video rejects with editor:no_encoder, so the clip
- *   is recorded cropped in the webview (engine-webcrop.ts, real time) and remuxed to .mp4 by edit_video in copy mode.
+ * - Crop without an ffmpeg encoder (the bundled build has none): edit_video rejects with the plain string
+ *   "editor:no_encoder: ..." (Tauri rejects with the Err(String) value itself, not an Error). exportInApp then tries
+ *   1) WebCodecs (engine-webcodecs.ts: decode, crop, H.264 encode, own mp4 muxer; faster than real time), then
+ *   2) the webview recorder (engine-webcrop.ts, real time); both outputs are moved into place by edit_video in copy
+ *   mode. If both fail, the error lists every attempt and says trim / sound off still work (NO_CROP_HELP).
  * - Photo: decoded and encoded in the webview (engine-photo.ts), written with plugin-fs.
  * Output goes to Settings > save folder when set, otherwise next to the source, as `<name>_edit.<ext>`.
  * Invoke/Channel style copied from src/engine/ytdlp.ts.
@@ -45,7 +48,8 @@ import {
   videoTrim,
   type PlatformEngine,
 } from "./engine-photo";
-import { recordWebCrop, remuxProgress, webCropSupported, type WebCropResult } from "./engine-webcrop";
+import { transcodeWebCodecs, webCodecsCanEncode, webCodecsEncoderProbe } from "./engine-webcodecs";
+import { recordWebCrop, remuxProgress, webCropInfo, webCropSupported, type WebCropResult } from "./engine-webcrop";
 import type { CropRect, EditJob, EditorCapabilities, EditorInput, EditResult, MediaKind, MediaProbe } from "./types";
 import { EditorError } from "./types";
 
@@ -109,6 +113,8 @@ async function probeDesktop(input: EditorInput, signal?: AbortSignal): Promise<M
     throw mapNativeError(e, "probe_failed");
   }
   throwIfAborted(signal);
+  const size = (res as { size?: unknown } | null)?.size;
+  if (typeof size === "number" && size > 0) sourceSizes.set(path, size);
   return parseProbe(res);
 }
 
@@ -188,7 +194,176 @@ async function runEditVideo(args: EditArgs, report: (f: number) => void, signal?
 
 /** True for edit_video rejections the webview recorder can work around (no encoder / no ffmpeg). */
 export function needsWebCrop(e: unknown): boolean {
-  return /editor:(no_encoder|no_ffmpeg)/.test(rawText(e));
+  return /editor:(no_encoder|no_ffmpeg)\b/.test(rawText(e));
+}
+
+/** Bytes the in-app encoder may read into memory (the source up to the trim end). Above it: the recorder. */
+export const MAX_IN_APP_BYTES = 768 * 1024 * 1024;
+/** Source file sizes from editor_probe (`size`), so the in-app encoder can skip files too large for memory. */
+const sourceSizes = new Map<string, number>();
+
+/** Short text of a failed attempt for the final message. */
+function why(e: unknown): string {
+  return rawText(e)
+    .replace(/^editor:[a-z_]+:\s*/, "")
+    .replace(/\s+/g, " ")
+    .slice(0, 160);
+}
+
+const isCancel = (e: unknown, signal?: AbortSignal) => signal?.aborted === true || (e instanceof EditorError && e.code === "cancelled");
+
+async function editorCache(): Promise<string> {
+  const cache = await join(await appCacheDir(), "editor");
+  await mkdir(cache, { recursive: true }).catch(() => undefined);
+  return cache;
+}
+
+type FileHandle = Awaited<ReturnType<typeof openFs>>;
+
+async function writeAll(fh: FileHandle, chunk: Uint8Array): Promise<void> {
+  let off = 0;
+  while (off < chunk.length) {
+    const n = await fh.write(chunk.subarray(off));
+    if (!(n > 0)) throw editorError("export_failed", "could not write the video");
+    off += n;
+  }
+}
+
+/**
+ * Moves a finished temp .mp4/.webm from the app cache to `output`: edit_video in stream-copy mode (faststart, and
+ * Rust may write folders the webview's fs scope can't). If that fails, the file is copied as is to the first writable
+ * output folder. The temp file is always removed.
+ */
+async function deliver(tmp: string, output: string, hasAudio: boolean, src: string, job: EditJob, ext: string, report: (f: number) => void, signal?: AbortSignal): Promise<EditResult> {
+  try {
+    await runEditVideo({ input: tmp, output, crop: null, trimStart: null, trimEnd: null, audio: hasAudio }, (p) => report(remuxProgress(p)), signal);
+  } catch (e) {
+    if (isCancel(e, signal)) {
+      await remove(tmp).catch(() => undefined);
+      throw cancelled();
+    }
+    try {
+      const kept = await keepRecording(tmp, src, editBase(job.input.name || baseOf(src)), ext);
+      report(1);
+      return kept;
+    } finally {
+      // No writable folder: don't leave the (possibly large) file behind in the app cache.
+      await remove(tmp).catch(() => undefined);
+    }
+  }
+  await remove(tmp).catch(() => undefined);
+  report(1);
+  return { path: output, name: baseOf(output) };
+}
+
+/**
+ * Crop without an ffmpeg encoder, fast path: the bundled ffmpeg stream-copies the source (up to the trim end, plus
+ * 1 s) into a plain .mp4 in the app cache; WebCodecs decodes, crops and H.264-encodes it in the webview
+ * (engine-webcodecs.ts, faster than real time), audio packets are copied; the result is moved into place by deliver().
+ */
+async function exportWebCodecs(job: EditJob, probe: MediaProbe, src: string, output: string, report: (f: number) => void, signal?: AbortSignal): Promise<EditResult> {
+  throwIfAborted(signal);
+  const { trimStart, trimEnd } = videoTrim(job, probe);
+  const start = trimStart ?? 0;
+  // Unknown duration (0): encode to the end of the file.
+  const end = trimEnd ?? (probe.duration > 0 ? probe.duration : Number.POSITIVE_INFINITY);
+  const audio = job.audio && probe.hasAudio;
+  const size = sourceSizes.get(src);
+  if (size && probe.duration > 0 && (size * Math.min(1, (end + 1) / probe.duration)) > MAX_IN_APP_BYTES) {
+    throw editorError("unsupported", `the clip is too large to encode in memory (${Math.round(size / 1048576)} MB file); trim it shorter or crop a shorter part`);
+  }
+  const cache = await editorCache();
+  const id = crypto.randomUUID();
+  const pre = await join(cache, `src-${id}.mp4`);
+  const tmp = await join(cache, `enc-${id}.mp4`);
+  try {
+    const cut = end < probe.duration - 0.01 ? Math.min(probe.duration, end + 1) : null;
+    await runEditVideo({ input: src, output: pre, crop: null, trimStart: null, trimEnd: cut, audio }, (p) => report(0.05 * p), signal);
+    let bytes: Uint8Array;
+    try {
+      bytes = await readFile(pre);
+    } catch (e) {
+      throw mapNativeError(e, "export_failed");
+    }
+    await remove(pre).catch(() => undefined);
+    let fh: FileHandle;
+    try {
+      fh = await openFs(tmp, { write: true, create: true, truncate: true });
+    } catch (e) {
+      throw mapNativeError(e, "export_failed");
+    }
+    let res: { hasAudio: boolean };
+    try {
+      res = await transcodeWebCodecs({
+        bytes,
+        probe,
+        crop: videoCrop(job.crop, probe),
+        start,
+        end,
+        audio,
+        onProgress: (f) => report(0.05 + 0.9 * f),
+        write: (c) => writeAll(fh, c),
+        signal,
+      });
+    } finally {
+      await fh.close().catch(() => undefined);
+    }
+    return await deliver(tmp, output, res.hasAudio, src, job, "mp4", report, signal);
+  } catch (e) {
+    await remove(tmp).catch(() => undefined);
+    throw isCancel(e, signal) ? cancelled() : e;
+  } finally {
+    await remove(pre).catch(() => undefined);
+  }
+}
+
+/** Shown when no in-app path can crop. Exported for tests. */
+export const NO_CROP_HELP =
+  "You can still trim the video and turn its sound off: reset the crop and export again. To crop here, update Microsoft Edge WebView2 (Windows N editions also need the Media Feature Pack) or, on Linux, install the GStreamer H.264 plugins (gst-plugins-bad/ugly or openh264); a full ffmpeg on PATH also works.";
+
+/** One fallback step in the dev console (DevTools), so a failed crop can be diagnosed. */
+const step = (s: string) => console.warn(`[keepsake-editor] ${s}`);
+
+/**
+ * edit_video could not do it (no encoder / no ffmpeg). Tries, in order: WebCodecs (fast), the webview recorder (real
+ * time). Every failure is collected so the final message says exactly what was missing.
+ */
+async function exportInApp(job: EditJob, probe: MediaProbe, src: string, output: string, report: (f: number) => void, first: unknown, signal?: AbortSignal): Promise<EditResult> {
+  // Each step goes to the dev console ([keepsake-editor]) and, on total failure, into the dialog's Details.
+  const tried = [`ffmpeg: ${why(first)}`];
+  step(`1/3 ffmpeg (bundled, then PATH) failed: ${rawText(first)}`);
+  const enc = await webCodecsEncoderProbe().catch((e: unknown) => ({ ok: false, info: `probe threw: ${why(e)}` }));
+  step(`2/3 in-app encoder (WebCodecs) probe: ${enc.ok ? "usable" : "unusable"}; ${enc.info}`);
+  if (enc.ok) {
+    try {
+      const r = await exportWebCodecs(job, probe, src, output, report, signal);
+      step("2/3 in-app encoder: done");
+      return r;
+    } catch (e) {
+      if (isCancel(e, signal)) throw cancelled();
+      step(`2/3 in-app encoder failed: ${rawText(e)}`);
+      tried.push(`in-app encoder: ${why(e)} [${enc.info}]`);
+    }
+  } else {
+    tried.push(`in-app encoder: this system's web engine has no H.264 encoder (WebCodecs) [${enc.info}]`);
+  }
+  const recInfo = webCropInfo(job.audio && probe.hasAudio);
+  const rec = webCropSupported();
+  step(`3/3 real-time recording probe: ${rec ? "usable" : "unusable"}; ${recInfo}`);
+  if (rec) {
+    try {
+      const r = await exportWebCrop(job, probe, src, output, report, signal);
+      step("3/3 real-time recording: done");
+      return r;
+    } catch (e) {
+      if (isCancel(e, signal)) throw cancelled();
+      step(`3/3 real-time recording failed: ${rawText(e)}`);
+      tried.push(`real-time recording: ${why(e)} [${recInfo}]`);
+    }
+  } else {
+    tried.push(`real-time recording: not available in this web engine [${recInfo}]`);
+  }
+  throw new EditorError("unsupported", `Keepsake couldn't crop this video on this computer. ${NO_CROP_HELP} (Details: Tried: ${tried.join("; ")}.)`);
 }
 
 /** Moves a recording the remux could not convert to `<base>.<ext>` in the first writable output folder. */
@@ -223,23 +398,14 @@ async function keepRecording(tmp: string, src: string, base: string, ext: string
 async function exportWebCrop(job: EditJob, probe: MediaProbe, src: string, output: string, report: (f: number) => void, signal?: AbortSignal): Promise<EditResult> {
   throwIfAborted(signal);
   const { trimStart, trimEnd } = videoTrim(job, probe);
-  const cache = await join(await appCacheDir(), "editor");
-  await mkdir(cache, { recursive: true }).catch(() => undefined);
-  const tmp = await join(cache, `rec-${crypto.randomUUID()}.tmp`);
-  let fh: Awaited<ReturnType<typeof openFs>>;
+  const tmp = await join(await editorCache(), `rec-${crypto.randomUUID()}.tmp`);
+  let fh: FileHandle;
   try {
     fh = await openFs(tmp, { write: true, create: true, truncate: true });
   } catch (e) {
     throw mapNativeError(e, "export_failed");
   }
-  const onData = async (chunk: Uint8Array) => {
-    let off = 0;
-    while (off < chunk.length) {
-      const n = await fh.write(chunk.subarray(off));
-      if (!(n > 0)) throw editorError("export_failed", "could not write the recording");
-      off += n;
-    }
-  };
+  const onData = (chunk: Uint8Array) => writeAll(fh, chunk);
   let rec: WebCropResult;
   try {
     rec = await recordWebCrop({
@@ -260,31 +426,7 @@ async function exportWebCrop(job: EditJob, probe: MediaProbe, src: string, outpu
     throw mapNativeError(e, "export_failed");
   }
   await fh.close().catch(() => undefined);
-  try {
-    await runEditVideo(
-      { input: tmp, output, crop: null, trimStart: null, trimEnd: null, audio: rec.hasAudio },
-      (p) => report(remuxProgress(p)),
-      signal,
-    );
-  } catch (e) {
-    if (signal?.aborted || (e instanceof EditorError && e.code === "cancelled")) {
-      await remove(tmp).catch(() => undefined);
-      throw cancelled();
-    }
-    let kept: EditResult;
-    try {
-      kept = await keepRecording(tmp, src, editBase(job.input.name || baseOf(src)), rec.ext);
-    } catch (err) {
-      // No writable folder: don't leave the (possibly large) recording behind in the app cache.
-      await remove(tmp).catch(() => undefined);
-      throw err;
-    }
-    report(1);
-    return kept;
-  }
-  await remove(tmp).catch(() => undefined);
-  report(1);
-  return { path: output, name: baseOf(output) };
+  return deliver(tmp, output, rec.hasAudio, src, job, rec.ext, report, signal);
 }
 
 async function exportVideo(
@@ -306,9 +448,10 @@ async function exportVideo(
       signal,
     );
   } catch (e) {
-    if (e instanceof EditorError && e.code === "cancelled") throw e;
-    // ffmpeg can't do it (bundled build: no video encoder): crop in the webview instead.
-    if (needsWebCrop(e) && webCropSupported()) return exportWebCrop(job, probe, input, output, report, signal);
+    if (isCancel(e, signal)) throw cancelled();
+    // ffmpeg can't do it (bundled build: no video encoder): encode in the app instead (WebCodecs, then recorder).
+    // `e` is the plain string Tauri rejects with for a Rust Err(String), e.g. "editor:no_encoder: cropping needs ...".
+    if (needsWebCrop(e)) return exportInApp(job, probe, input, output, report, e, signal);
     throw mapNativeError(e, "export_failed");
   }
   report(1);
@@ -330,12 +473,16 @@ export function dialogFilters(want?: MediaKind): { title: string; filters: { nam
 }
 
 const NONE_CAPS: EditorCapabilities = { crop: false, trim: false, mute: false, exactTrim: false };
-const COPY_ONLY_NOTE = "Trim starts at the nearest earlier keyframe. Install ffmpeg to crop video.";
+/** Copy-only ffmpeg and no in-app encoder: crop is off. Exported for tests. */
+export const COPY_ONLY_NOTE = `Crop is off: this computer has no video encoder Keepsake can use. Trim (starts at the nearest earlier keyframe) and sound on/off work. ${NO_CROP_HELP}`;
+/** Shown when crop runs through the in-app WebCodecs encoder. Exported for tests. */
+export const WEBCODECS_NOTE =
+  "Cropped videos are re-encoded inside Keepsake, usually faster than real time. Trim without a crop is instant but starts at the nearest earlier keyframe.";
 /** Shown when crop runs through the webview recorder. Exported for tests. */
 export const WEBCROP_NOTE =
   "Cropped videos are recorded in real time, so a 1-minute clip takes about a minute to export; keep Keepsake open meanwhile. Trim without a crop is instant but starts at the nearest earlier keyframe.";
 const NO_FFMPEG_NOTE =
-  "Video editing needs ffmpeg. Install it (Windows: winget install ffmpeg, macOS: brew install ffmpeg, Linux: your distro's ffmpeg package), then reopen the video.";
+  "Keepsake's built-in ffmpeg (keepsake-ffmpeg, next to the app) is missing, so videos can't be read. Reinstall Keepsake (or install ffmpeg on PATH), then reopen the video.";
 
 /** Maps `editor_capabilities` (cached in Rust; the first call may run a test encode). Rejects on a bad reply. */
 async function videoCapabilities(): Promise<EditorCapabilities> {
@@ -350,8 +497,12 @@ async function videoCapabilities(): Promise<EditorCapabilities> {
   const { copyOnly, canReencode } = r as { copyOnly?: unknown; canReencode?: unknown };
   if (typeof copyOnly !== "boolean" || typeof canReencode !== "boolean") throw new Error("bad editor_capabilities reply");
   if (canReencode) return { ...FULL_CAPS };
-  // No encoder: crop goes through the webview recorder when this webview can record.
-  if (copyOnly) return { crop: webCropSupported(), trim: true, mute: true, exactTrim: false, note: webCropSupported() ? WEBCROP_NOTE : COPY_ONLY_NOTE };
+  // No ffmpeg encoder: crop goes through the in-app encoder (fast) or the webview recorder (real time).
+  if (copyOnly) {
+    if (await webCodecsCanEncode().catch(() => false)) return { crop: true, trim: true, mute: true, exactTrim: false, note: WEBCODECS_NOTE };
+    const rec = webCropSupported();
+    return { crop: rec, trim: true, mute: true, exactTrim: false, note: rec ? WEBCROP_NOTE : COPY_ONLY_NOTE };
+  }
   return { ...NONE_CAPS, note: NO_FFMPEG_NOTE };
 }
 

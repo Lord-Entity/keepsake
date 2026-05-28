@@ -3,6 +3,12 @@ import type { VideoInfo } from "../../lib/types";
 import { formatClock, formatCount, formatDate } from "../../state/format";
 import { Badge } from "../ui/Badge";
 import { Icon } from "../ui/Icon";
+import { CardBow } from "../ui/illustrations/CardBow";
+import { CardKindBadge } from "../ui/illustrations/CardKindBadge";
+import { CardReadyStamp } from "../ui/illustrations/CardReadyStamp";
+import "../ui/illustrations/CardSurface.css";
+import { Mascot } from "../ui/illustrations/Mascot";
+import { Scene, Sparkle } from "../ui/illustrations/Scene";
 import { Pulse } from "../ui/Loader";
 import { press, t } from "../ui/motion";
 
@@ -91,27 +97,48 @@ export function PreviewCard({
       ) : info ? (
         <motion.div key={info.url} {...fade} transition={t.base} className={`flex min-h-0 flex-1 gap-4 ${phone ? "flex-col" : ""}`}>
           {phone ? (
-            // Phone: full-width thumb with the duration pinned on it, video-app style.
+            // Phone: full-width hero thumb with the duration pinned on it and a "ready" stamp.
             <div className="relative w-full shrink-0">
-              <Thumb
-                src={info.thumbnails[0]?.url}
-                icon={info.hasVideo ? "video" : "audio"}
-                contain={!info.hasVideo}
-                className="aspect-video w-full shrink-0 rounded-md"
-              />
-              {info.durationSec ? (
-                <span className="tabular absolute right-2 bottom-2 rounded-md bg-black/75 px-1.5 py-0.5 text-[11px] font-semibold text-white">
-                  {formatClock(info.durationSec)}
+              <div className="phero-frame relative overflow-hidden">
+                <Thumb
+                  src={info.thumbnails[0]?.url}
+                  icon={info.hasVideo ? "video" : "audio"}
+                  contain={!info.hasVideo}
+                  className="aspect-video w-full shrink-0"
+                />
+                <span aria-hidden="true" className="absolute bottom-2 left-2 block size-8 drop-shadow-sm">
+                  <CardKindBadge kind={info.hasVideo ? "video" : "audio"} className="size-full" />
                 </span>
-              ) : null}
+                {info.durationSec ? (
+                  <span className="tabular absolute right-2 bottom-2 rounded-md bg-black/75 px-1.5 py-0.5 text-[11px] font-semibold text-white">
+                    {formatClock(info.durationSec)}
+                  </span>
+                ) : null}
+              </div>
+              <span aria-hidden="true" className="pointer-events-none absolute -top-2.5 -left-2 block w-10">
+                <CardBow className="w-full" />
+              </span>
+              <CardReadyStamp label="Ready" className="phero-stamp absolute -top-3 -right-2 size-[68px]" />
             </div>
           ) : (
-            <Thumb
-              src={info.thumbnails[0]?.url}
-              icon={info.hasVideo ? "video" : "audio"}
-              contain={!info.hasVideo}
-              className="aspect-video h-full max-h-[220px] shrink-0 self-start rounded-md"
-            />
+            // Desktop keeps the original sizing (height-driven 16:9, capped at 220px) on the wrapper.
+            <div className="relative aspect-video h-full max-h-[220px] shrink-0 self-start">
+              <div className="phero-frame absolute inset-0 overflow-hidden">
+                <Thumb
+                  src={info.thumbnails[0]?.url}
+                  icon={info.hasVideo ? "video" : "audio"}
+                  contain={!info.hasVideo}
+                  className="size-full"
+                />
+                <span aria-hidden="true" className="absolute bottom-2 left-2 block size-8 drop-shadow-sm">
+                  <CardKindBadge kind={info.hasVideo ? "video" : "audio"} className="size-full" />
+                </span>
+              </div>
+              <span aria-hidden="true" className="pointer-events-none absolute -top-2.5 -left-2 block w-10">
+                <CardBow className="w-full" />
+              </span>
+              <CardReadyStamp label="Ready" className="phero-stamp absolute -top-4 -right-4 size-[64px]" />
+            </div>
           )}
           <div className="flex min-w-0 flex-1 flex-col gap-2">
             <div className="truncate text-[11px] font-medium tracking-wider text-accent">{kicker(info)}</div>
@@ -160,9 +187,13 @@ export function PreviewCard({
           transition={t.base}
           className="flex flex-1 flex-col items-center justify-center gap-2 text-center"
         >
-          <span className="breathe icon-host flex size-12 items-center justify-center rounded-full bg-accent-soft text-accent">
-            <Icon name="link" size={22} animated />
-          </span>
+          <div className="w-28 shrink-0">
+            <Scene>
+              <Mascot x={120} y={150} scale={1.25} mood="curious" pose="wave" lid="tip" />
+              <Sparkle x={70} y={60} size={7} />
+              <Sparkle x={176} y={48} size={5} delay={0.9} />
+            </Scene>
+          </div>
           <div className="text-[11px] font-medium tracking-wider text-fg-3">NO VIDEO</div>
           <div className="text-[15px] font-semibold">Paste a link to get started</div>
           <div className="text-fg-2">YouTube and 1,000+ other sites. Press Enter or Fetch.</div>

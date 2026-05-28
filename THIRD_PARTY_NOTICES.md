@@ -29,7 +29,9 @@ every text.
 | [certifi](https://github.com/certifi/python-certifi) | 2026.10.23 | MPL-2.0 | Android | CA bundle for yt-dlp |
 
 Front-end and Rust dependencies (React, Tauri, youtubei.js and others) are listed with their licences in
-`package.json`/`bun.lock` and `src-tauri/Cargo.toml`/`Cargo.lock`; they are not repeated here.
+`package.json`/`bun.lock` and `src-tauri/Cargo.toml`/`Cargo.lock`; they are not repeated here. The Android plugin's
+Gradle dependencies (AndroidX Core, AppCompat and Media3 Transformer/Effect/Common 1.8.1, all Apache-2.0; Media3 runs
+the Android video editor) are listed in `src-tauri/plugins/keepsake-media/android/build.gradle.kts`.
 
 ## FFmpeg (LGPL-2.1-or-later)
 

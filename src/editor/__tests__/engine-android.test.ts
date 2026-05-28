@@ -456,6 +456,15 @@ describe("exportEdit: video, legacy folder", () => {
     expect(removeMock).toHaveBeenCalledWith(LEGACY_OUT);
   });
 
+  test("an abort while the stage is being prepared never starts the export", async () => {
+    const ac = new AbortController();
+    mkdirImpl = async () => {
+      ac.abort();
+    };
+    expect((await rejection(androidEngine.exportEdit(videoJob(), PROBE, () => {}, ac.signal))).code).toBe("cancelled");
+    expect(calls(`${P}editor_export_video`).length).toBe(0);
+  });
+
   test("an already-aborted signal never starts the export", async () => {
     const ac = new AbortController();
     ac.abort();

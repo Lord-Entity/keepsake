@@ -268,6 +268,8 @@ async function exportVideo(
   }
   signal?.addEventListener("abort", sendCancel, { once: true });
   try {
+    // An abort during the awaits above fired before the listener existed: don't start an export nobody can cancel.
+    throwIfAborted(signal);
     const outPath = await join(stage, `${base}.mp4`);
     let res: unknown;
     try {

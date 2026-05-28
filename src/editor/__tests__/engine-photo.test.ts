@@ -376,6 +376,28 @@ describe("renderPhoto", () => {
     expect(canvases[0].calls[1]).toEqual(["drawImage", 390, 290, 10, 10, 0, 0, 10, 10]);
   });
 
+  test("a NaN crop is invalid_job and the bitmap is closed", async () => {
+    const e = await rejection(renderPhoto(src, photoJob({ crop: { x: NaN, y: 0, w: 10, h: 10 } })));
+    expect(e.code).toBe("invalid_job");
+    expect(canvases.length).toBe(0);
+    expect(closeMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("a huge output that fails to encode says the picture is too large", async () => {
+    bitmapSize = { width: 8000, height: 6000 };
+    encodeFails = true;
+    const e = await rejection(renderPhoto(src, photoJob({})));
+    expect(e.code).toBe("export_failed");
+    expect(e.message).toContain("too large");
+    expect(closeMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("a small output failure has no size hint", async () => {
+    encodeFails = true;
+    const e = await rejection(renderPhoto(src, photoJob({})));
+    expect(e.message).not.toContain("too large");
+  });
+
   test("MP4 output is invalid_job and nothing is decoded", async () => {
     const e = await rejection(renderPhoto(src, photoJob({ output: "mp4" })));
     expect(e.code).toBe("invalid_job");

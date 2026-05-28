@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { Glyph } from "./Glyph";
 import { Icon, type IconName } from "./Icon";
 import { press, t } from "./motion";
+import "./illustrations/illustrations.css";
+import "./illustrations/Micro.css";
 
 export interface FabAction {
   label: string;
@@ -32,6 +34,17 @@ export function Fab({
   const root = useRef<HTMLDivElement>(null);
   const size = phone ? 56 : 52;
 
+  // Phone: the toast stack lifts itself by this var so a toast never covers the FAB
+  // (16px offset + 56px button). Cleared when the FAB unmounts (Settings, Editor).
+  useEffect(() => {
+    if (!phone) return;
+    const docEl = document.documentElement;
+    docEl.style.setProperty("--fab-clear", `${16 + size}px`);
+    return () => {
+      docEl.style.removeProperty("--fab-clear");
+    };
+  }, [phone, size]);
+
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
@@ -49,7 +62,7 @@ export function Fab({
   }, [open]);
 
   return (
-    <div ref={root} className={`pointer-events-none absolute z-30 flex flex-col items-end gap-2.5 ${className}`}>
+    <div ref={root} data-fab="" data-open={open ? "" : undefined} className={`pointer-events-none absolute z-30 flex flex-col items-end gap-2.5 ${className}`}>
       <AnimatePresence>
         {open && (
           <motion.ul
@@ -119,9 +132,18 @@ export function Fab({
         >
           <rect x="2" y="2" width="56" height="56" rx="22" fill="none" stroke="var(--accent-border)" strokeWidth="1.5" strokeDasharray="3 6" />
         </motion.svg>
-        <motion.span animate={{ rotate: open ? 135 : 0 }} transition={t.spring} className="relative grid place-items-center">
-          <Icon name="plus" size={phone ? 26 : 24} strokeWidth={2.2} />
-        </motion.span>
+        {/* Idle: every few seconds the plus gives a little wiggle and a gold spark winks
+            at the corner (CSS in Micro.css; off while open and under reduced motion). */}
+        <span className={`relative grid place-items-center ${open ? "" : "mc-fab-wiggle"}`}>
+          <motion.span animate={{ rotate: open ? 135 : 0 }} transition={t.spring} className="relative grid place-items-center">
+            <Icon name="plus" size={phone ? 26 : 24} strokeWidth={2.2} />
+          </motion.span>
+        </span>
+        {!open && (
+          <svg aria-hidden="true" viewBox="0 0 12 12" className="pointer-events-none absolute -top-1 -right-1 size-3 overflow-visible">
+            <path className="mc-fab-spark" d="M6 0Q6 6 12 6Q6 6 6 12Q6 6 0 6Q6 6 6 0Z" fill="var(--ill-gold)" />
+          </svg>
+        )}
       </motion.button>
     </div>
   );

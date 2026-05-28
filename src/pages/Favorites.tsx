@@ -6,6 +6,9 @@ import { Button, IconButton } from "../components/ui/Button";
 import { Select } from "../components/ui/Fields";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Icon } from "../components/ui/Icon";
+import { CardHeart } from "../components/ui/illustrations/CardHeart";
+import { CardKindBadge } from "../components/ui/illustrations/CardKindBadge";
+import "../components/ui/illustrations/CardSurface.css";
 import { listItem, t } from "../components/ui/motion";
 import { categoryOf, siteLabel, CATEGORIES } from "../lib/categories";
 import { removeFavorite, useFavorites, type FavoriteItem, type FavoriteKind } from "../state/favorites";
@@ -177,17 +180,23 @@ function FavoriteTile({
     <motion.article
       whileHover={reduced ? undefined : { y: -4 }}
       transition={t.spring}
-      className="card card-interactive glyph-host icon-host shape-leaf flex h-full min-w-0 flex-col overflow-hidden"
+      className="lcard card card-interactive glyph-host icon-host shape-leaf group flex h-full min-w-0 flex-col overflow-hidden"
     >
-      <div className="relative">
+      <div className="lcard-frame relative overflow-hidden">
         <Thumb
           src={item.thumbnailUrl}
           icon={item.kind === "audio" ? "audio" : "video"}
-          className="aspect-video w-full rounded-[25px_9px_0_0]"
+          className="aspect-video w-full transition-[scale] duration-500 ease-out group-hover:scale-[1.04]"
         />
+        <span aria-hidden="true" className="lcard-stitch" />
         <span className="absolute top-2 left-2">
           <TagBadge className="!bg-card/85 backdrop-blur">{categoryOf(item.site)}</TagBadge>
         </span>
+        {!isSource && (
+          <span aria-hidden="true" className="lcard-kind absolute bottom-1.5 left-1.5 block size-7 drop-shadow-sm">
+            <CardKindBadge kind={item.kind === "audio" ? "audio" : "video"} className="size-full" />
+          </span>
+        )}
         <HeartToggle onRemove={onRemove} phone={phone} />
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-2 p-3">
@@ -228,8 +237,9 @@ function FavoriteTile({
   );
 }
 
-/** Filled heart with a separate burst ring layer; clicking un-favorites. */
+/** Filled heart that pops with a burst on mount and on hover; clicking un-favorites. */
 function HeartToggle({ onRemove, phone }: { onRemove: () => void; phone: boolean }) {
+  const [pop, setPop] = useState(0);
   return (
     <motion.button
       type="button"
@@ -238,17 +248,17 @@ function HeartToggle({ onRemove, phone }: { onRemove: () => void; phone: boolean
       whileTap={{ scale: 0.82 }}
       transition={t.press}
       onClick={onRemove}
-      className={`group/heart absolute top-2 right-2 grid place-items-center rounded-full bg-card/85 text-accent shadow-card backdrop-blur ${phone ? "size-11" : "size-9"}`}
+      onPointerEnter={(e) => {
+        if (e.pointerType === "mouse") setPop((n) => n + 1);
+      }}
+      className={`group/heart absolute top-2 right-2 grid place-items-center rounded-full bg-card/85 text-accent shadow-card backdrop-blur ${phone ? "size-12" : "size-9"}`}
     >
       <svg aria-hidden="true" viewBox="0 0 36 36" className="absolute inset-0 size-full scale-75 opacity-0 transition-[scale,opacity] duration-300 group-hover/heart:scale-100 group-hover/heart:opacity-60">
         <circle cx="18" cy="18" r="16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeDasharray="1.5 4" strokeLinecap="round" />
       </svg>
-      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" className="relative transition-[scale] duration-200 group-hover/heart:scale-110">
-        <path
-          fill="currentColor"
-          d="M12 20s-7.5-4.6-9.2-9.3C1.7 7.6 3.8 4.5 7 4.5c2.1 0 3.6 1.2 5 3 1.4-1.8 2.9-3 5-3 3.2 0 5.3 3.1 4.2 6.2C19.5 15.4 12 20 12 20z"
-        />
-      </svg>
+      <span className="relative block size-[18px] transition-[scale] duration-200 group-hover/heart:scale-110">
+        <CardHeart popKey={pop} className="size-full" />
+      </span>
     </motion.button>
   );
 }

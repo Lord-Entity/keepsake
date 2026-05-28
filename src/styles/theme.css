@@ -282,9 +282,10 @@ textarea,
   overscroll-behavior: contain;
 }
 
-/* Phone toast stack: above the TabBar and the bottom safe-area inset. */
+/* Phone toast stack: above the TabBar, the bottom safe-area inset and (when shown) the FAB
+   column, which also clears Home's pinned action bar. --fab-clear is set by Fab.tsx. */
 .toast-stack-phone {
-  bottom: calc(var(--tabbar-h) + var(--safe-bottom) + var(--space-3));
+  bottom: calc(var(--tabbar-h) + var(--safe-bottom) + var(--space-3) + var(--fab-clear, 0px));
 }
 
 .tabular {

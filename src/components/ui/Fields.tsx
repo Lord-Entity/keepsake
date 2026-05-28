@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Icon } from "./Icon";
+import "./illustrations/Micro.css";
 
 /** Custom dropdown (Dropdown.tsx); re-exported here so existing imports keep working. */
 export { Select, type DropdownOption } from "./Dropdown";
@@ -60,6 +61,7 @@ export function FieldRow({
   );
 }
 
+/** Loading placeholder: a warm shimmer sweep (static block under reduced motion). */
 export function Skeleton({ className = "" }: { className?: string }) {
-  return <div className={`skeleton ${className}`} aria-hidden="true" />;
+  return <div className={`mc-shimmer ${className}`} aria-hidden="true" />;
 }

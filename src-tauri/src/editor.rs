@@ -1,7 +1,8 @@
 //! Desktop video editor: crop, trim and mute through ffmpeg (desktop only).
 //!
 //! JS contract:
-//!   invoke<{ width, height, duration, hasAudio, rotation }>("editor_probe", { path })
+//!   invoke<{ width, height, duration, hasAudio, rotation, size }>("editor_probe", { path })
+//!     size: file size in bytes.
 //!     width/height are display-oriented (swapped for a 90/270 rotation); duration in
 //!     seconds (0 when unknown); rotation is 0, 90, 180 or 270.
 //!   invoke<void>("edit_video", { jobId, input, output, crop, trimStart, trimEnd, audio, onEvent })
@@ -1016,16 +1017,27 @@ fn run_edit(
 // Commands
 // ---------------------------------------------------------------------------
 
+/// `editor_probe` reply: the probe plus the file size in bytes (`size`), which the
+/// in-app encoder uses to skip files too large to read into memory.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProbeReply {
+    #[serde(flatten)]
+    pub probe: ProbeOut,
+    pub size: u64,
+}
+
 /// Size (display-oriented), duration, audio presence and rotation of a video file.
 #[tauri::command]
-pub async fn editor_probe(path: String) -> Result<ProbeOut, String> {
+pub async fn editor_probe(path: String) -> Result<ProbeReply, String> {
     if cfg!(mobile) {
         return Err(UNSUPPORTED.into());
     }
     let input = validate_input(&path)?;
     tauri::async_runtime::spawn_blocking(move || {
         let ffmpeg = tools().reader().ok_or_else(no_ffmpeg)?;
-        probe_with(&ffmpeg, &input)
+        let probe = probe_with(&ffmpeg, &input)?;
+        let size = std::fs::metadata(&input).map(|m| m.len()).unwrap_or(0);
+        Ok::<_, String>(ProbeReply { probe, size })
     })
     .await
     .map_err(|e| e.to_string())?

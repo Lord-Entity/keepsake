@@ -73,7 +73,7 @@ afterAll(() => {
   globalThis.OffscreenCanvas = realOffscreenCanvas;
 });
 
-const { desktopEngine, dialogFilters, needsWebCrop, WEBCROP_NOTE } = await import("../engine-desktop");
+const { desktopEngine, dialogFilters, needsWebCrop, WEBCROP_NOTE, WEBCODECS_NOTE, COPY_ONLY_NOTE, NO_CROP_HELP } = await import("../engine-desktop");
 const { EditorError } = await import("../types");
 const { RECORD_SHARE, bitrateFor, drawMatrix, extForMime, pickRecorderMime, recordProgress, recorderMimes, remuxProgress } =
   await import("../engine-webcrop");
@@ -231,6 +231,75 @@ describe("exportEdit: no webview recorder", () => {
     const e = await rejection(desktopEngine.exportEdit(videoJob({ crop: { x: 2, y: 2, w: 100, h: 100 } }), PROBE, () => {}));
     expect(e.code).toBe("unsupported");
     expect(invokeMock.mock.calls.filter((c) => c[0] === "edit_video")).toHaveLength(1);
+  });
+
+  test("the final message is not a dead end: it lists every attempt and says trim / sound off still work", async () => {
+    onEdit(async () => {
+      throw "editor:no_encoder: cropping needs a video encoder and none was found.";
+    });
+    const e = await rejection(desktopEngine.exportEdit(videoJob({ crop: { x: 2, y: 2, w: 100, h: 100 } }), PROBE, () => {}));
+    expect(e.message).toContain(NO_CROP_HELP);
+    expect(e.message).toContain("Tried: ffmpeg: cropping needs a video encoder");
+    expect(e.message).toContain("in-app encoder:");
+    expect(e.message).toContain("real-time recording:");
+    expect(e.message).toContain("trim");
+  });
+});
+
+// Tauri 2 rejects invoke() for a Rust `Err(String)` with that string itself (ipc/mod.rs From<T: Serialize> for
+// InvokeError -> serde_json Value::String; ipc-protocol.js parses the JSON body; core.js rejects with it as is).
+describe("Tauri rejection shapes reach the in-app fallback", () => {
+  const shapes = [
+    ["plain string (what Tauri 2 delivers)", "editor:no_encoder: cropping needs a video encoder and none was found."],
+    ["Error wrapper", new Error("editor:no_encoder: cropping needs a video encoder and none was found.")],
+    ["serialized object", { message: "editor:no_encoder: cropping needs a video encoder" }],
+    ["no ffmpeg string", "editor:no_ffmpeg: ffmpeg was not found"],
+  ];
+  for (const [name, err] of shapes) {
+    test(`${name} triggers the fallback`, async () => {
+      expect(needsWebCrop(err)).toBe(true);
+      onEdit(async () => {
+        throw err;
+      });
+      // With a (fake) recorder present the recorder path is attempted: the message names it with its own failure,
+      // not "not available", proving the fallback ran instead of mapping the native error straight to "unsupported".
+      const e = await withRecorder(() => rejection(desktopEngine.exportEdit(videoJob({ crop: { x: 2, y: 2, w: 100, h: 100 } }), PROBE, () => {})));
+      expect(e.message).toContain("real-time recording:");
+      expect(e.message).not.toContain("real-time recording: not available");
+    });
+  }
+  test("other rejections do not", () => {
+    for (const err of ["editor:failed: ffmpeg exited with 1", "editor:invalid: x", "editor:cancelled", new Error("boom")]) expect(needsWebCrop(err)).toBe(false);
+  });
+});
+
+function FakeCodec() {}
+FakeCodec.isConfigSupported = async (c) => ({ supported: c.codec.startsWith("avc1."), config: c });
+
+describe("capabilities with an in-app WebCodecs encoder", () => {
+  test("copy-only ffmpeg can crop fast through WebCodecs", async () => {
+    const g = globalThis;
+    const saved = { VideoEncoder: g.VideoEncoder, VideoDecoder: g.VideoDecoder, VideoFrame: g.VideoFrame, OffscreenCanvas: g.OffscreenCanvas };
+    try {
+      // Constructor stand-ins: only `typeof === "function"` and the static isConfigSupported are used.
+      g.VideoEncoder = FakeCodec;
+      g.VideoDecoder = FakeCodec;
+      g.VideoFrame = FakeCodec;
+      invokeImpl = async () => ({ copyOnly: true, canReencode: false, encoder: null });
+      const c = await desktopEngine.capabilities("video");
+      expect([c.crop, c.trim, c.mute, c.exactTrim]).toEqual([true, true, true, false]);
+      expect(c.note).toBe(WEBCODECS_NOTE);
+    } finally {
+      Object.assign(g, saved);
+    }
+  });
+
+  test("copy-only ffmpeg with neither path: crop off and the note says what is missing", async () => {
+    invokeImpl = async () => ({ copyOnly: true, canReencode: false, encoder: null });
+    const c = await desktopEngine.capabilities("video");
+    expect(c.crop).toBe(false);
+    expect(c.note).toBe(COPY_ONLY_NOTE);
+    expect(c.note).toContain("WebView2");
   });
 });
 

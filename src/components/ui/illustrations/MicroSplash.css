@@ -1,0 +1,255 @@
+/*
+ * MicroSplash: Kip popping out of his box. Outside the reduced-motion block every
+ * rule describes the FINAL pose (boot: happy, lid tipped, arms up; error: sad, lid on),
+ * so reduced motion simply shows a static frame.
+ *
+ * Entrance (boot, 0.9s, fill-mode both): drop+squash 0-225ms, lid pop 225-450ms,
+ * eyes/arms 340-560ms, confetti burst 450-900ms. Idle loops start at 0.9s.
+ * Each element carries at most one transform animation; idle motion lives on its own
+ * wrapper group. The orbit rotates about an invisible r=60 ring centred on Kip, using
+ * fill-box (its centre is exactly Kip's centre), which avoids view-box origin quirks.
+ */
+.ms {
+  display: block;
+  overflow: visible;
+}
+
+.ms-drop,
+.ms-bob,
+.ms-shadow,
+.ms-eyes,
+.ms-blink,
+.ms-arm,
+.ms-lid,
+.ms-bow,
+.ms-orbit,
+.ms-burst-p {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.ms-drop,
+.ms-bob {
+  transform-origin: 50% 100%;
+}
+.ms-lid {
+  transform-origin: 50% 100%;
+}
+.ms-arm-l {
+  transform-origin: 100% 100%;
+}
+.ms-arm-r {
+  transform-origin: 0% 100%;
+}
+
+/* Static final poses. */
+.ms-boot .ms-lid {
+  transform: translate(-3px, -7px) rotate(-12deg);
+}
+.ms-burst-p {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Entrance */
+  .ms-boot .ms-drop {
+    animation: ms-drop 0.9s cubic-bezier(0.4, 0, 0.6, 1) both;
+  }
+  .ms-boot .ms-shadow {
+    animation: ms-shadow 0.9s ease-out both;
+  }
+  .ms-boot .ms-lid {
+    animation: ms-lid 0.9s ease-in-out both;
+  }
+  .ms-boot .ms-bow {
+    animation: ms-bow 0.9s ease-in-out both;
+  }
+  .ms-boot .ms-eyes {
+    animation: ms-eyes 0.9s ease-out both;
+  }
+  .ms-boot .ms-mouth {
+    animation: ms-fade 0.9s linear both;
+  }
+  .ms-boot .ms-arm {
+    animation: ms-arm 0.9s ease-out both;
+  }
+  .ms-boot .ms-burst-p {
+    animation: ms-burst 0.45s ease-out 0.45s both;
+  }
+  /* Orbit settles by 0.85 s: startup can hide the splash at ~850 ms (App.tsx: max(init, 600) + 250),
+     and the 0.24 s exit fade then plays over a finished entrance instead of a half-faded orbit. */
+  .ms-boot .ms-orbit {
+    animation:
+      ms-orbit-in 0.4s ease-out 0.45s both,
+      ms-orbit 12s linear 0.9s infinite;
+  }
+
+  /* Idle */
+  .ms-boot .ms-bob {
+    animation: ms-bob 3.4s ease-in-out 0.9s infinite;
+  }
+  .ms-error .ms-bob {
+    animation: ms-sway 5s ease-in-out infinite;
+  }
+  .ms-blink {
+    animation: ms-blink 5.2s ease-in-out 2s infinite;
+  }
+}
+
+@keyframes ms-drop {
+  0% {
+    transform: translateY(-60px);
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  25% {
+    transform: translateY(0) scale(1, 1);
+  }
+  30% {
+    transform: scale(1.1, 0.85);
+  }
+  40% {
+    transform: scale(0.97, 1.04);
+  }
+  50% {
+    transform: scale(1, 1);
+  }
+}
+@keyframes ms-shadow {
+  0% {
+    transform: scale(0.3);
+    opacity: 0;
+  }
+  25% {
+    transform: scale(1.05);
+    opacity: 1;
+  }
+  30% {
+    transform: scale(1.2, 1);
+  }
+  50% {
+    transform: scale(1);
+  }
+}
+@keyframes ms-lid {
+  0%,
+  25% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  36% {
+    transform: translate(2px, -24px) rotate(10deg);
+  }
+  44% {
+    transform: translate(2px, -25px) rotate(14deg);
+  }
+  52% {
+    transform: translate(-4px, -9px) rotate(-17deg);
+  }
+  60% {
+    transform: translate(-3px, -7px) rotate(-12deg);
+  }
+}
+@keyframes ms-bow {
+  0%,
+  25% {
+    transform: rotate(0deg) scale(1);
+  }
+  40% {
+    transform: rotate(200deg) scale(1.25);
+  }
+  55% {
+    transform: rotate(360deg) scale(1);
+  }
+}
+@keyframes ms-eyes {
+  0%,
+  36% {
+    transform: scaleY(0.08);
+  }
+  50% {
+    transform: scaleY(1.15);
+  }
+  62% {
+    transform: scaleY(1);
+  }
+}
+@keyframes ms-fade {
+  0%,
+  38% {
+    opacity: 0;
+  }
+  55% {
+    opacity: 1;
+  }
+}
+@keyframes ms-arm {
+  0%,
+  37% {
+    transform: scale(0.15);
+  }
+  55% {
+    transform: scale(1.2);
+  }
+  65% {
+    transform: scale(0.95);
+  }
+  75% {
+    transform: scale(1);
+  }
+}
+@keyframes ms-burst {
+  0% {
+    transform: translate(0, 0) scale(0);
+    opacity: 0;
+  }
+  15% {
+    transform: translate(calc(var(--dx) * 0.2), calc(var(--dy) * 0.2)) scale(1.2);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--dx), var(--dy)) scale(0.3);
+    opacity: 0;
+  }
+}
+@keyframes ms-orbit-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes ms-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes ms-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+@keyframes ms-sway {
+  0%,
+  100% {
+    transform: rotate(-2deg);
+  }
+  50% {
+    transform: rotate(2deg);
+  }
+}
+@keyframes ms-blink {
+  0%,
+  92%,
+  100% {
+    transform: scaleY(1);
+  }
+  95% {
+    transform: scaleY(0.1);
+  }
+}

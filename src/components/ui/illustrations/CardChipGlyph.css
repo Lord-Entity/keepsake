@@ -1,0 +1,141 @@
+/* Card chip glyphs: static by default, gentle idle loops when motion is allowed. */
+.cchip {
+  --cc-s: 1;
+  --cc-a: 1;
+}
+
+.cchip-part {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .cchip-on,
+  button:is(:hover, :focus-visible) .cchip {
+    --cc-s: 1.6;
+    --cc-a: 1.5;
+  }
+
+  .cchip-spark {
+    animation: cchip-twinkle calc(2.4s / var(--cc-s)) ease-in-out infinite;
+  }
+  .cchip-pop {
+    animation: cchip-pop calc(2.6s / var(--cc-s)) ease-in-out infinite;
+  }
+  .cchip-nudge {
+    animation: cchip-nudge calc(1.8s / var(--cc-s)) ease-in-out infinite;
+  }
+  .cchip-bob-a {
+    animation: cchip-bob calc(1.8s / var(--cc-s)) ease-in-out infinite;
+  }
+  .cchip-bob-b {
+    animation: cchip-bob calc(1.8s / var(--cc-s)) ease-in-out infinite;
+    animation-delay: calc(-0.9s / var(--cc-s));
+  }
+  .cchip-pulse {
+    animation: cchip-pulse calc(2s / var(--cc-s)) ease-in-out infinite;
+  }
+  .cchip-wiggle {
+    transform-origin: 50% 90%;
+    animation: cchip-wiggle calc(2.2s / var(--cc-s)) ease-in-out infinite;
+  }
+  .cchip-blink {
+    animation: cchip-blink calc(3s / var(--cc-s)) ease-in-out infinite;
+  }
+  .cchip-flash {
+    animation: cchip-twinkle calc(3s / var(--cc-s)) ease-in-out infinite;
+  }
+  .cchip-meridian {
+    animation: cchip-spin calc(3s / var(--cc-s)) linear infinite;
+  }
+  .cchip-orbit {
+    animation: cchip-orbit calc(3s / var(--cc-s)) linear infinite;
+  }
+}
+
+@keyframes cchip-twinkle {
+  0%,
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(calc(1 - 0.35 * var(--cc-a))) rotate(calc(var(--cc-a) * 30deg));
+    opacity: 0.6;
+  }
+}
+@keyframes cchip-pop {
+  0%,
+  70%,
+  100% {
+    transform: scale(1);
+  }
+  82% {
+    transform: scale(calc(1 + 0.3 * var(--cc-a)));
+  }
+}
+@keyframes cchip-nudge {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: calc(var(--cc-a) * 1.2px) 0;
+  }
+}
+@keyframes cchip-bob {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: 0 calc(var(--cc-a) * -1.2px);
+  }
+}
+@keyframes cchip-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(calc(1 + 0.18 * var(--cc-a)));
+  }
+}
+@keyframes cchip-wiggle {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(calc(var(--cc-a) * -8deg));
+  }
+  75% {
+    transform: rotate(calc(var(--cc-a) * 8deg));
+  }
+}
+@keyframes cchip-blink {
+  0%,
+  86%,
+  100% {
+    transform: scale(1);
+  }
+  92% {
+    transform: scale(1, 0.15);
+  }
+}
+@keyframes cchip-spin {
+  0% {
+    transform: scaleX(1);
+  }
+  50% {
+    transform: scaleX(0.12);
+  }
+  100% {
+    transform: scaleX(1);
+  }
+}
+@keyframes cchip-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}

@@ -10,6 +10,7 @@ import { ErrorState } from "./ErrorState";
 import type { IllustrationProps } from "./Scene";
 
 export { CookingScene } from "./CookingScene";
+export { DownloadStateArt, type DownloadArtState } from "./DownloadStateArt";
 export { Mascot,MASCOT_HANDS, mascotHand, type MascotMood, type MascotPose } from "./Mascot";
 export { Scene, Sparkle, Person, PERSON_HANDS, type IllustrationProps, type PersonPose } from "./Scene";
 export { EmptyDownloads, EmptyEditor, EmptyFavorites, EmptyHome, EmptyLibrary, EmptySearch, EmptySources, ErrorState };

@@ -1,0 +1,194 @@
+/* Download card progress visuals. Motion only under no-preference; default is static. */
+.dlc-fill {
+  transform-origin: left center;
+}
+.dlc-sheen-wrap,
+.dlc-head,
+.dlc-indet-sweep {
+  display: none;
+}
+.dlc-indet-static {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: 9999px;
+  background-color: var(--text-muted);
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.28) 0 6px,
+    transparent 6px 12px
+  );
+}
+.dlc-ring-arc {
+  transform-origin: center;
+  transform-box: fill-box;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .dlc-fill {
+    transition:
+      transform 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+      background-color 0.3s;
+  }
+  .dlc-sheen-wrap {
+    display: block;
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    border-radius: 9999px;
+    pointer-events: none;
+    /* Reveal by translating (not resizing) the window; the inner layer counter-translates. */
+    transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .dlc-sheen-counter,
+  .dlc-head-rail {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .dlc-sheen {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 40%;
+    background: rgba(255, 255, 255, 0.3);
+    transform: translateX(-120%) skewX(-20deg);
+    animation: dlc-sheen 1.6s linear infinite;
+  }
+  .dlc-head {
+    display: block;
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 9999px;
+    background: #fff;
+    transform: translate(-50%, -50%);
+    box-shadow: 0 0 8px 2px currentColor;
+    pointer-events: none;
+  }
+  .dlc-indet-static {
+    display: none;
+  }
+  .dlc-indet-sweep {
+    display: block;
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 35%;
+    border-radius: 9999px;
+    background-image: repeating-linear-gradient(
+      45deg,
+      rgba(255, 255, 255, 0.28) 0 6px,
+      transparent 6px 12px
+    );
+    background-size: 17px 17px;
+    animation:
+      dlc-sweep 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite,
+      dlc-stripes 0.8s linear infinite;
+  }
+  .dlc-ring-arc {
+    transition:
+      stroke-dashoffset 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+      stroke 0.3s;
+  }
+  .dlc-ring-spin {
+    animation: dlc-spin 1s linear infinite;
+  }
+  .dlc-check {
+    stroke-dasharray: 30;
+    stroke-dashoffset: 30;
+    animation: dlc-check 0.4s 0.1s ease-out forwards;
+  }
+
+  @keyframes dlc-sheen {
+    from {
+      transform: translateX(-120%) skewX(-20deg);
+    }
+    to {
+      transform: translateX(300%) skewX(-20deg);
+    }
+  }
+  @keyframes dlc-sweep {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(300%);
+    }
+  }
+  @keyframes dlc-stripes {
+    to {
+      background-position: 17px 0;
+    }
+  }
+  @keyframes dlc-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes dlc-check {
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+}
+
+/* ======== DownloadCard shell ======== */
+/* Off-screen cards skip layout/paint (and their SVG loops) in long lists. */
+.dlc-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 172px;
+}
+.dlc-card.dlc-card-danger {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+}
+.dlc-card.dlc-card-success {
+  border-color: color-mix(in srgb, var(--success) 30%, var(--border));
+}
+/* The scene: thumbnail on top of a soft sky wash, rounded like the card's inner corner. */
+.dlc-stage {
+  background: linear-gradient(160deg, var(--ill-sky-2), var(--ill-sky));
+}
+.dlc-thumb {
+  opacity: 0.9;
+}
+/* Washes the lower part of the thumbnail with the card colour so Kip reads on any image. */
+.dlc-scrim {
+  background: linear-gradient(
+    to top,
+    var(--bg-card) 14%,
+    color-mix(in srgb, var(--bg-card) 78%, transparent) 46%,
+    color-mix(in srgb, var(--bg-card) 8%, transparent) 100%
+  );
+}
+/* Frosted pills over the image (platform and state). */
+.dlc-glass {
+  background: color-mix(in srgb, var(--bg-card) 86%, transparent);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+.dlc-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  background: currentColor;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .dlc-dot-live {
+    animation: dlc-dot 1.4s ease-in-out infinite;
+  }
+  @keyframes dlc-dot {
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.35;
+      transform: scale(0.7);
+    }
+  }
+}
