@@ -19,7 +19,9 @@ import glob
 import json
 import os
 import re
+import random
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -37,6 +39,11 @@ try:
     import keepsake_selection as _sel
 except Exception:  # broken module only disables the full route, never the legacy one
     _sel = None
+
+try:
+    import keepsake_ladder as _lad
+except Exception:  # broken module only disables the TikTok/Instagram retry ladder (one attempt, as before)
+    _lad = None
 
 MAX_FILESIZE = 2 * 1024 * 1024 * 1024
 
@@ -162,6 +169,9 @@ _RULES = (
     ("timeout", ("timed out",)),
     # Before login_required: YouTube says "Sign in to confirm you're not a bot".
     ("bot_check", ("confirm you're not a bot", "confirm you are not a bot", "confirm you’re not a bot")),
+    # Before login_required: Instagram's anonymous rate limit says "redirected to the login page.
+    # You have exceeded the rate-limit for accessing posts anonymously".
+    ("rate_limited", ("exceeded the rate-limit",)),
     ("js_runtime_missing", ("no supported javascript runtime",)),
     # Before not_found ("ffmpeg not found").
     ("ytdlp_missing", ("ffmpeg not found", "ffmpeg-location", "ffprobe and ffmpeg not found", "ffmpeg is not installed")),
@@ -227,6 +237,67 @@ def _classify(exc):
 def _error(exc):
     msg = _clean(exc) or exc.__class__.__name__
     return json.dumps({"ok": False, "code": _classify(exc), "message": msg}, ensure_ascii=False)
+
+
+def _ladder_site(url):
+    """"tiktok" / "instagram" when the retry ladder applies to url, else None (YouTube and every other host)."""
+    if _lad is None:
+        return None
+    try:
+        return _lad.site_for(_host(url))
+    except Exception:
+        return None
+
+
+def _wait(seconds, job):
+    """Sleeps up to seconds; raises CancelledError as soon as job is cancelled."""
+    end = time.time() + seconds
+    while True:
+        if job and _is_cancelled(job):
+            raise CancelledError("Cancelled by user.")
+        left = end - time.time()
+        if left <= 0:
+            return
+        time.sleep(min(0.25, left))
+
+
+def _ladder(url, job, run, between=None):
+    """Runs run(overrides) and returns its result. Non-ladder hosts: exactly one call, run({}).
+    TikTok/Instagram: attempt 1 is run({}) too (the normal options); after a retryable failure
+    (keepsake_ladder.next_step) attempts 2 and 3 get keepsake_ladder.attempt_overrides. Errors the
+    bridge raised itself (_Fail) and final codes are never retried. between() runs before every
+    retry (download: remove partial files). The last error is re-raised unchanged."""
+    site = _ladder_site(url)
+    if site is None:
+        return run({})
+    device_id = str(random.SystemRandom().randrange(10 ** 18, 10 ** 19)) if site == "tiktok" else None
+    attempt = 1
+    backed_off = False
+    while True:
+        if attempt > 1 and job and _is_cancelled(job):
+            raise CancelledError("Cancelled by user.")
+        try:
+            return run(_lad.attempt_overrides(site, attempt, device_id))
+        except Exception as exc:  # KeyboardInterrupt / SystemExit are never retried
+            code = _classify(exc)
+            step = _lad.next_step(code, attempt, backed_off, isinstance(exc, _Fail))
+            if step == "stop":
+                raise
+            try:
+                sys.stderr.write("keepsake_ytdlp: %s attempt %d failed (%s), %s\n" % (site, attempt, code, step))
+            except Exception:
+                pass
+            if step == "backoff":
+                backed_off = True
+                _wait(_lad.BACKOFF_SECONDS, job)
+            if between is not None:
+                between()
+            attempt += 1
+
+
+def _with(opts, overrides):
+    """opts unchanged (same object) when there is nothing to add: attempt 1 keeps the exact options."""
+    return _lad.merge_opts(opts, overrides) if overrides else opts
 
 
 def _int(x):
@@ -423,8 +494,11 @@ def info(url, full=False):
         url = _prepare_url(url)
         # Every format is returned (reduced); the TS side picks the phone-muxable one (legacy)
         # or shows every height (full).
-        with yt_dlp.YoutubeDL(_opts_for(url, None, full is True)) as ydl:
-            raw = ydl.sanitize_info(ydl.extract_info(url, download=False))
+        def run(overrides):
+            with yt_dlp.YoutubeDL(_with(_opts_for(url, None, full is True), overrides)) as ydl:
+                return ydl.sanitize_info(ydl.extract_info(url, download=False))
+
+        raw = _ladder(url, None, run)
         _reject_playlist(raw)
         return json.dumps({"ok": True, "info": _reduce(raw, url)}, ensure_ascii=False)
     except BaseException as exc:  # includes KeyboardInterrupt and SystemExit: never raise into Kotlin
@@ -479,6 +553,30 @@ def _remove_files(seen, out_dir, file_name, full=False):
             pass
 
 
+def _remove_partials(seen, finished, out_dir, file_name, full=False):
+    """Between ladder attempts: like _remove_files, but complete downloads (finished) are kept."""
+    root = os.path.realpath(out_dir) + os.sep
+    victims = set(_lad.partial_victims(seen, finished))
+    for f in seen:
+        if f:
+            base = f[:-5] if f.endswith(".part") else f
+            victims.update(glob.glob(glob.escape(base) + "-Frag*"))
+    if file_name:
+        prefix = os.path.join(glob.escape(out_dir), glob.escape(file_name))
+        victims.update(glob.glob(prefix + ".*.part"))
+        victims.update(glob.glob(prefix + ".*.ytdl"))
+        if full:
+            victims.update(glob.glob(prefix + ".temp.*"))
+    keep = set(os.path.realpath(f) for f in finished if f)
+    for v in victims:
+        try:
+            real = os.path.realpath(v)
+            if real.startswith(root) and real not in keep:
+                os.remove(v)
+        except OSError:
+            pass
+
+
 def _full_selection(format_id, args_json):
     """Option keys for the full route: from the selection argv, or {"format": id} / {"format": "a+b"}.
     Exactly one of format_id / args_json must be given."""
@@ -501,6 +599,7 @@ def download(url, format_id, out_dir, file_name, job_id, args_json=None, full=Fa
     array string) is only accepted on the full route, because it may need ffmpeg."""
     job = str(job_id) if job_id is not None else ""
     seen = set()
+    finished = set()  # complete downloads: kept between ladder attempts (overwrites=False reuses them)
     full = full is True
     try:
         if job and _is_cancelled(job):
@@ -513,6 +612,8 @@ def download(url, format_id, out_dir, file_name, job_id, args_json=None, full=Fa
             for k in ("tmpfilename", "filename"):
                 if d.get(k):
                     seen.add(d[k])
+            if d.get("status") == "finished" and d.get("filename"):
+                finished.add(d["filename"])
             if job and _is_cancelled(job):
                 raise CancelledError("Cancelled by user.")
             for k in ("total_bytes", "total_bytes_estimate", "downloaded_bytes"):
@@ -535,29 +636,45 @@ def download(url, format_id, out_dir, file_name, job_id, args_json=None, full=Fa
                     raise CancelledError("Cancelled by user.")
 
             selection = _full_selection(format_id, args_json)
-            opts = _opts_for(url, None, True)
-            opts.update(selection)
-            opts.update({
-                # temp == home, so merge intermediates stay under out_dir (checked and cleaned below).
-                "paths": {"home": out_dir, "temp": out_dir},
-                "outtmpl": {"default": name_tmpl},
-                "max_filesize": MAX_FILESIZE,
-                "overwrites": False,
-                "progress_hooks": [hook],
-                "postprocessor_hooks": [pp_hook],
-            })
-        else:
-            opts = _opts_for(url, format_id)
-            opts.update({
-                "format": format_id,
-                "paths": {"home": out_dir, "temp": out_dir},
-                "outtmpl": {"default": name_tmpl},
-                "max_filesize": MAX_FILESIZE,
-                "overwrites": False,
-                "progress_hooks": [hook],
-            })
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            res = ydl.extract_info(url, download=True)
+
+        def build():
+            if full:
+                opts = _opts_for(url, None, True)
+                opts.update(selection)
+                opts.update({
+                    # temp == home, so merge intermediates stay under out_dir (checked and cleaned below).
+                    "paths": {"home": out_dir, "temp": out_dir},
+                    "outtmpl": {"default": name_tmpl},
+                    "max_filesize": MAX_FILESIZE,
+                    "overwrites": False,
+                    "progress_hooks": [hook],
+                    "postprocessor_hooks": [pp_hook],
+                })
+            else:
+                opts = _opts_for(url, format_id)
+                opts.update({
+                    "format": format_id,
+                    "paths": {"home": out_dir, "temp": out_dir},
+                    "outtmpl": {"default": name_tmpl},
+                    "max_filesize": MAX_FILESIZE,
+                    "overwrites": False,
+                    "progress_hooks": [hook],
+                })
+            return opts
+
+        def run(overrides):
+            with yt_dlp.YoutubeDL(_with(build(), overrides)) as ydl:
+                return ydl.extract_info(url, download=True)
+
+        def between():
+            # Before a ladder retry: drop partial files (a .part from another session/IP must not be
+            # resumed), keep complete ones so they are not downloaded again.
+            try:
+                _remove_partials(seen, finished, out_dir, file_name, full)
+            except Exception:
+                pass
+
+        res = _ladder(url, job, run, between)
         _reject_playlist(res)
         path = ((res.get("requested_downloads") or [{}])[0]).get("filepath")
         if not path or not os.path.isfile(path):

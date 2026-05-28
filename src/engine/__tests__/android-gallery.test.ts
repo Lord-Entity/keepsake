@@ -13,15 +13,18 @@ mock.module("../platform", () => ({
   isDesktop: () => false,
 }));
 
-// Mock carefully: a partial mock replaces the module process-wide, so also export Channel (ytdlp.ts imports it).
+// bun's mock.module is process-wide: export every name any engine/editor module imports from this module.
 let invokeImpl = async () => ({});
 const invokeMock = mock((cmd, args) => invokeImpl(cmd, args));
+class FakeChannel {
+  onmessage = () => {};
+}
 mock.module("@tauri-apps/api/core", () => ({
   invoke: invokeMock,
   isTauri: () => true,
-  Channel: class Channel {
-    readonly mocked = true;
-  },
+  Channel: FakeChannel,
+  convertFileSrc: (p) => `asset://localhost/${p}`,
+  addPluginListener: async () => ({ unregister: async () => {} }),
 }));
 
 const { androidSaveMode, publishToGallery, GALLERY_SAVE } = await import("../android-gallery");

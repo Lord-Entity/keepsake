@@ -119,11 +119,13 @@ function stamp(): string {
   return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
 }
 
-async function kindOf(uri: string, name: string): Promise<MediaKind> {
+async function kindOf(uri: string, name: string, want?: MediaKind): Promise<MediaKind> {
   const byName = kindFromName(name);
   if (byName) return byName;
   if (/\bvideo[:/]/i.test(uri)) return "video";
   if (/\bimage[:/]/i.test(uri)) return "photo";
+  // The picker was limited to one MIME family (image/* or video/*), so an opaque URI is that kind.
+  if (want) return want;
   // Opaque photo-picker URI: a file with a duration is a video, anything else is treated as a photo.
   try {
     const p = await nativeProbe(uri);
@@ -331,27 +333,44 @@ async function copyOut(src: string, dst: string): Promise<void> {
   }
 }
 
+/**
+ * plugin-dialog options. pickerMode "image"/"video" makes the Android intent type image/* or video/*
+ * (tauri-plugin-dialog 2.8 DialogPlugin.kt); "media" keeps both MIME families, as before.
+ */
+export function pickerOptions(want?: MediaKind) {
+  if (want === "photo") {
+    return { multiple: false, directory: false, pickerMode: "image" as const, filters: [{ name: "Photos", extensions: ["image/*"] }] };
+  }
+  if (want === "video") {
+    return { multiple: false, directory: false, pickerMode: "video" as const, filters: [{ name: "Videos", extensions: ["video/*"] }] };
+  }
+  return {
+    multiple: false,
+    directory: false,
+    pickerMode: "media" as const,
+    filters: [{ name: "Photos and videos", extensions: ["image/*", "video/*"] }],
+  };
+}
+
 export const androidEngine: PlatformEngine = {
   /** Media3 Transformer does crop and frame-accurate trim for every video it can open. */
   capabilities() {
     return Promise.resolve({ ...FULL_CAPS });
   },
 
-  async pickMedia() {
+  async pickMedia(want) {
     let res: unknown;
     try {
-      res = await openDialog({
-        multiple: false,
-        directory: false,
-        pickerMode: "media",
-        filters: [{ name: "Photos and videos", extensions: ["image/*", "video/*"] }],
-      });
+      res = await openDialog(pickerOptions(want));
     } catch (e) {
-      throw mapNativeError(e, "permission");
+      const err = mapNativeError(e, "permission");
+      // plugin-dialog rejects "File picker cancelled" when the user backs out: that is a cancel, not an error.
+      if (err.code === "cancelled") return null;
+      throw err;
     }
     if (typeof res !== "string" || !res) return null;
     const fromUri = nameFromUri(res);
-    const kind = await kindOf(res, fromUri);
+    const kind = await kindOf(res, fromUri, want);
     const name = fromUri || `${kind === "video" ? "VID" : "IMG"}_${stamp()}.${kind === "video" ? "mp4" : "jpg"}`;
     return { kind, name, uri: res };
   },

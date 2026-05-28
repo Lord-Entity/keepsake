@@ -84,22 +84,39 @@ export function PreviewCard({
           />
           <div className="flex min-w-0 flex-1 flex-col gap-3 pt-1">
             <div className="text-[11px] font-medium tracking-wider text-fg-3">FETCHING</div>
-            <div className="text-[15px] font-semibold">Reading link info...</div>
+            <div className="text-[15px] font-semibold">{phone ? "Looking up your link…" : "Reading link info..."}</div>
             <Pulse lines={3} />
           </div>
         </motion.div>
       ) : info ? (
         <motion.div key={info.url} {...fade} transition={t.base} className={`flex min-h-0 flex-1 gap-4 ${phone ? "flex-col" : ""}`}>
-          <Thumb
-            src={info.thumbnails[0]?.url}
-            icon={info.hasVideo ? "video" : "audio"}
-            contain={!info.hasVideo}
-            className={`aspect-video shrink-0 rounded-md ${phone ? "w-full" : "h-full max-h-[220px] self-start"}`}
-          />
+          {phone ? (
+            // Phone: full-width thumb with the duration pinned on it, video-app style.
+            <div className="relative w-full shrink-0">
+              <Thumb
+                src={info.thumbnails[0]?.url}
+                icon={info.hasVideo ? "video" : "audio"}
+                contain={!info.hasVideo}
+                className="aspect-video w-full shrink-0 rounded-md"
+              />
+              {info.durationSec ? (
+                <span className="tabular absolute right-2 bottom-2 rounded-md bg-black/75 px-1.5 py-0.5 text-[11px] font-semibold text-white">
+                  {formatClock(info.durationSec)}
+                </span>
+              ) : null}
+            </div>
+          ) : (
+            <Thumb
+              src={info.thumbnails[0]?.url}
+              icon={info.hasVideo ? "video" : "audio"}
+              contain={!info.hasVideo}
+              className="aspect-video h-full max-h-[220px] shrink-0 self-start rounded-md"
+            />
+          )}
           <div className="flex min-w-0 flex-1 flex-col gap-2">
             <div className="truncate text-[11px] font-medium tracking-wider text-accent">{kicker(info)}</div>
             <h3
-              className="selectable line-clamp-2 min-w-0 text-[15px] leading-[22px] font-semibold [overflow-wrap:anywhere]"
+              className={`selectable line-clamp-2 min-w-0 font-semibold [overflow-wrap:anywhere] ${phone ? "text-[17px] leading-6" : "text-[15px] leading-[22px]"}`}
               title={info.title}
             >
               {info.title.length > 140 ? `${info.title.slice(0, 139)}…` : info.title}

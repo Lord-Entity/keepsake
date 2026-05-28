@@ -1,0 +1,199 @@
+/*
+ * Empty-state illustration palette and idle motion.
+ *
+ * Every illustration paints only with these --ill-* tokens, so one component
+ * re-colours for light and dark. The selectors mirror styles/theme.css exactly:
+ * light by default, dark when the OS prefers dark and the app has not forced
+ * light, or when the app sets data-theme="dark".
+ */
+:root {
+  --ill-sky: #fbe7e2;
+  --ill-sky-2: #f6d5cc;
+  --ill-ground: rgba(24, 22, 21, 0.08);
+  --ill-body: #e0634c;
+  --ill-body-shade: #c8533e;
+  --ill-belly: #f6b3a3;
+  --ill-face: #2b1d1a;
+  --ill-cheek: #f7a08c;
+  --ill-paper: #ffffff;
+  --ill-paper-2: #f1ece9;
+  --ill-ink: #3a2a26;
+  --ill-ink-soft: #b7aaa5;
+  --ill-gold: #f2b84b;
+  --ill-teal: #3f8f86;
+  --ill-teal-soft: #bfe0da;
+  --ill-skin-1: #f4c7aa;
+  --ill-skin-2: #a86b4c;
+  --ill-hair: #4a3029;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ill-sky: #241614;
+    --ill-sky-2: #321f1b;
+    --ill-ground: rgba(0, 0, 0, 0.45);
+    --ill-body: #e8705a;
+    --ill-body-shade: #bf4b36;
+    --ill-belly: #f09b86;
+    --ill-face: #2b1d1a;
+    --ill-cheek: #f6a693;
+    --ill-paper: #2b2624;
+    --ill-paper-2: #3a3330;
+    --ill-ink: #eadcd7;
+    --ill-ink-soft: #6e625e;
+    --ill-gold: #f5c463;
+    --ill-teal: #5fb3a9;
+    --ill-teal-soft: #24433f;
+    --ill-skin-1: #e8b394;
+    --ill-skin-2: #9a6146;
+    --ill-hair: #6b4436;
+  }
+}
+
+:root[data-theme="dark"] {
+  --ill-sky: #241614;
+  --ill-sky-2: #321f1b;
+  --ill-ground: rgba(0, 0, 0, 0.45);
+  --ill-body: #e8705a;
+  --ill-body-shade: #bf4b36;
+  --ill-belly: #f09b86;
+  --ill-face: #2b1d1a;
+  --ill-cheek: #f6a693;
+  --ill-paper: #2b2624;
+  --ill-paper-2: #3a3330;
+  --ill-ink: #eadcd7;
+  --ill-ink-soft: #6e625e;
+  --ill-gold: #f5c463;
+  --ill-teal: #5fb3a9;
+  --ill-teal-soft: #24433f;
+  --ill-skin-1: #e8b394;
+  --ill-skin-2: #9a6146;
+  --ill-hair: #6b4436;
+}
+
+.ill {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+/* Animated groups rotate/scale around their own box, never the SVG origin. */
+.ill-blink,
+.ill-wave,
+.ill-twinkle,
+.ill-sway,
+.ill-spin,
+.ill-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.ill-wave {
+  transform-origin: 0% 100%;
+}
+.ill-sway {
+  transform-origin: 50% 100%;
+}
+
+/* Idle motion only when the user has not asked for less. */
+@media (prefers-reduced-motion: no-preference) {
+  .ill-bob {
+    animation: ill-bob 3.6s ease-in-out infinite;
+  }
+  .ill-float {
+    animation: ill-float 4.8s ease-in-out infinite;
+  }
+  .ill-blink {
+    animation: ill-blink 5.2s ease-in-out infinite;
+  }
+  .ill-wave {
+    animation: ill-wave 2.4s ease-in-out infinite;
+  }
+  .ill-twinkle {
+    animation: ill-twinkle 2.8s ease-in-out infinite;
+  }
+  .ill-sway {
+    animation: ill-sway 4.2s ease-in-out infinite;
+  }
+  .ill-spin {
+    animation: ill-spin 6s linear infinite;
+  }
+  .ill-pulse {
+    animation: ill-pulse 2.6s ease-in-out infinite;
+  }
+}
+
+@keyframes ill-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+@keyframes ill-float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-6px) rotate(-3deg);
+  }
+}
+@keyframes ill-blink {
+  0%,
+  92%,
+  100% {
+    transform: scaleY(1);
+  }
+  95% {
+    transform: scaleY(0.1);
+  }
+}
+@keyframes ill-wave {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(-14deg);
+  }
+  75% {
+    transform: rotate(10deg);
+  }
+}
+@keyframes ill-twinkle {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.7);
+  }
+}
+@keyframes ill-sway {
+  0%,
+  100% {
+    transform: rotate(-4deg);
+  }
+  50% {
+    transform: rotate(4deg);
+  }
+}
+@keyframes ill-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes ill-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}

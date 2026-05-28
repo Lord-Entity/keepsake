@@ -4,7 +4,18 @@
  * Pure: buildDownloadArgs only builds an array; nothing is invoked or spawned. No network.
  */
 import { describe, expect, test } from "bun:test";
-import { buildDownloadArgs, isFormatPart, mergeTracker, movedPartPath, parseProgressLine, selectionArgs } from "../ytdlp";
+import {
+  buildDownloadArgs,
+  isFormatPart,
+  ladderSite,
+  laddersAfter,
+  ladderSteps,
+  LADDER_STEPS,
+  mergeTracker,
+  movedPartPath,
+  parseProgressLine,
+  selectionArgs,
+} from "../ytdlp";
 
 const URL = "https://www.youtube.com/watch?v=abc";
 const WIN_OUT = "C:\\Users\\me\\Downloads";
@@ -555,5 +566,270 @@ describe("selectionArgs", () => {
         expect(a.slice(start, a.length - 2)).toEqual(selectionArgs(req(id), { platform: "desktop" }));
       });
     }
+  });
+});
+
+describe("TikTok/Instagram workaround ladder", () => {
+  const TIKTOK_URL = "https://www.tiktok.com/@a/video/1";
+  const INSTAGRAM_URL = "https://www.instagram.com/reel/abc/";
+  const LADDER_URLS = { tiktok: TIKTOK_URL, instagram: INSTAGRAM_URL };
+
+  test("ladderSite: TikTok and Instagram hosts", () => {
+    for (const u of ["tiktok.com", "www.tiktok.com", "vm.tiktok.com", "m.tiktok.com"]) {
+      expect(ladderSite(`https://${u}/x`)).toBe("tiktok");
+    }
+    for (const u of ["instagram.com", "www.instagram.com", "instagr.am"]) {
+      expect(ladderSite(`https://${u}/x`)).toBe("instagram");
+    }
+  });
+
+  test("ladderSite: every other host (and garbage) is undefined", () => {
+    for (const u of [
+      "https://youtube.com/watch?v=abc",
+      "https://youtu.be/abc",
+      "https://music.youtube.com/watch?v=abc",
+      "https://nottiktok.com/x",
+      "https://tiktok.com.evil.example/x",
+      "https://vimeo.com/1",
+      "not a url at all",
+    ]) {
+      expect(ladderSite(u)).toBeUndefined();
+    }
+  });
+
+  test("YouTube and other sites never get ladder steps", () => {
+    expect(ladderSteps("https://www.youtube.com/watch?v=abc").length).toBe(0);
+    expect(ladderSteps("https://youtu.be/abc").length).toBe(0);
+    expect(ladderSteps("https://vimeo.com/1").length).toBe(0);
+  });
+
+  test("ladder steps are pinned exactly", () => {
+    expect(LADDER_STEPS.tiktok).toEqual([
+      ["--extractor-args", "tiktok:api_hostname=api22-normal-c-alisg.tiktokv.com;app_info=7351144126450059040"],
+      ["--force-ipv4", "--impersonate", "safari"],
+    ]);
+    expect(LADDER_STEPS.instagram).toEqual([
+      ["--extractor-args", "instagram:app_id=ios"],
+      ["--force-ipv4", "--impersonate", "safari"],
+    ]);
+    expect(ladderSteps(TIKTOK_URL)).toEqual(LADDER_STEPS.tiktok);
+    expect(ladderSteps(INSTAGRAM_URL)).toEqual(LADDER_STEPS.instagram);
+  });
+
+  test("no ladder step carries a forbidden flag, cookies flag or `--`", () => {
+    for (const site of ["tiktok", "instagram"]) {
+      for (const step of LADDER_STEPS[site]) {
+        for (const bad of [...FORBIDDEN, "--cookies-from-browser", "--cookies", "--"]) {
+          expect(step).not.toContain(bad);
+        }
+      }
+    }
+  });
+
+  describe("first attempt is unchanged", () => {
+    const URLS = [URL, TIKTOK_URL, INSTAGRAM_URL];
+    for (const u of URLS) {
+      for (const f of ALL_FORMATS) {
+        test(`${f} on ${u}: no opts, {} and heightFallback:false give identical argv without ladder flags`, () => {
+          const r = req(f, { url: u });
+          const plain = buildDownloadArgs(r, LINUX_OUT).args;
+          expect(plain).toEqual(buildDownloadArgs(r, LINUX_OUT, {}).args);
+          expect(plain).toEqual(buildDownloadArgs(r, LINUX_OUT, { heightFallback: false }).args);
+          for (const flag of ["--force-ipv4", "--impersonate", "--extractor-args"]) expect(plain).not.toContain(flag);
+        });
+      }
+    }
+
+    test("pinned full argv for a TikTok video:1080 first attempt", () => {
+      const r = buildDownloadArgs(req("video:1080", { url: TIKTOK_URL }), LINUX_OUT);
+      expect(r.tempDir).toBe("/home/me/Downloads/.keepsake-tmp/11111111-2222-3333-4444-555555555555");
+      expect(r.args).toEqual([
+        "--encoding",
+        "utf-8",
+        "--no-warnings",
+        "--windows-filenames",
+        "--trim-filenames",
+        "200",
+        "-P",
+        "home:/home/me/Downloads",
+        "-P",
+        "temp:/home/me/Downloads/.keepsake-tmp/11111111-2222-3333-4444-555555555555",
+        "--newline",
+        "--progress",
+        "--progress-template",
+        "download:KEEPSAKE|%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|" +
+          "%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(info.playlist_index)s|" +
+          "%(info.n_entries)s|%(progress.filename)s",
+        "--progress-template",
+        "postprocess:KEEPSAKE_PP|%(progress.status)s|%(progress.postprocessor)s",
+        "--print",
+        "after_move:KEEPSAKE_DONE|%(filepath)s",
+        "-i",
+        "--retries",
+        "10",
+        "--fragment-retries",
+        "10",
+        "--socket-timeout",
+        "30",
+        "--concurrent-fragments",
+        "4",
+        "--no-playlist",
+        "-o",
+        "%(title).80B [%(id)s].%(ext)s",
+        "-f",
+        "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+        "--merge-output-format",
+        "mp4/mkv",
+        "--",
+        TIKTOK_URL,
+      ]);
+    });
+  });
+
+  describe("pinned first-attempt argv: Instagram video, TikTok/Instagram audio, YouTube has no ladder", () => {
+    const TMP = "/home/me/Downloads/.keepsake-tmp/11111111-2222-3333-4444-555555555555";
+    const HEAD = [
+      "--encoding",
+      "utf-8",
+      "--no-warnings",
+      "--windows-filenames",
+      "--trim-filenames",
+      "200",
+      "-P",
+      "home:/home/me/Downloads",
+      "-P",
+      `temp:${TMP}`,
+      "--newline",
+      "--progress",
+      "--progress-template",
+      "download:KEEPSAKE|%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|" +
+        "%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(info.playlist_index)s|" +
+        "%(info.n_entries)s|%(progress.filename)s",
+      "--progress-template",
+      "postprocess:KEEPSAKE_PP|%(progress.status)s|%(progress.postprocessor)s",
+      "--print",
+      "after_move:KEEPSAKE_DONE|%(filepath)s",
+      "-i",
+      "--retries",
+      "10",
+      "--fragment-retries",
+      "10",
+      "--socket-timeout",
+      "30",
+      "--concurrent-fragments",
+      "4",
+      "--no-playlist",
+      "-o",
+      "%(title).80B [%(id)s].%(ext)s",
+    ];
+    const VIDEO_SEL = ["-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best", "--merge-output-format", "mp4/mkv"];
+    const MP3_SEL = [
+      "-f",
+      "bestaudio/best",
+      "-x",
+      "--audio-format",
+      "mp3",
+      "--audio-quality",
+      "192K",
+      "--embed-thumbnail",
+      "--convert-thumbnails",
+      "jpg",
+      "--embed-metadata",
+    ];
+
+    test("Instagram video:1080 first attempt", () => {
+      expect(buildDownloadArgs(req("video:1080", { url: INSTAGRAM_URL }), LINUX_OUT).args).toEqual([
+        ...HEAD,
+        ...VIDEO_SEL,
+        "--",
+        INSTAGRAM_URL,
+      ]);
+    });
+
+    test("TikTok audio:mp3 first attempt", () => {
+      expect(buildDownloadArgs(req("audio:mp3", { url: TIKTOK_URL }), LINUX_OUT).args).toEqual([
+        ...HEAD,
+        ...MP3_SEL,
+        "--",
+        TIKTOK_URL,
+      ]);
+    });
+
+    test("Instagram audio:mp3 first attempt", () => {
+      expect(buildDownloadArgs(req("audio:mp3", { url: INSTAGRAM_URL }), LINUX_OUT).args).toEqual([
+        ...HEAD,
+        ...MP3_SEL,
+        "--",
+        INSTAGRAM_URL,
+      ]);
+    });
+
+    test("every YouTube URL form has no ladder site and no ladder steps (downloadYtdlp gates on ladderSteps)", () => {
+      for (const u of [
+        URL,
+        "https://youtube.com/watch?v=abc",
+        "https://m.youtube.com/watch?v=abc",
+        "https://music.youtube.com/watch?v=abc",
+        "https://www.youtube.com/shorts/abc",
+        "https://youtu.be/abc",
+      ]) {
+        expect(ladderSite(u)).toBeUndefined();
+        expect(ladderSteps(u)).toEqual([]);
+      }
+    });
+  });
+
+  describe("ladder args go right before `-- URL`", () => {
+    for (const site of ["tiktok", "instagram"]) {
+      LADDER_STEPS[site].forEach((step, i) => {
+        for (const f of ["video:1080", "audio:mp3", "thumb:png"]) {
+          test(`${site} step ${i + 1}, ${f}`, () => {
+            const r = req(f, { url: LADDER_URLS[site] });
+            const base = buildDownloadArgs(r, LINUX_OUT).args;
+            const a = buildDownloadArgs(r, LINUX_OUT, { extra: step }).args;
+            expect(a).toEqual([...base.slice(0, -2), ...step, ...base.slice(-2)]);
+            expect(a.slice(-2)).toEqual(["--", LADDER_URLS[site]]);
+            expect(a.filter((x) => x === "--").length).toBe(1);
+          });
+        }
+      });
+    }
+  });
+
+  describe("laddersAfter", () => {
+    const YES = [
+      "unknown",
+      "network",
+      "timeout",
+      "ssl",
+      "forbidden",
+      "rate_limited",
+      "login_required",
+      "ip_blocked",
+      "anti_bot",
+      "parse_failed",
+      "no_formats",
+    ];
+    const NO = [
+      "cancelled",
+      "js_runtime_missing",
+      "ytdlp_missing",
+      "no_space",
+      "permission",
+      "private",
+      "unavailable",
+      "not_found",
+      "drm",
+      "password",
+      "ffmpeg_missing",
+      "format_unavailable",
+      "geo_blocked",
+      "unsupported_url",
+      "bot_check",
+      "empty",
+      "spawn",
+    ];
+    for (const c of YES) test(`${c}: ladders`, () => expect(laddersAfter(c)).toBe(true));
+    for (const c of NO) test(`${c}: final`, () => expect(laddersAfter(c)).toBe(false));
   });
 });

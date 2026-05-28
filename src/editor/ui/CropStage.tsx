@@ -7,8 +7,11 @@ import {
   HANDLES,
   moveRect,
   panBy,
+  drawRect,
+  isFullFrame,
   rectToScreen,
   resizeRect,
+  toSource,
   zoomAt,
   type Handle,
   type Point,
@@ -50,6 +53,7 @@ const ZOOM_STEP = 1.25;
 type Drag =
   | { kind: "move" | "resize"; handle: Handle | null; id: number; rect: CropRect; sx: number; sy: number }
   | { kind: "pan"; id: number; view: View; sx: number; sy: number }
+  | { kind: "draw"; id: number; anchor: Point; sx: number; sy: number }
   | { kind: "pinch"; view: View; dist: number; mid: Point };
 
 const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -71,6 +75,7 @@ export function CropStage({
   phone,
   className = "",
   cropDisabled = false,
+  readout,
 }: {
   source: Size;
   crop: CropRect;
@@ -81,7 +86,10 @@ export function CropStage({
   className?: string;
   /** Hide the crop frame and handles (cropping unavailable); pan and zoom still work. */
   cropDisabled?: boolean;
+  /** Numeric size of the crop, e.g. "1280 × 720", shown as a chip. */
+  readout?: string;
 }) {
+  const [coarse] = useState(() => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches);
   const ref = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState<Size>({ width: 0, height: 0 });
   const [view, setView] = useState<View>({ scale: 1, tx: 0, ty: 0 });
@@ -175,7 +183,14 @@ export function CropStage({
     e.preventDefault();
     const target = (e.target as HTMLElement).closest<HTMLElement>("[data-handle]");
     const h = target?.dataset.handle;
-    if (h && e.button !== 1) {
+    if (h === "move" && e.button !== 1 && isFullFrame(live.current.crop, live.current.src, 1)) {
+      // The frame covers the whole picture, so a move is impossible: draw a new crop instead.
+      const { view: v, src: so } = live.current;
+      const a = toSource(p, v);
+      const anchor = { x: Math.min(so.width, Math.max(0, a.x)), y: Math.min(so.height, Math.max(0, a.y)) };
+      target?.focus({ preventScroll: true });
+      startDrag({ kind: "draw", id: e.pointerId, anchor, sx: p.x, sy: p.y });
+    } else if (h && e.button !== 1) {
       target?.focus({ preventScroll: true });
       startDrag({
         kind: h === "move" ? "move" : "resize",
@@ -210,6 +225,10 @@ export function CropStage({
       applyView(panBy(d.view, p.x - d.sx, p.y - d.sy));
       return;
     }
+    if (d.kind === "draw") {
+      if (Math.hypot(p.x - d.sx, p.y - d.sy) >= 4) change(drawRect(d.anchor, toSource(p, v), so, r));
+      return;
+    }
     const dx = (p.x - d.sx) / v.scale;
     const dy = (p.y - d.sy) / v.scale;
     change(d.kind === "move" || !d.handle ? moveRect(d.rect, dx, dy, so) : resizeRect(d.rect, d.handle, dx, dy, so, r));
@@ -239,13 +258,14 @@ export function CropStage({
   };
 
   const box = rectToScreen(crop, view);
-  const hit = phone ? 44 : 28;
+  const hit = phone || coarse ? 44 : 32;
+  const fullCrop = isFullFrame(crop, src, 1);
   const showEdgesX = box.w > hit * 2.5; // n / s handles
   const showEdgesY = box.h > hit * 2.5; // e / w handles
   const zoomPct = Math.round(view.scale * 100);
   const dk = dragging?.kind ?? null;
   const cursor =
-    dk === "pan" || dk === "pinch" ? "grabbing" : dk === "move" ? "move" : dragging?.handle ? HANDLE_CURSOR[dragging.handle] : "grab";
+    dk === "pan" || dk === "pinch" ? "grabbing" : dk === "draw" ? "crosshair" : dk === "move" ? "move" : dragging?.handle ? HANDLE_CURSOR[dragging.handle] : "grab";
 
   return (
     <div
@@ -254,7 +274,7 @@ export function CropStage({
       aria-label={
         cropDisabled
           ? "Preview. Drag to pan; scroll or pinch to zoom."
-          : "Crop area. Drag the frame or its handles; drag the background to pan; scroll or pinch to zoom."
+          : "Crop area. Drag across the picture to draw a crop, drag the frame or its handles to adjust; drag the background to pan; scroll or pinch to zoom."
       }
       className={`relative touch-none overflow-hidden rounded-[14px] border border-line bg-[#0b0908] select-none ${className}`}
       style={{ cursor }}
@@ -262,6 +282,7 @@ export function CropStage({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerEnd}
       onPointerCancel={onPointerEnd}
+      onLostPointerCapture={onPointerEnd}
       onDoubleClick={(e) => {
         if (!(e.target as HTMLElement).closest("[data-handle],[data-toolbar]")) resetView();
       }}
@@ -297,13 +318,13 @@ export function CropStage({
             top: box.y,
             width: box.w,
             height: box.h,
-            cursor: dragging ? undefined : "move",
+            cursor: dragging ? undefined : fullCrop ? "crosshair" : "move",
             boxShadow: "0 0 0 1px rgba(255,255,255,0.9), 0 0 0 100vmax rgba(0,0,0,0.55)",
           }}
         >
           {/* Rule-of-thirds guides. */}
           <div
-            className={`pointer-events-none absolute inset-0 transition-opacity duration-150 ${dk === "move" || dk === "resize" ? "opacity-100" : "opacity-0"}`}
+            className={`pointer-events-none absolute inset-0 transition-opacity duration-150 ${dk === "move" || dk === "resize" || dk === "draw" ? "opacity-100" : "opacity-0"}`}
             aria-hidden="true"
           >
             <div className="absolute inset-y-0 left-1/3 w-px bg-white/45" />
@@ -329,10 +350,27 @@ export function CropStage({
                 className="group absolute flex -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-accent"
                 style={{ left, top, width: hit, height: hit, cursor: HANDLE_CURSOR[h] }}
               >
-                <HandleMark handle={h} />
+                <HandleMark handle={h} big={hit >= 44} />
               </div>
             );
           })}
+        </div>
+      )}
+
+      {ready && !cropDisabled && readout && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute top-2 left-2 rounded-full bg-black/60 px-2.5 py-1 text-[11px] font-medium text-white tabular backdrop-blur-md"
+        >
+          {readout}
+        </div>
+      )}
+      {ready && !cropDisabled && fullCrop && !dragging && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 rounded-full bg-black/60 px-2.5 py-1 text-[11px] font-medium text-white tabular backdrop-blur-md"
+        >
+          Drag across the picture to crop
         </div>
       )}
 
@@ -378,13 +416,13 @@ function ToolButton({ icon, label, size, onClick }: { icon: IconName; label: str
 }
 
 /** Visible part of a handle: an L for corners, a short bar for edges. */
-function HandleMark({ handle }: { handle: Handle }) {
+function HandleMark({ handle, big = false }: { handle: Handle; big?: boolean }) {
   const bar = "absolute rounded-full bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.35)] transition-transform duration-150 group-hover:scale-110";
   if (handle.length === 1) {
     const horizontal = handle === "n" || handle === "s";
     return <span aria-hidden="true" className={bar} style={horizontal ? { width: 22, height: 4 } : { width: 4, height: 22 }} />;
   }
-  const L = 16;
+  const L = big ? 20 : 16;
   const T = 4;
   // Corner arms run inward from the corner point (the centre of the hit box).
   const sx = handle.includes("w") ? 1 : -1;

@@ -13,7 +13,7 @@
  *   or convert it in the browser).
  */
 import type { AudioFormat, FormatOption, Platform, ThumbnailFormat, VideoInfo } from "../lib/types";
-import { bestStreamsByHeight, pickYtdlpFormat } from "./android-ytdlp";
+import { bestStreamsByHeight, hiddenStreams, pickYtdlpFormat } from "./android-ytdlp";
 import { platform } from "./platform";
 
 /** Heights offered when the link gives none (playlists, and the Android pre-fetch placeholders): 2160 down to 360. */
@@ -235,6 +235,18 @@ function androidYtdlpOptions(info: VideoInfo): FormatOption[] {
         needsConversion: false,
       });
     }
+  } else if (hiddenStreams(info).some((s) => s.kind !== "audio-only")) {
+    // TikTok / Instagram post offered only as HLS/DASH: nothing the phone can mux, so one "Best available" row that
+    // the download ladder sends to the full yt-dlp route (bundled ffmpeg). Never YouTube (hiddenStreams is empty).
+    out.push({
+      id: "video:best",
+      mode: "video",
+      label: "Best available",
+      ext: "mp4",
+      isDefault: true,
+      needsMerge: true,
+      needsConversion: false,
+    });
   } else {
     let path = "";
     try {

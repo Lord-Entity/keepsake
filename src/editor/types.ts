@@ -71,7 +71,12 @@ export interface EditorCapabilities {
 export interface EditorEngine {
   /** Optional. Never rejects in the shipped engine: unknown means the full set (the export reports any error). */
   capabilities?(kind: MediaKind): Promise<EditorCapabilities>;
-  pickMedia(): Promise<EditorInput | null>;
+  /**
+   * Opens the system picker. `kind` (optional, added later) limits the picker to photos or videos where the platform
+   * can; omitted means both, exactly as before. The returned `kind` is always the file's real kind, which can differ
+   * from the request when a picker ignores the filter.
+   */
+  pickMedia(kind?: MediaKind): Promise<EditorInput | null>;
   probe(input: EditorInput, signal?: AbortSignal): Promise<MediaProbe>;
   /** Object/data URL the webview can show (<video>/<img>) for the source. */
   previewUrl(input: EditorInput): Promise<string>;

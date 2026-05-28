@@ -3,7 +3,7 @@
  * Unit tests for src/engine/android-ytdlp.ts (host allow-list, error mapping, info mapping, format picking,
  * invoke wrappers). Pure: no network, no processes. platform() and the Tauri invoke bridge are mocked.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 
 let current = "android";
 mock.module("../platform", () => ({
@@ -651,5 +651,192 @@ describe("YouTube via yt-dlp info", () => {
     expect(await tryYouTubeViaYtdlp(url)).toBeNull();
     invokeImpl = async () => ({ ok: true });
     expect(await tryYouTubeViaYtdlp(url)).toBeNull();
+  });
+});
+
+const { hiddenStreams, ytdlpAlternatives, ytdlpPickKey, runWithRetry, TIKTOK_IG_TS_RETRY } = ytdlpModule;
+
+const YT_URL = "https://www.youtube.com/watch?v=abc";
+
+describe("toStream refactor is behaviour-neutral", () => {
+  test("tiktokInfo streams are exactly the http formats, field by field", () => {
+    const v = ytdlpInfoToVideoInfo(tiktokInfo(), "u");
+    expect(v.streams).toEqual([
+      { id: "download", kind: "progressive", ext: "mp4", height: 1080, fps: 30, vcodec: "h264", acodec: "aac", sizeBytes: 9000000 },
+      { id: "bytevc1_1080p_1-0", kind: "progressive", ext: "mp4", height: 1080, fps: 30, vcodec: "h265", acodec: "aac", sizeBytes: 5000000 },
+      { id: "h264_1080p_1-0", kind: "progressive", ext: "mp4", height: 1080, fps: 30, vcodec: "avc1.64001f", acodec: "aac", sizeBytes: 6000000 },
+      { id: "h264_720p_1-0", kind: "progressive", ext: "mp4", height: 720, fps: 30, vcodec: "avc1.64001f", acodec: "aac", sizeBytes: 3000000 },
+    ]);
+  });
+
+  test("instagramInfo streams keep kinds, codecs and sizes", () => {
+    const v = ytdlpInfoToVideoInfo(instagramInfo(), "u");
+    expect(v.streams).toEqual([
+      { id: "dash-v", kind: "video-only", ext: "mp4", height: 1080, fps: 30, vcodec: "avc1" },
+      { id: "dash-a-small", kind: "audio-only", ext: "m4a", acodec: "mp4a.40.2", sizeBytes: 100 },
+      { id: "dash-a", kind: "audio-only", ext: "m4a", acodec: "mp4a.40.2", sizeBytes: 900 },
+      { id: "prog", kind: "progressive", ext: "mp4", height: 720, fps: 30, vcodec: "avc1", acodec: "mp4a.40.2" },
+    ]);
+  });
+});
+
+describe("hiddenStreams", () => {
+  test("TikTok keeps the dropped HLS stream privately", () => {
+    const hs = hiddenStreams(ytdlpInfoToVideoInfo(tiktokInfo(), "u"));
+    expect(hs.map((s) => s.id)).toEqual(["hls-1"]);
+  });
+
+  test("Instagram (nothing dropped) has none", () => {
+    expect(hiddenStreams(ytdlpInfoToVideoInfo(instagramInfo(), "u"))).toEqual([]);
+  });
+
+  test("YouTube never has hidden streams, even with an m3u8 format", () => {
+    const raw = youtubeInfo({ formats: [...youtubeInfo().formats, fmt({ format_id: "hls-yt", protocol: "m3u8_native", height: 1080 })] });
+    expect(hiddenStreams(ytdlpInfoToVideoInfo(raw, YT_URL))).toEqual([]);
+  });
+
+  test("full infos and spread copies have none", () => {
+    expect(hiddenStreams(ytdlpInfoToVideoInfo(tiktokInfo(), "u", { full: true }))).toEqual([]);
+    const v = ytdlpInfoToVideoInfo(tiktokInfo(), "u");
+    expect(hiddenStreams({ ...v })).toEqual([]);
+  });
+});
+
+describe("HLS-only posts", () => {
+  test("HLS-only TikTok is still a video with no listed streams", () => {
+    const raw = {
+      ...tiktokInfo(),
+      formats: [
+        fmt({ format_id: "hls-1080", protocol: "m3u8_native", height: 1080 }),
+        fmt({ format_id: "hls-audio", protocol: "m3u8_native", vcodec: "none", acodec: "aac", height: null, fps: null }),
+      ],
+    };
+    const v = ytdlpInfoToVideoInfo(raw, "u");
+    expect(v.streams).toEqual([]);
+    expect(v.heights).toEqual([]);
+    expect(v.hasVideo).toBe(true);
+    expect(v.kind).toBe("video");
+    expect(pickYtdlpFormat(v, "video:best")).toBeNull();
+    expect(hiddenStreams(v).length).toBe(2);
+  });
+
+  test("HLS-only YouTube is unchanged: no video", () => {
+    const raw = youtubeInfo({ formats: [fmt({ format_id: "hls-yt", protocol: "m3u8_native", height: 1080 })] });
+    const v = ytdlpInfoToVideoInfo(raw, YT_URL);
+    expect(v.streams).toEqual([]);
+    expect(v.hasVideo).toBe(false);
+    expect(v.kind).toBe("audio");
+  });
+});
+
+const ids = (picks) => picks.map((p) => p.formatId);
+
+describe("ytdlpAlternatives", () => {
+  test("YouTube and non-ytdlp infos give empty lists", () => {
+    const yt = ytdlpInfoToVideoInfo(youtubeInfo(), YT_URL);
+    expect(ytdlpAlternatives(yt, "video:best", null)).toEqual({ clean: [], watermarked: [] });
+    const t = { ...ytdlpInfoToVideoInfo(tiktokInfo(), "u"), source: "youtubei" };
+    expect(ytdlpAlternatives(t, "video:best", null)).toEqual({ clean: [], watermarked: [] });
+  });
+
+  test("TikTok: primary excluded, clean sorted, watermarked separate", () => {
+    const v = ytdlpInfoToVideoInfo(tiktokInfo(), "u");
+    const primary = pickYtdlpFormat(v, "video:1080");
+    expect(primary.formatId).toBe("h264_1080p_1-0");
+    const alt = ytdlpAlternatives(v, "video:1080", primary);
+    expect(ids(alt.clean)).toEqual(["bytevc1_1080p_1-0", "h264_720p_1-0"]);
+    expect(ids(alt.watermarked)).toEqual(["download"]);
+  });
+
+  test("a video:720 limit caps results to 720 and below", () => {
+    const v = ytdlpInfoToVideoInfo(tiktokInfo(), "u");
+    const viaPrimary = ytdlpAlternatives(v, "video:720", pickYtdlpFormat(v, "video:1080"));
+    expect(ids(viaPrimary.clean)).toEqual(["h264_720p_1-0"]);
+    expect(viaPrimary.watermarked).toEqual([]);
+    const noPrimary = ytdlpAlternatives(v, "video:720", null);
+    expect(ids(noPrimary.clean)).toEqual(["h264_720p_1-0"]);
+  });
+
+  test("a heightless progressive file comes after heighted ones", () => {
+    const raw = {
+      ...tiktokInfo(),
+      formats: [fmt({ format_id: "nohgt", height: null }), fmt({ format_id: "p480", height: 480 }), fmt({ format_id: "p720", height: 720 })],
+    };
+    const v = ytdlpInfoToVideoInfo(raw, "u");
+    expect(ids(ytdlpAlternatives(v, "video:best", null).clean)).toEqual(["p720", "p480", "nohgt"]);
+  });
+
+  test("Instagram video: progressive first, then the pair with the smaller audio, never the primary pair", () => {
+    const v = ytdlpInfoToVideoInfo(instagramInfo(), "u");
+    const primary = pickYtdlpFormat(v, "video:best");
+    expect(ytdlpPickKey(primary)).toBe("dash-v+dash-a");
+    const alt = ytdlpAlternatives(v, "video:best", primary);
+    expect(alt.clean.map(ytdlpPickKey)).toEqual(["prog+", "dash-v+dash-a-small"]);
+    expect(alt.clean[1]).toMatchObject({ ext: "mp4", muxExt: "mp4", audioFormatId: "dash-a-small", height: 1080 });
+    expect(alt.clean.map(ytdlpPickKey)).not.toContain("dash-v+dash-a");
+    expect(alt.watermarked).toEqual([]);
+  });
+
+  test("audio:m4a on Instagram: other m4a first, then a progressive mp4 that needs remux", () => {
+    const v = ytdlpInfoToVideoInfo(instagramInfo(), "u");
+    const primary = pickYtdlpFormat(v, "audio:m4a");
+    expect(primary.formatId).toBe("dash-a");
+    const alt = ytdlpAlternatives(v, "audio:m4a", primary);
+    expect(ids(alt.clean)).toEqual(["dash-a-small", "prog"]);
+    expect(alt.clean[0].needsRemux).toBe(false);
+    expect(alt.clean[1]).toMatchObject({ needsRemux: true, ext: "mp4" });
+  });
+
+  test("primary null excludes nothing", () => {
+    const v = ytdlpInfoToVideoInfo(tiktokInfo(), "u");
+    const alt = ytdlpAlternatives(v, "video:1080", null);
+    expect(ids(alt.clean)).toEqual(["h264_1080p_1-0", "bytevc1_1080p_1-0", "h264_720p_1-0"]);
+    expect(ids(alt.watermarked)).toEqual(["download"]);
+  });
+
+  test("ytdlpPickKey joins video and audio ids", () => {
+    expect(ytdlpPickKey({ formatId: "a" })).toBe("a+");
+    expect(ytdlpPickKey({ formatId: "a", audioFormatId: "b" })).toBe("a+b");
+  });
+});
+
+afterAll(async () => {
+  // Leave the shared status cache as "not ready" for any file that runs after this one.
+  current = "android";
+  invokeImpl = async () => {
+    throw "command ytdlp_status not found";
+  };
+  await androidYtdlpStatus({ refresh: true });
+});
+
+describe("runWithRetry codes option", () => {
+  test("TIKTOK_IG_TS_RETRY is exactly network and timeout", () => {
+    expect([...TIKTOK_IG_TS_RETRY].toSorted()).toEqual(["network", "timeout"]);
+  });
+
+  test("rate_limited is not retried with TIKTOK_IG_TS_RETRY", async () => {
+    const fn = mock(async () => {
+      throw { code: "rate_limited" };
+    });
+    await expect(runWithRetry(fn, { retries: 1, delays: [0], codes: TIKTOK_IG_TS_RETRY })).rejects.toMatchObject({ code: "rate_limited" });
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  test("network is retried once with TIKTOK_IG_TS_RETRY", async () => {
+    const fn = mock(async (attempt) => {
+      if (attempt === 0) throw { code: "network" };
+      return "ok";
+    });
+    expect(await runWithRetry(fn, { retries: 1, delays: [0], codes: TIKTOK_IG_TS_RETRY })).toBe("ok");
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  test("default codes still retry rate_limited", async () => {
+    const fn = mock(async (attempt) => {
+      if (attempt < 2) throw { code: "rate_limited" };
+      return "done";
+    });
+    expect(await runWithRetry(fn, { delays: [0, 0] })).toBe("done");
+    expect(fn).toHaveBeenCalledTimes(3);
   });
 });

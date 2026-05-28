@@ -10,7 +10,15 @@ import { navigate } from "../state/nav";
 import { settingsStore } from "../state/settings";
 import { notify } from "../state/toast";
 
-const MESSAGES = ["Reading the link…", "Checking available formats…", "Almost there…"];
+/** Rotating lines for the cooking fetch modal: ongoing work only, never a result. */
+const MESSAGES = [
+  "Reading the label…",
+  "Sniffing the link…",
+  "Chopping up the details…",
+  "Stirring the pot…",
+  "Tasting the formats…",
+  "Checking the seasoning…",
+];
 
 type Phase = { kind: "idle" } | { kind: "fetching"; url: string } | { kind: "pick"; info: VideoInfo; formats: FormatOption[] };
 
@@ -65,10 +73,11 @@ export function useQuickDownload(phone: boolean) {
       <ActionModal
         open={phase.kind === "fetching"}
         phase="working"
-        title="Reading the link"
+        title="Reading your link"
         messages={MESSAGES}
         detail={phase.kind === "fetching" ? hostOf(phase.url) || undefined : undefined}
         onCancel={cancel}
+        scene="cooking"
       />
       <Dialog
         open={phase.kind === "pick"}

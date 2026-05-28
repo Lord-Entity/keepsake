@@ -174,6 +174,39 @@ export function resizeRect(start: CropRect, handle: Handle, dx: number, dy: numb
   return { x: cx - w / 2, y: hasN ? ay - h : ay, w, h };
 }
 
+/**
+ * Draw a new crop by dragging from `anchor` to `to` (source pixels). The anchor corner stays put; the rect grows
+ * toward the pointer, keeps `ratio` when set, never leaves the source and is at least the minimum side
+ * (shifted inside when the anchor is too close to an edge).
+ */
+export function drawRect(anchor: Point, to: Point, size: Size, ratio: number | null): CropRect {
+  const m = minSide(size);
+  const ax = clamp(Number.isFinite(anchor.x) ? anchor.x : 0, 0, size.width);
+  const ay = clamp(Number.isFinite(anchor.y) ? anchor.y : 0, 0, size.height);
+  const tx = clamp(Number.isFinite(to.x) ? to.x : ax, 0, size.width);
+  const ty = clamp(Number.isFinite(to.y) ? to.y : ay, 0, size.height);
+  const sx = tx >= ax ? 1 : -1;
+  const sy = ty >= ay ? 1 : -1;
+  let w = Math.abs(tx - ax);
+  let h = Math.abs(ty - ay);
+  if (ratio === null || !(ratio > 0)) {
+    w = Math.max(w, m);
+    h = Math.max(h, m);
+  } else {
+    const roomX = sx > 0 ? size.width - ax : ax;
+    const roomY = sy > 0 ? size.height - ay : ay;
+    const minW = Math.max(m, m * ratio);
+    w = Math.max(Math.min(Math.max(w, h * ratio), roomX, roomY * ratio), minW);
+    h = w / ratio;
+    if (w > size.width || h > size.height) {
+      const f = fitRatio(ratio, size);
+      w = f.w;
+      h = f.h;
+    }
+  }
+  return clampRect({ x: sx > 0 ? ax : ax - w, y: sy > 0 ? ay : ay - h, w, h }, size);
+}
+
 /** Scale and offset that fit the whole source inside the stage with `pad` CSS px around it. */
 export function fitView(stage: Size, src: Size, pad = 24): View {
   const aw = Math.max(1, stage.width - pad * 2);

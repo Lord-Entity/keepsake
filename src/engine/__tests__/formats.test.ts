@@ -310,3 +310,85 @@ describe("listFormats on Android, self-contained yt-dlp route (ytdlpFull)", () =
     expect(byMode(all, "thumbnail").length).toBe(3);
   });
 });
+
+const { ytdlpInfoToVideoInfo, hiddenStreams, forgetHiddenStreams } = await import("../android-ytdlp");
+
+const yfmt = (over) => ({
+  format_id: "x",
+  ext: "mp4",
+  vcodec: "h264",
+  acodec: "aac",
+  height: 720,
+  fps: 30,
+  filesize: null,
+  protocol: "https",
+  format_note: null,
+  ...over,
+});
+const rawInfo = (formats, over = {}) => ({
+  id: "7300",
+  title: "A clip",
+  uploader: "someone",
+  duration: 12,
+  thumbnail: null,
+  extractor: "TikTok",
+  webpage_url: "https://www.tiktok.com/@someone/video/7300",
+  formats,
+  ...over,
+});
+
+describe("listFormats on Android, hidden HLS-only branch", () => {
+  beforeEach(() => {
+    current = "android";
+  });
+
+  test("HLS-only TikTok lists one default Best row; audio rows as for no streams", () => {
+    const v = ytdlpInfoToVideoInfo(rawInfo([yfmt({ format_id: "hls-1080", protocol: "m3u8_native", height: 1080 })]), "u");
+    const all = listFormats(v);
+    const video = byMode(all, "video");
+    expect(ids(video)).toEqual(["video:best"]);
+    expect(video[0].isDefault).toBe(true);
+    expect(video[0].disabledReason).toBeUndefined();
+    expect(video[0]).toMatchObject({ ext: "mp4", needsMerge: true });
+    const audio = byMode(all, "audio");
+    expect(ids(audio)).toEqual(["audio:m4a", "audio:mp3", "audio:wav"]);
+    expect(audio.find((o) => o.id === "audio:m4a").disabledReason).toBeTruthy();
+    expect(audio.find((o) => o.id === "audio:mp3").disabledReason).toBeTruthy();
+    expect(ids(enabled(audio))).toEqual(["audio:wav"]);
+  });
+
+  test("after forgetHiddenStreams (full route not ready) the HLS-only post shows the disabled No video row", () => {
+    const v = ytdlpInfoToVideoInfo(rawInfo([yfmt({ format_id: "hls-1080", protocol: "m3u8_native", height: 1080 })]), "u");
+    expect(hiddenStreams(v).length).toBe(1);
+    forgetHiddenStreams(v);
+    expect(hiddenStreams(v)).toEqual([]);
+    const video = byMode(listFormats(v), "video");
+    expect(ids(video)).toEqual(["video:none"]);
+    expect(video[0].disabledReason).toMatch(/^No video/);
+  });
+
+  test("http formats plus an HLS format list the same rows as without the HLS one", () => {
+    const http = [
+      yfmt({ format_id: "h264_1080p", vcodec: "avc1", height: 1080 }),
+      yfmt({ format_id: "h264_720p", vcodec: "avc1", height: 720 }),
+    ];
+    const withHls = ytdlpInfoToVideoInfo(rawInfo([...http, yfmt({ format_id: "hls-1", protocol: "m3u8_native", height: 1080 })]), "u");
+    const without = ytdlpInfoToVideoInfo(rawInfo(http), "u");
+    expect(ids(byMode(listFormats(withHls), "video"))).toEqual(["video:best", "video:1080", "video:720"]);
+    expect(listFormats(withHls)).toEqual(listFormats(without));
+  });
+
+  test("YouTube with only m3u8 formats keeps the disabled No video row", () => {
+    const v = ytdlpInfoToVideoInfo(
+      rawInfo([yfmt({ format_id: "hls-yt", protocol: "m3u8_native", height: 1080 })], {
+        extractor: "youtube",
+        webpage_url: "https://www.youtube.com/watch?v=abc",
+      }),
+      "u",
+    );
+    const video = byMode(listFormats(v), "video");
+    expect(ids(video)).toEqual(["video:none"]);
+    expect(video[0].disabledReason).toMatch(/^No video/);
+    expect(video.some((o) => o.id === "video:best")).toBe(false);
+  });
+});

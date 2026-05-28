@@ -64,7 +64,7 @@ export function FavoritesPage({ phone }: { phone: boolean }) {
   if (favorites.length === 0) {
     return (
       <EmptyState
-        icon="heart"
+        illustration="favorites"
         title="No favorites yet"
         body="Save videos, songs, channels and profiles you want to come back to."
         action={

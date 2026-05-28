@@ -20,7 +20,7 @@ import {
   VIDEO_EXTS,
   type PlatformEngine,
 } from "./engine-photo";
-import type { EditorEngine, EditorInput, MediaProbe } from "./types";
+import type { EditorEngine, EditorInput, MediaKind, MediaProbe } from "./types";
 import { EditorError, validateJob } from "./types";
 
 // ---------------- web (dev preview only) ----------------
@@ -33,17 +33,23 @@ function webFile(input: EditorInput): File {
   return f;
 }
 
+/** `accept` for the dev-preview file input: only the requested kind, or both. Exported for tests. */
+export function webAccept(kind?: MediaKind): string {
+  const exts = kind === "photo" ? PHOTO_EXTS : kind === "video" ? VIDEO_EXTS : [...PHOTO_EXTS, ...VIDEO_EXTS];
+  return exts.map((e) => `.${e}`).join(",");
+}
+
 const webEngine: PlatformEngine = {
   capabilities(kind) {
     return Promise.resolve(
       kind === "photo" ? { ...FULL_CAPS } : { crop: false, trim: false, mute: false, exactTrim: false, note: "Video export needs the Keepsake app." },
     );
   },
-  pickMedia() {
+  pickMedia(want) {
     return new Promise<EditorInput | null>((resolve) => {
       const el = document.createElement("input");
       el.type = "file";
-      el.accept = [...PHOTO_EXTS, ...VIDEO_EXTS].map((e) => `.${e}`).join(",");
+      el.accept = webAccept(want);
       el.addEventListener("change", () => {
         const f = el.files?.[0];
         const kind = f ? (kindFromName(f.name) ?? (f.type.startsWith("video/") ? "video" : "photo")) : undefined;
@@ -131,9 +137,10 @@ export const editorEngine: EditorEngine = {
     }
   },
 
-  async pickMedia() {
+  /** `kind` omitted: the platform module is called with no argument, exactly as before. */
+  async pickMedia(kind) {
     try {
-      return await impl().pickMedia();
+      return await (kind === undefined ? impl().pickMedia() : impl().pickMedia(kind));
     } catch (e) {
       throw mapNativeError(e, "unsupported");
     }

@@ -227,6 +227,22 @@ function Shell() {
           Supported sites
         </Button>
       )
+    ) : page === "downloads" && phone ? (
+      <>
+        <IconButton icon="chevronLeft" label="Back to Home" size={44} onClick={() => navigate("home")} />
+        {hasFinished && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-11"
+            aria-label="Clear finished downloads"
+            title="Clear finished downloads"
+            onClick={clearFinished}
+          >
+            Clear
+          </Button>
+        )}
+      </>
     ) : page === "downloads" && hasFinished ? (
       <Button
         size="sm"

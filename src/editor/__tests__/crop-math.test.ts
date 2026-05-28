@@ -13,6 +13,7 @@ import {
   clampRect,
   clampTrim,
   clampView,
+  drawRect,
   fitRatio,
   fitView,
   formatTime,
@@ -123,6 +124,13 @@ describe("clamping", () => {
     expect(clampRect({ x: 0, y: 0, w: 4, h: 4 }, HD)).toEqual({ x: 0, y: 0, w: 16, h: 16 });
   });
 
+  test("out-of-range input is clamped inside the source and clamping is idempotent", () => {
+    // w, h -> 16 (minimum); x -> 0; y = 2000 -> 1080 - 16 = 1064.
+    const c = clampRect({ x: -50, y: 2000, w: -10, h: 0 }, HD);
+    expect(c).toEqual({ x: 0, y: 1064, w: 16, h: 16 });
+    expect(clampRect(c, HD)).toEqual(c);
+  });
+
   test("non-finite values fall back to safe defaults", () => {
     expect(clampRect({ x: NaN, y: 5, w: NaN, h: 100 }, HD)).toEqual({ x: 0, y: 5, w: 1920, h: 100 });
   });
@@ -145,6 +153,17 @@ describe("roundCrop", () => {
   test("rect touching the far edge stays inside after rounding", () => {
     const size = { width: 1001, height: 601 };
     expect(roundCrop({ x: 900.7, y: 500.9, w: 100.3, h: 100.1 }, size, true)).toEqual({ x: 900, y: 500, w: 100, h: 100 });
+  });
+
+  test("rounding twice gives the same rect (stable)", () => {
+    // 37x23: {13.7,9.2,17.9,17.1} -> {14,6,18,16}; HD: {3.4,5.6,101.3,99.7} -> {2,6,100,100}.
+    const small = { width: 37, height: 23 };
+    const a = roundCrop({ x: 13.7, y: 9.2, w: 17.9, h: 17.1 }, small, true);
+    expect(a).toEqual({ x: 14, y: 6, w: 18, h: 16 });
+    expect(roundCrop(a, small, true)).toEqual(a);
+    const b = roundCrop({ x: 3.4, y: 5.6, w: 101.3, h: 99.7 }, HD, true);
+    expect(b).toEqual({ x: 2, y: 6, w: 100, h: 100 });
+    expect(roundCrop(b, HD, true)).toEqual(b);
   });
 
   test("even results are always even, integer and inside the source", () => {
@@ -189,6 +208,18 @@ describe("move and resize", () => {
     expect(resizeRect(start, "se", 50, 10, HD, 1)).toEqual({ x: 100, y: 100, w: 250, h: 250 });
   });
 
+  test("free resize never shrinks below the minimum side", () => {
+    // right = clamp(300 - 5000, 100 + 16, 1920) = 116; bottom likewise.
+    expect(resizeRect(start, "se", -5000, -5000, HD, null)).toEqual({ x: 100, y: 100, w: 16, h: 16 });
+  });
+
+  test("ratio corner resize is limited by the bottom edge and keeps the ratio", () => {
+    // wx = wy = 5200; maxW = min(1920 - 100, (1080 - 100) * 1) = 980; w = h = 980 -> bottom = 1080.
+    const r = resizeRect(start, "se", 5000, 5000, HD, 1);
+    expect(r).toEqual({ x: 100, y: 100, w: 980, h: 980 });
+    expectInside(r, HD);
+  });
+
   test("ratio corner resize stops at the source edge", () => {
     expect(resizeRect(start, "nw", -500, -500, HD, 1)).toEqual({ x: 0, y: 0, w: 300, h: 300 });
   });
@@ -215,6 +246,12 @@ describe("screen <-> source mapping, zoom and pan", () => {
       expect(back.x).toBeCloseTo(p.x, 9);
       expect(back.y).toBeCloseTo(p.y, 9);
     }
+  });
+
+  test("the full source maps to the padded stage and back", () => {
+    const v = fitView({ width: 848, height: 648 }, { width: 1600, height: 1200 }, 24);
+    expect(rectToScreen(fullRect({ width: 1600, height: 1200 }), v)).toEqual({ x: 24, y: 24, w: 800, h: 600 });
+    expect(toSource({ x: 24, y: 24 }, v)).toEqual({ x: 0, y: 0 });
   });
 
   test("rectToScreen scales size and offsets position", () => {
@@ -300,5 +337,86 @@ describe("formatTime", () => {
   test("negative and non-finite become 0", () => {
     expect(formatTime(-5)).toBe("0:00.0");
     expect(formatTime(NaN)).toBe("0:00.0");
+  });
+});
+
+describe("drawRect", () => {
+  test("free drag down-right keeps the anchor at the start", () => {
+    // dx = 400-100 = 300, dy = 250-50 = 200; both above MIN_CROP; x=ax, y=ay.
+    expect(drawRect({ x: 100, y: 50 }, { x: 400, y: 250 }, HD, null)).toEqual({ x: 100, y: 50, w: 300, h: 200 });
+  });
+
+  test("free drag up-left keeps the anchor as the bottom-right corner", () => {
+    // w = |200-500| = 300, h = |100-400| = 300; sx = sy = -1 so x = 500-300 = 200, y = 400-300 = 100.
+    expect(drawRect({ x: 500, y: 400 }, { x: 200, y: 100 }, HD, null)).toEqual({ x: 200, y: 100, w: 300, h: 300 });
+  });
+
+  test("pointer beyond the source is clamped to its edges", () => {
+    // to -> (1920, 1080); w = 1920-1800 = 120, h = 1080-1000 = 80; x+w = 1920, y+h = 1080.
+    const r = drawRect({ x: 1800, y: 1000 }, { x: 5000, y: 5000 }, HD, null);
+    expect(r).toEqual({ x: 1800, y: 1000, w: 120, h: 80 });
+    expect(r.x + r.w).toBe(1920);
+    expect(r.y + r.h).toBe(1080);
+  });
+
+  test("tiny drag gets the minimum side and is shifted inside at the edge", () => {
+    // to clamps to (1920, 1080) = anchor, so w = h = 0 -> minSide 16; x = 1920 clamps to 1920-16 = 1904, y to 1080-16 = 1064.
+    expect(minSide(HD)).toBe(16);
+    const r = drawRect({ x: 1920, y: 1080 }, { x: 5000, y: 5000 }, HD, null);
+    expect(r).toEqual({ x: 1904, y: 1064, w: 16, h: 16 });
+    // Same for a tiny drag in the middle: 2px -> 16px, anchor stays.
+    expect(drawRect({ x: 500, y: 500 }, { x: 502, y: 501 }, HD, null)).toEqual({ x: 500, y: 500, w: 16, h: 16 });
+  });
+
+  test("ratio 1 uses the dominant axis", () => {
+    // dx = 300, dy = 100; roomX = 1920, roomY = 1080; w = max(min(max(300, 100*1), 1920, 1080*1), 16) = 300; h = 300.
+    const r = drawRect({ x: 0, y: 0 }, { x: 300, y: 100 }, HD, 1);
+    expectRect(r, { x: 0, y: 0, w: 300, h: 300 });
+    expect(r.w).toBe(r.h);
+  });
+
+  test("ratio 16/9 is limited by the room below the anchor", () => {
+    // w0 = 1920, h0 = 180; roomX = 1920, roomY = 1080-900 = 180 -> roomY*16/9 = 320;
+    // w = max(min(max(1920, 320), 1920, 320), 16) = 320; h = 320 / (16/9) = 180.
+    const r = drawRect({ x: 0, y: 900 }, { x: 1920, y: 1080 }, HD, 16 / 9);
+    expectRect(r, { x: 0, y: 900, w: 320, h: 180 });
+  });
+
+  test("NaN inputs do not produce NaN", () => {
+    // anchor NaN -> (0, 0); to (100, 100) -> 100x100 at the origin.
+    expect(drawRect({ x: NaN, y: NaN }, { x: 100, y: 100 }, HD, null)).toEqual({ x: 0, y: 0, w: 100, h: 100 });
+    // to NaN -> falls back to the anchor -> tiny drag -> 16x16.
+    expect(drawRect({ x: 200, y: 300 }, { x: NaN, y: NaN }, HD, null)).toEqual({ x: 200, y: 300, w: 16, h: 16 });
+    for (const v of Object.values(drawRect({ x: NaN, y: NaN }, { x: NaN, y: NaN }, HD, 4 / 5))) expect(Number.isNaN(v)).toBe(false);
+  });
+
+  test("always inside the source and keeps the ratio", () => {
+    const anchors = [
+      { x: 0, y: 0 },
+      { x: 960, y: 540 },
+      { x: 1900, y: 1070 },
+      { x: 100, y: 1000 },
+      { x: 1500, y: 30 },
+    ];
+    const targets = [
+      { x: 0, y: 0 },
+      { x: 300, y: 700 },
+      { x: 1919, y: 1079 },
+      { x: 1200, y: 20 },
+      { x: -50, y: 2000 },
+      { x: 3000, y: -10 },
+    ];
+    for (const ratio of [4 / 5, 9 / 16]) {
+      for (const a of anchors) {
+        for (const t of targets) {
+          const r = drawRect(a, t, HD, ratio);
+          expect(r.x).toBeGreaterThanOrEqual(0);
+          expect(r.y).toBeGreaterThanOrEqual(0);
+          expect(r.x + r.w).toBeLessThanOrEqual(HD.width + 1e-9);
+          expect(r.y + r.h).toBeLessThanOrEqual(HD.height + 1e-9);
+          expect(Math.abs(r.w / r.h - ratio)).toBeLessThan(1e-9);
+        }
+      }
+    }
   });
 });

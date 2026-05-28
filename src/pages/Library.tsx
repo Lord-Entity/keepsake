@@ -87,9 +87,9 @@ export function LibraryPage({ phone }: { phone: boolean }) {
   if (items.length === 0) {
     return (
       <EmptyState
-        icon="library"
+        illustration="library"
         title="Your library is empty"
-        body="Finished downloads appear here with their snapshots."
+        body="Finished downloads land on this shelf with their snapshots, ready to keep."
         action={
           <Button variant="primary" size={phone ? "lg" : "md"} icon="home" onClick={() => navigate("home")}>
             Go to Home

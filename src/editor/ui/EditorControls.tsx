@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { FieldRow } from "../../components/ui/Fields";
@@ -5,7 +6,17 @@ import { Progress } from "../../components/ui/Progress";
 import { Segmented } from "../../components/ui/Segmented";
 import { Switch } from "../../components/ui/Switch";
 import type { CropPreset, CropRect, EditorOutput, MediaKind } from "../types";
+import { Icon } from "../../components/ui/Icon";
 import { CROP_PRESETS } from "./crop-math";
+
+/** m:ss.s */
+function fmtTime(sec: number): string {
+  // Whole tenths, so floating-point never prints "0:010.0".
+  const tenths = Math.max(0, Math.round((Number.isFinite(sec) ? sec : 0) * 10));
+  const m = Math.floor(tenths / 600);
+  const r = tenths - m * 600;
+  return `${m}:${String(Math.floor(r / 10)).padStart(2, "0")}.${r % 10}`;
+}
 
 const PRESET_LABEL: Record<CropPreset, string> = {
   free: "Free",
@@ -54,6 +65,15 @@ export function EditorControls({
   canMute = true,
   note = null,
   blocked = false,
+  onPickKind,
+  quality,
+  onQuality,
+  trim,
+  duration,
+  canTrim = true,
+  saved = null,
+  onOpenSaved,
+  onEditAnother,
 }: {
   kind: MediaKind;
   name: string;
@@ -86,8 +106,27 @@ export function EditorControls({
   note?: string | null;
   /** true: Export is disabled (nothing can be exported, or capabilities are still being checked). */
   blocked?: boolean;
+  /** Open the picker for a specific kind. Falls back to onReplace. */
+  onPickKind?: (kind: MediaKind) => void;
+  /** JPG quality 1..100 (default 92). The slider shows only with onQuality. */
+  quality?: number;
+  onQuality?: (q: number) => void;
+  /** Trim range in seconds (video). */
+  trim?: [number, number];
+  duration?: number;
+  /** false: trimming is unavailable on this platform. */
+  canTrim?: boolean;
+  /** Result of the last successful export. */
+  saved?: { name: string; path: string } | null;
+  onOpenSaved?: () => void;
+  onEditAnother?: () => void;
 }) {
   const video = kind === "video";
+  const qualityId = useId();
+  const q = quality ?? 92;
+  const showQuality = !video && output === "jpg" && !!onQuality;
+  const showTrim = video && typeof duration === "number" && duration > 0 && !!trim;
+  const editAnother = () => (onEditAnother ?? onReplace)();
   const chip = (p: CropPreset) => {
     const on = p === preset;
     return (
@@ -109,22 +148,44 @@ export function EditorControls({
 
   return (
     <div className="flex min-w-0 flex-col gap-4">
-      <div className="flex min-w-0 items-center gap-2">
-        <Badge tone="neutral" className="shrink-0">
-          {video ? "Video" : "Photo"}
-        </Badge>
-        <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={name}>
-          {name}
-        </span>
-        <Button size="sm" variant="ghost" icon="folder" className={`shrink-0 ${phone ? "h-11" : ""}`} disabled={exporting} onClick={onReplace}>
-          Change
-        </Button>
+      <div className="flex min-w-0 flex-col gap-2">
+        <Segmented<MediaKind>
+          label="What you are editing"
+          className={phone ? "!h-11" : ""}
+          value={kind}
+          disabled={exporting}
+          onChange={(k) => {
+            if (k !== kind) (onPickKind ?? (() => onReplace()))(k);
+          }}
+          options={[
+            { value: "photo", label: "Photo", icon: "image", title: "Edit a photo" },
+            { value: "video", label: "Video", icon: "video", title: "Edit a video" },
+          ]}
+        />
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={name}>
+            {name}
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            icon="folder"
+            className={`shrink-0 ${phone ? "h-11" : ""}`}
+            disabled={exporting}
+            onClick={() => (onPickKind ? onPickKind(kind) : onReplace())}
+          >
+            Choose another
+          </Button>
+        </div>
+        <p className="text-[11px] text-fg-2">
+          {video ? "Drag the box to crop, the handles under the video to trim." : "Drag the box on the picture to crop, then pick a format."}
+        </p>
       </div>
 
       <section aria-labelledby="editor-crop-h" className="flex min-w-0 flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
           <h3 id="editor-crop-h" className="text-[13px] font-semibold">
-            Crop
+            1. Crop
           </h3>
           <span className="tabular truncate font-mono text-[11px] text-fg-2" aria-live="polite">
             {crop.w} x {crop.h}
@@ -145,13 +206,24 @@ export function EditorControls({
         </Button>
       </section>
 
-      <div className="flex min-w-0 flex-col">
+      <section aria-labelledby="editor-step2-h" className="flex min-w-0 flex-col">
+        <h3 id="editor-step2-h" className="text-[13px] font-semibold">
+          {video ? "2. Trim & sound" : "2. Format"}
+        </h3>
+        {showTrim && trim && (
+          <FieldRow label="Trim" hint={canTrim ? "Drag the handles under the video" : "Trimming isn't available here"}>
+            <span className="tabular font-mono text-[12px]">
+              {fmtTime(trim[0])} – {fmtTime(trim[1])}{" "}
+              <span className="text-fg-2">({Math.max(0, trim[1] - trim[0]).toFixed(1)} s)</span>
+            </span>
+          </FieldRow>
+        )}
         {video && (
           <FieldRow label="Sound" hint={hasAudio ? (audio ? "Keep the audio track" : "Export without sound") : "This video has no audio"}>
             <Switch label="Sound" checked={hasAudio && audio} disabled={!hasAudio || !canMute || exporting} onChange={onAudio} />
           </FieldRow>
         )}
-        <FieldRow label="Format">
+        <FieldRow label="Format" hint={video ? "H.264 video" : undefined}>
           {video ? (
             <Badge tone="neutral">MP4</Badge>
           ) : (
@@ -167,7 +239,24 @@ export function EditorControls({
             />
           )}
         </FieldRow>
-      </div>
+        {showQuality && (
+          <FieldRow label="Quality" hint="Higher = sharper, bigger file">
+            <input
+              id={qualityId}
+              type="range"
+              min={40}
+              max={100}
+              step={1}
+              value={q}
+              aria-label="JPG quality"
+              disabled={exporting}
+              onChange={(e) => onQuality?.(Number(e.target.value))}
+              className={`w-28 accent-[var(--accent)] ${phone ? "h-11" : ""}`}
+            />
+            <span className="tabular w-7 text-right text-[12px] font-medium">{q}</span>
+          </FieldRow>
+        )}
+      </section>
 
       {exporting ? (
         <div className="flex flex-col gap-2" aria-live="polite">
@@ -182,6 +271,27 @@ export function EditorControls({
         </div>
       ) : (
         <div className="flex flex-col gap-1.5">
+          {saved && (
+            <div role="status" className="flex min-w-0 flex-col gap-2 rounded-lg border border-success/40 bg-success/10 p-2.5">
+              <div className="flex min-w-0 items-center gap-2 text-[12px]">
+                <Icon name="check" size={16} className="shrink-0 text-success" />
+                <span className="font-medium">Saved</span>
+                <span className="min-w-0 flex-1 truncate text-fg-2" title={saved.path}>
+                  {saved.name}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {onOpenSaved && (
+                  <Button size="sm" variant="secondary" icon="open" className={phone ? "h-11" : ""} onClick={onOpenSaved}>
+                    Open
+                  </Button>
+                )}
+                <Button size="sm" variant="ghost" icon="folder" className={phone ? "h-11" : ""} onClick={editAnother}>
+                  Edit another
+                </Button>
+              </div>
+            </div>
+          )}
           {note && (
             <p className="text-[11px] text-fg-2" aria-live="polite">
               {note}

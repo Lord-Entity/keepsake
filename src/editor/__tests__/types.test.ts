@@ -80,6 +80,18 @@ describe("validateJob: crop errors", () => {
     expect(validateJob(videoJob({ crop: { x: 0, y: 0, w: 100, h: 1081 } }), videoProbe)).toBe(msg);
   });
 
+  test("overshoot beyond the 0.5px tolerance is rejected (1920.6 > 1920.5, 1080.6 > 1080.5)", () => {
+    const msg = "Crop is outside the picture";
+    expect(validateJob(videoJob({ crop: { x: 0.6, y: 0, w: 1920, h: 1080 } }), videoProbe)).toBe(msg);
+    expect(validateJob(videoJob({ crop: { x: 0, y: 0.6, w: 1920, h: 1080 } }), videoProbe)).toBe(msg);
+  });
+
+  test("photo crops are checked against the photo probe", () => {
+    expect(validateJob(photoJob({ crop: { x: 0, y: 0, w: 4000, h: 3000 } }), photoProbe)).toBeNull();
+    expect(validateJob(photoJob({ crop: { x: 3999, y: 0, w: 2, h: 2 } }), photoProbe)).toBe("Crop is outside the picture");
+    expect(validateJob(photoJob({ crop: { x: 0, y: 0, w: 1, h: 2000 } }), photoProbe)).toBe("Crop is too small");
+  });
+
   test("crop check runs before the trim check", () => {
     expect(validateJob(videoJob({ crop: { x: 0, y: 0, w: 1, h: 1 }, trimStart: 5, trimEnd: 1 }), videoProbe)).toBe(
       "Crop is too small",
@@ -103,6 +115,11 @@ describe("validateJob: trim errors (video only)", () => {
   });
   test("end past duration beyond the 0.05s tolerance", () => {
     expect(validateJob(videoJob({ trimEnd: 10.1 }), videoProbe)).toBe(msg);
+  });
+  test("negative or infinite end", () => {
+    expect(validateJob(videoJob({ trimEnd: -1 }), videoProbe)).toBe(msg);
+    expect(validateJob(videoJob({ trimStart: Infinity }), videoProbe)).toBe(msg);
+    expect(validateJob(videoJob({ trimEnd: Infinity }), videoProbe)).toBe(msg);
   });
   test("zero-duration probe with no trim is invalid", () => {
     expect(validateJob(videoJob(), { ...videoProbe, duration: 0 })).toBe(msg);

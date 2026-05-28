@@ -18,7 +18,8 @@ export const FULL_CAPS: EditorCapabilities = { crop: true, trim: true, mute: tru
 export interface PlatformEngine {
   /** Optional; omitted means FULL_CAPS. May reject (engine.ts falls back to FULL_CAPS). */
   capabilities?(kind: MediaKind): Promise<EditorCapabilities>;
-  pickMedia(): Promise<EditorInput | null>;
+  /** `kind` limits the picker where the platform can; omitted means photos and videos. */
+  pickMedia(kind?: MediaKind): Promise<EditorInput | null>;
   probe(input: EditorInput, signal?: AbortSignal): Promise<MediaProbe>;
   previewUrl(input: EditorInput): Promise<string>;
   exportEdit(job: EditJob, probe: MediaProbe, onProgress: (fraction: number) => void, signal?: AbortSignal): Promise<EditResult>;

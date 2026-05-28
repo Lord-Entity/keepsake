@@ -5,7 +5,14 @@
  * satisfies `AppError` ({ code, message, detail, cookiesHint }). Use `toAppError(e)` to get a plain object.
  */
 import type { BinaryStatus, VideoInfo } from "../lib/types";
-import { fetchAndroidInfo, fetchAndroidYouTubeInfo, isAndroidYtdlpSupported } from "./android-ytdlp";
+import {
+  bestStreamsByHeight,
+  fetchAndroidInfo,
+  fetchAndroidYouTubeInfo,
+  forgetHiddenStreams,
+  hiddenStreams,
+  isAndroidYtdlpSupported,
+} from "./android-ytdlp";
 import { EngineError, fail, toAppError } from "./errors";
 import { isDesktop, platform } from "./platform";
 import { fetchYouTubeInfo, isYouTubeUrl } from "./youtube";
@@ -71,7 +78,15 @@ async function fetchInfoInner(url: string, opts: FetchInfoOptions): Promise<Vide
       }
       return fetchYouTubeInfo(url);
     }
-    if (isAndroidYtdlpSupported(url)) return fetchAndroidInfo(url, opts.signal);
+    if (isAndroidYtdlpSupported(url)) {
+      const info = await fetchAndroidInfo(url, opts.signal);
+      // HLS/DASH-only TikTok / Instagram post: its "Best available" row needs the full route. When that is not ready,
+      // drop the private copy so the picker shows the disabled "No video we can save" row (as before), not a dead end.
+      if (bestStreamsByHeight(info).size === 0 && hiddenStreams(info).some((s) => s.kind !== "audio-only")) {
+        if (!(await androidYtdlpReady())) forgetHiddenStreams(info);
+      }
+      return info;
+    }
     fail("unsupported_url", "Only YouTube, TikTok and Instagram links work in the Android app. Other sites need the desktop app.");
   }
   // Desktop: youtubei.js is fast for YouTube; yt-dlp covers everything else and YouTube fallbacks.

@@ -38,9 +38,9 @@ export function DownloadsPage({ phone }: { phone: boolean }) {
   if (jobs.length === 0) {
     return (
       <EmptyState
-        icon="download"
+        illustration="downloads"
         title="No downloads yet"
-        body="Fetch a link, pick a format and press Download. Progress shows up here."
+        body="Paste a link on Home, pick a format and press Download. Progress shows up here."
         action={
           <Button variant="primary" size={phone ? "lg" : "md"} icon="home" onClick={() => navigate("home")}>
             Go to Home

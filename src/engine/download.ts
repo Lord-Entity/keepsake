@@ -29,12 +29,19 @@ import {
   cancelAndroid,
   downloadAndroid,
   fetchAndroidInfo,
+  hiddenStreams,
+  isAndroidYtdlpHost,
   isAndroidYtdlpSupported,
+  mapYtdlpError,
   MP3_TEXT,
   muxAndroid,
   PERMISSION_TEXT,
   pickYtdlpFormat,
   runWithRetry,
+  TIKTOK_IG_TS_RETRY,
+  ytdlpAlternatives,
+  ytdlpPickKey,
+  type YtdlpPick,
 } from "./android-ytdlp";
 import { appError, EngineError, fail, toAppError } from "./errors";
 import { httpFetch, timeoutSignal } from "./http";
@@ -48,6 +55,7 @@ import {
   type ResolvedStream,
 } from "./youtube";
 import { cancelYtdlp, downloadYtdlp, isFormatPart, selectionArgs } from "./ytdlp";
+import { androidYtdlpReady } from "./youtube-ytdlp";
 
 const CHUNK = 10 * 1024 * 1024;
 const CHUNK_TIMEOUT_MS = 120_000;
@@ -535,7 +543,12 @@ async function runDirect(req: DownloadRequest, emit: Emit, signal: AbortSignal):
 // ---------------- Android yt-dlp (TikTok / Instagram) ----------------
 
 /** TikTok/Instagram on Android: one concrete single-file format through the in-process yt-dlp (android-ytdlp.ts). */
-async function runAndroidYtdlp(req: DownloadRequest, emit: Emit, signal: AbortSignal): Promise<DownloadProgress> {
+async function runAndroidYtdlp(
+  req: DownloadRequest,
+  emit: Emit,
+  signal: AbortSignal,
+  opts: { ladder?: boolean } = {},
+): Promise<DownloadProgress> {
   const [kind, value = ""] = req.formatId.split(":");
   if (kind === "thumb") {
     formatError("Thumbnails from TikTok and Instagram can be saved in the desktop app only.", req.formatId);
@@ -547,7 +560,12 @@ async function runAndroidYtdlp(req: DownloadRequest, emit: Emit, signal: AbortSi
   }
   if (signal.aborted) fail("cancelled");
   const info = req.info?.source === "ytdlp" ? req.info : await fetchAndroidInfo(req.url, signal);
-  const pick = pickYtdlpFormat(info, audioFmt ? "audio:m4a" : req.formatId);
+  const uiFormatId = audioFmt ? "audio:m4a" : req.formatId;
+  const pick = pickYtdlpFormat(info, uiFormatId);
+  // TikTok / Instagram: the workaround ladder (the first step is exactly the job below). Never YouTube.
+  if (opts.ladder === true && isAndroidYtdlpHost(req.url) && !isYouTubeUrl(req.url)) {
+    return runAndroidYtdlpLadder(req, emit, signal, info, pick, audioFmt, uiFormatId);
+  }
   if (!pick) formatError("This format isn't available for this link on Android.", req.formatId);
 
   // Cancel: stop whichever native job is running (video, audio or single).
@@ -558,6 +576,131 @@ async function runAndroidYtdlp(req: DownloadRequest, emit: Emit, signal: AbortSi
   signal.addEventListener("abort", onAbort, { once: true });
   try {
     return await runAndroidYtdlpJob(req, emit, signal, info, pick, audioFmt);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+/**
+ * Codes that stop the ladder at once: FINAL_CODES, plus a rate limit (the bridge already waited and retried once;
+ * more requests make it worse), a bad link, and a missing bridge (every later step would hit it too).
+ */
+const LADDER_STOP: ReadonlySet<string> = new Set(["rate_limited", "unsupported_url", "ytdlp_missing"]);
+const stopsLadder = (e: unknown, signal: AbortSignal) => signal.aborted || FINAL_CODES.has(codeOf(e)) || LADDER_STOP.has(codeOf(e));
+/** Non-watermarked / watermarked concrete alternatives tried at most (no TS retry: the bridge retries each call). */
+const LADDER_MAX_CLEAN = 3;
+const LADDER_MAX_MARKED = 1;
+const LADDER_NOTE = "The chosen version failed, so Keepsake saved the next best one.";
+
+/** State shared by the ladder's attempts: native jobs running now (cancel targets) and concrete picks already tried. */
+interface LadderState {
+  active: Set<string>;
+  tried: Set<string>;
+  /** Extra TS attempts per native download, network / timeout only (default 1; the bridge already retried). */
+  retries?: number;
+  /** Clear the attempt's temp folder before use (a leftover would count as "already downloaded"). */
+  fresh?: boolean;
+}
+
+/**
+ * TikTok / Instagram workaround ladder, used only after the primary attempt fails with a non-final error:
+ *   1. the normal pick (runAndroidYtdlpJob, unchanged: same payloads, same built-in fallback);
+ *   2. the next best concrete non-watermarked alternatives (progressive at or below the height, then pairs the native
+ *      muxer accepts), at most LADDER_MAX_CLEAN, no TS retry;
+ *   3. when the self-contained runtime reports ready: the full yt-dlp route (selection args + bundled ffmpeg), which
+ *      handles HLS/DASH-only posts and codecs the phone cannot mux;
+ *   2b. a watermarked version (better than nothing);
+ *   4. the primary error, with what was tried in its detail.
+ * Cancel, no_space, permission, too_large, not_found, login_required, rate_limited and unsupported_url stop it.
+ */
+async function runAndroidYtdlpLadder(
+  req: DownloadRequest,
+  emit: Emit,
+  signal: AbortSignal,
+  info: VideoInfo,
+  pick: YtdlpPick | null,
+  audioFmt: string | undefined,
+  uiFormatId: string,
+): Promise<DownloadProgress> {
+  const active = new Set<string>();
+  const tried = new Set<string>();
+  // Cancel only the native jobs that are running: a cancel flag for an id that never runs would stay behind in the
+  // bridge and cancel the next job with that id (a Retry reuses the request id).
+  const onAbort = () => {
+    for (const j of active) void cancelAndroid(j);
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    let first: unknown;
+    if (pick) {
+      try {
+        return await runAndroidYtdlpJob(req, emit, signal, info, pick, audioFmt, { active, tried });
+      } catch (e) {
+        if (stopsLadder(e, signal)) throw e;
+        first = e;
+      }
+    } else {
+      const streamOnly = hiddenStreams(info).some((s) => s.kind !== "audio-only");
+      first = new EngineError({
+        code: "format_unavailable",
+        message: streamOnly
+          ? "This post is only offered as a stream that Keepsake's built-in downloader must merge, and it isn't working on this phone. Reinstall Keepsake or use the desktop app."
+          : "This format isn't available for this link on Android.",
+        detail: req.formatId,
+        cookiesHint: false,
+      });
+    }
+    const steps: string[] = [];
+    const alts = ytdlpAlternatives(info, uiFormatId, pick);
+    // Cap: once an alternative also fails with network / timeout (after the bridge's own 3 attempts), the connection is
+    // the problem, not the format: skip the remaining steps instead of up to 5 more 3-attempt bridge calls.
+    let offline = false;
+    const noteOffline = (e: unknown) => {
+      if (TIKTOK_IG_TS_RETRY.has(codeOf(e))) offline = true;
+    };
+    const tryPicks = async (picks: YtdlpPick[], max: number): Promise<DownloadProgress | undefined> => {
+      let n = 0;
+      for (const p of picks) {
+        if (n >= max || offline) break;
+        if (tried.has(ytdlpPickKey(p))) continue;
+        n++;
+        if (signal.aborted) fail("cancelled");
+        steps.push(ytdlpPickKey(p));
+        try {
+          const res = await runAndroidYtdlpJob(req, emit, signal, info, p, audioFmt, { active, tried, retries: 0, fresh: true });
+          return { ...res, note: LADDER_NOTE };
+        } catch (e) {
+          if (stopsLadder(e, signal)) throw e;
+          noteOffline(e);
+        }
+      }
+      return undefined;
+    };
+
+    const clean = await tryPicks(alts.clean, LADDER_MAX_CLEAN);
+    if (clean) return clean;
+
+    if (signal.aborted) fail("cancelled");
+    if (!offline && (await androidYtdlpReady())) {
+      if (signal.aborted) fail("cancelled");
+      steps.push("full");
+      try {
+        const res = await runAndroidYtdlpFull(req, emit, signal, info, { retries: 0 });
+        return { ...res, note: LADDER_NOTE };
+      } catch (e) {
+        // Here ytdlp_missing means the bundled ffmpeg broke: the legacy bridge still works, so go on to step 2b.
+        if (stopsLadder(e, signal) && codeOf(e) !== "ytdlp_missing") throw e;
+        noteOffline(e);
+      }
+    }
+
+    const marked = await tryPicks(alts.watermarked, LADDER_MAX_MARKED);
+    if (marked) return marked;
+
+    if (signal.aborted) fail("cancelled");
+    const err = toAppError(first);
+    const tail = steps.length > 0 ? `also tried ${steps.join(", ")}` : "no other version to try";
+    throw new EngineError({ ...err, detail: err.detail ? `${err.detail}; ${tail}` : tail });
   } finally {
     signal.removeEventListener("abort", onAbort);
   }
@@ -597,12 +740,36 @@ async function runAndroidYtdlpJob(
   info: VideoInfo,
   pick: NonNullable<ReturnType<typeof pickYtdlpFormat>>,
   audioFmt: string | undefined,
+  lad?: LadderState,
 ): Promise<DownloadProgress> {
-  const dl = (formatId: string, outDir: string, fileName: string | undefined, suffix = "") =>
-    runWithRetry(
-      () => downloadAndroid({ url: info.url, formatId, outDir, fileName, jobId: `${req.id}${suffix}` }),
-      { signal, retries: 2, delays: [2000, 6000] },
-    );
+  // `lad` (TikTok / Instagram ladder only): track running jobs and tried picks, reject empty files. The invoke payloads
+  // are the same with or without it.
+  const dl = (formatId: string, outDir: string, fileName: string | undefined, suffix = "") => {
+    const jobId = `${req.id}${suffix}`;
+    const once = () => downloadAndroid({ url: info.url, formatId, outDir, fileName, jobId });
+    const state = lad;
+    if (!state) return runWithRetry(once, { signal, retries: 2, delays: [2000, 6000] });
+    const tracked = async () => {
+      state.active.add(jobId);
+      try {
+        const r = await once();
+        if (!(r.bytes > 0)) {
+          await remove(r.path).catch(() => undefined);
+          throw new EngineError(mapYtdlpError(`ytdlp:empty: ${formatId} came back empty`));
+        }
+        return r;
+      } finally {
+        state.active.delete(jobId);
+      }
+    };
+    // Ladder (TikTok / Instagram): the Python bridge already retried, so at most one more TS attempt, network /
+    // timeout only. Without `lad` (legacy YouTube route): unchanged (above).
+    return runWithRetry(tracked, { signal, retries: state.retries ?? 1, delays: [2000], codes: TIKTOK_IG_TS_RETRY });
+  };
+  /** Ladder only: start from an empty temp folder (an earlier attempt's leftover would be taken as done). */
+  const freshDir = async (tmpDir: string) => {
+    if (lad?.fresh) await remove(tmpDir, { recursive: true }).catch(() => undefined);
+  };
   // Fail early on a bad folder, before any download starts.
   const dir = await ytdlpOutDir(req);
   // No byte progress from the native side: indeterminate bar. `stage` is read by the UI when DownloadProgress has it.
@@ -630,6 +797,8 @@ async function runAndroidYtdlpJob(
     const tmpDir = await join(cache, `ytdlp-${safeName(req.id, 60)}`);
     let outPath: string | undefined;
     try {
+      lad?.tried.add(ytdlpPickKey({ formatId: pick.formatId }));
+      await freshDir(tmpDir);
       await mkdir(tmpDir, { recursive: true });
       const { path, bytes } = await dl(pick.formatId, tmpDir, "source");
       if (signal.aborted) fail("cancelled");
@@ -648,6 +817,7 @@ async function runAndroidYtdlpJob(
 
   /** One ytdlp_download of a single-file format straight into the chosen folder. */
   const single = async (formatId: string, ext: string) => {
+    lad?.tried.add(ytdlpPickKey({ formatId }));
     const target = await uniquePath(dir, base, ext);
     const { path, bytes } = await dl(formatId, dir, nameFor(target, ext));
     if (signal.aborted) {
@@ -676,6 +846,8 @@ async function runAndroidYtdlpJob(
   const tmpDir = await join(cache, `ytdlp-${safeName(req.id, 60)}`);
   let outPath: string | undefined;
   try {
+    lad?.tried.add(ytdlpPickKey(pick));
+    await freshDir(tmpDir);
     await mkdir(tmpDir, { recursive: true });
     emitStage("downloading", "video");
     const video = await dl(pick.formatId, tmpDir, "video", "-v");
@@ -743,6 +915,8 @@ async function runAndroidYtdlpFull(
   emit: Emit,
   signal: AbortSignal,
   info: VideoInfo,
+  /** TikTok / Instagram ladder step 3 only (retries 0: the bridge already retries). YouTube omits it: unchanged. */
+  opts: { retries?: number } = {},
 ): Promise<DownloadProgress> {
   const [kind, value = ""] = req.formatId.split(":");
   if (kind !== "video" && kind !== "audio") formatError("This format isn't available for this link on Android.", req.formatId);
@@ -761,7 +935,7 @@ async function runAndroidYtdlpFull(
     const dl = (outDir: string, fileName: string) =>
       runWithRetry(() => downloadAndroid({ url: info.url, args, full: true, outDir, fileName, jobId: req.id }), {
         signal,
-        retries: 2,
+        retries: opts.retries ?? 2,
         delays: [2000, 6000],
       });
     const dir = await ytdlpOutDir(req);
@@ -846,14 +1020,15 @@ const isInside = (p: string, dir: string) => {
 const routeRequest = (r: DownloadRequest, em: Emit, signal: AbortSignal): Promise<DownloadProgress> => {
   if (platform() === "android" && r.info?.source === "ytdlp" && r.info.ytdlpFull === true) {
     // The full route is YouTube only. Full info for any other link is dropped so the legacy route re-fetches its own.
-    if (!isYouTubeUrl(r.url)) return runAndroidYtdlp({ ...r, info: undefined }, em, signal);
+    if (!isYouTubeUrl(r.url)) return runAndroidYtdlp({ ...r, info: undefined }, em, signal, { ladder: true });
     // Any non-final failure goes to youtubei.js once, with fresh info (the full info lists formats it cannot use).
     return runAndroidYtdlpFull(r, em, signal, r.info).catch((e: unknown) => {
       if (signal.aborted || FINAL_CODES.has(codeOf(e))) throw e;
       return runDirect({ ...r, info: undefined }, em, signal);
     });
   }
-  if (platform() === "android" && isAndroidYtdlpSupported(r.url)) return runAndroidYtdlp(r, em, signal);
+  // TikTok / Instagram: workaround ladder after a failed first try (runAndroidYtdlp re-checks the host, never YouTube).
+  if (platform() === "android" && isAndroidYtdlpSupported(r.url)) return runAndroidYtdlp(r, em, signal, { ladder: true });
   if (platform() === "android" && r.info?.source === "ytdlp") {
     // Info came from the (currently disabled) yt-dlp route: if its download fails, retry through youtubei.js.
     return runAndroidYtdlp(r, em, signal).catch((e: unknown) => {

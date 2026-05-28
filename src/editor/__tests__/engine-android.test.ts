@@ -210,6 +210,51 @@ describe("pickMedia", () => {
     expect((await androidEngine.pickMedia()).kind).toBe("photo");
   });
 
+  test("no kind keeps the media picker for both families", async () => {
+    await androidEngine.pickMedia();
+    expect(dialogMock.mock.calls[0][0]).toEqual({
+      multiple: false,
+      directory: false,
+      pickerMode: "media",
+      filters: [{ name: "Photos and videos", extensions: ["image/*", "video/*"] }],
+    });
+  });
+
+  test("a requested kind limits the picker to image/* or video/*", async () => {
+    await androidEngine.pickMedia("photo");
+    await androidEngine.pickMedia("video");
+    const [photo, video] = dialogMock.mock.calls.map((c) => c[0]);
+    expect(photo.pickerMode).toBe("image");
+    expect(photo.filters).toEqual([{ name: "Photos", extensions: ["image/*"] }]);
+    expect(video.pickerMode).toBe("video");
+    expect(video.filters).toEqual([{ name: "Videos", extensions: ["video/*"] }]);
+  });
+
+  test("an opaque URI from a kind-limited picker takes that kind without a native probe", async () => {
+    const uri = "content://media/picker/0/com.android.providers.media.photopicker/media/3000";
+    dialogImpl = async () => uri;
+    const v = await androidEngine.pickMedia("video");
+    expect(v.kind).toBe("video");
+    expect(v.name).toMatch(/^VID_\d{8}_\d{6}\.mp4$/);
+    const p = await androidEngine.pickMedia("photo");
+    expect(p.kind).toBe("photo");
+    expect(p.name).toMatch(/^IMG_\d{8}_\d{6}\.jpg$/);
+    expect(calls(`${P}editor_probe`).length).toBe(0);
+  });
+
+  test("the file's real kind wins over the requested one", async () => {
+    dialogImpl = async () => VURI;
+    expect((await androidEngine.pickMedia("photo")).kind).toBe("video");
+  });
+
+  test("the plugin's 'File picker cancelled' rejection is a cancel (null), not an error", async () => {
+    dialogImpl = async () => {
+      throw "File picker cancelled";
+    };
+    expect(await androidEngine.pickMedia()).toBeNull();
+    expect(await androidEngine.pickMedia("photo")).toBeNull();
+  });
+
   test("cancel returns null; picker failure is permission", async () => {
     expect(await androidEngine.pickMedia()).toBeNull();
     dialogImpl = async () => {

@@ -23,7 +23,8 @@ const NEXT_LABEL: Record<ThemePref, string> = {
  * Compact (phone): the 56px row sits below the status bar. `box-content` keeps the
  * row 56px tall and adds the top safe-area inset on top of it (with border-box the
  * inset would eat into the row). Side insets cover landscape cutouts. The active
- * downloads pill is omitted because the tab bar's Downloads tab already shows the count.
+ * downloads pill is omitted: there is no Downloads tab on phones, so the tab bar's Home
+ * tab shows a dot while downloads run and Home's Downloads entry shows the count.
  */
 export function Titlebar({ action, compact }: { action?: ReactNode; compact?: boolean }) {
   const page = usePage();

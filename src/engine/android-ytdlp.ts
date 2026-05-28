@@ -13,7 +13,9 @@
  *   addressed as "plugin:<name>|<command>".
  * INFERRED: Tauri may wrap the plugin's reject text, so mapYtdlpError searches for the "ytdlp:<code>:" marker.
  * Legacy route (TikTok / Instagram, and YouTube when the self-contained route is not ready): only single http(s)
- * files are offered (no HLS/DASH) and video-only + audio-only pairs are merged by the native muxer.
+ * files are offered (no HLS/DASH) and video-only + audio-only pairs are merged by the native muxer. For TikTok /
+ * Instagram the dropped HLS/DASH formats are kept privately (hiddenStreams) and ytdlpAlternatives lists the next-best
+ * concrete formats for download.ts's workaround ladder (used only after the first attempt fails).
  * Self-contained route (plan-docs 11, YouTube only in this release): `ytdlp_status` reports the bundled QuickJS-NG,
  * EJS solver and ffmpeg; `ytdlp_info { url, full: true }` keeps every format; `ytdlp_download { url, args, full }`
  * lets yt-dlp select and merge with its own ffmpeg.
@@ -153,32 +155,48 @@ export function isAndroidYtdlpSupported(url: string): boolean {
 const watermarked = new WeakMap<VideoInfo, Set<string>>();
 
 /**
- * Pure: reduced yt-dlp info -> VideoInfo (source "ytdlp"). Legacy: drops formats whose protocol is not http/https.
- * `full` (self-contained route): keeps HLS/DASH formats too (yt-dlp downloads and ffmpeg merges them) and marks the
- * result `ytdlpFull: true`.
+ * Non-YouTube legacy infos only: the formats the http-only filter dropped (HLS/DASH), kept privately for the
+ * download workaround ladder (download.ts) and the picker's HLS-only row. Never part of `info.streams`, so the
+ * primary pick and the listed heights do not see them.
+ */
+const hidden = new WeakMap<VideoInfo, StreamInfo[]>();
+
+/** Pure: one reduced yt-dlp format -> StreamInfo. */
+function toStream(f: YtdlpFormat): StreamInfo {
+  const kind = f.vcodec === "none" ? "audio-only" : f.acodec === "none" ? "video-only" : "progressive";
+  // Audio-only streams rank by audio bitrate; video streams by total bitrate.
+  const bitrate = kind === "audio-only" ? (f.abr ?? f.tbr) : (f.tbr ?? f.abr);
+  return {
+    id: f.format_id,
+    kind,
+    ext: f.ext || "mp4",
+    height: f.height ?? undefined,
+    fps: f.fps ?? undefined,
+    vcodec: f.vcodec && f.vcodec !== "none" ? f.vcodec : undefined,
+    acodec: f.acodec && f.acodec !== "none" ? f.acodec : undefined,
+    sizeBytes: f.filesize ?? undefined,
+    ...(typeof bitrate === "number" && Number.isFinite(bitrate) ? { bitrate } : {}),
+  };
+}
+
+/**
+ * Pure: reduced yt-dlp info -> VideoInfo (source "ytdlp"). Legacy: drops formats whose protocol is not http/https
+ * (for non-YouTube links a private copy is kept, see hiddenStreams). `full` (self-contained route): keeps HLS/DASH
+ * formats too (yt-dlp downloads and ffmpeg merges them) and marks the result `ytdlpFull: true`.
  */
 export function ytdlpInfoToVideoInfo(info: YtdlpInfo, requestedUrl: string, opts: { full?: boolean } = {}): VideoInfo {
   const full = opts.full === true;
   const marked = new Set<string>();
   const streams: StreamInfo[] = [];
+  const dropped: StreamInfo[] = [];
   for (const f of info.formats) {
-    if (!full && f.protocol !== "https" && f.protocol !== "http") continue;
     if (f.vcodec === "none" && f.acodec === "none") continue;
+    if (!full && f.protocol !== "https" && f.protocol !== "http") {
+      dropped.push(toStream(f));
+      continue;
+    }
     if ((f.format_note && /watermark/i.test(f.format_note)) || /^download/i.test(f.format_id)) marked.add(f.format_id);
-    const kind = f.vcodec === "none" ? "audio-only" : f.acodec === "none" ? "video-only" : "progressive";
-    // Audio-only streams rank by audio bitrate; video streams by total bitrate.
-    const bitrate = kind === "audio-only" ? (f.abr ?? f.tbr) : (f.tbr ?? f.abr);
-    streams.push({
-      id: f.format_id,
-      kind,
-      ext: f.ext || "mp4",
-      height: f.height ?? undefined,
-      fps: f.fps ?? undefined,
-      vcodec: f.vcodec && f.vcodec !== "none" ? f.vcodec : undefined,
-      acodec: f.acodec && f.acodec !== "none" ? f.acodec : undefined,
-      sizeBytes: f.filesize ?? undefined,
-      ...(typeof bitrate === "number" && Number.isFinite(bitrate) ? { bitrate } : {}),
-    });
+    streams.push(toStream(f));
   }
   const fpsByHeight: Record<number, number> = {};
   for (const s of streams) {
@@ -206,7 +224,28 @@ export function ytdlpInfoToVideoInfo(info: YtdlpInfo, requestedUrl: string, opts
     ...(full ? { ytdlpFull: true } : {}),
   };
   watermarked.set(out, marked);
+  if (dropped.length > 0 && !isYouTubeInfo(out)) {
+    hidden.set(out, dropped);
+    // HLS/DASH-only video post (TikTok / Instagram): still a video; the full yt-dlp route can save it.
+    if (!hasVideo && dropped.some((s) => s.kind !== "audio-only")) {
+      out.hasVideo = true;
+      out.kind = "video";
+    }
+  }
   return out;
+}
+
+/**
+ * Formats the legacy info dropped (HLS/DASH) for a non-YouTube link; empty for YouTube, full infos, infos that were
+ * copied (the store is keyed by object) and infos with nothing dropped.
+ */
+export function hiddenStreams(info: VideoInfo): readonly StreamInfo[] {
+  return hidden.get(info) ?? [];
+}
+
+/** Drops the private HLS/DASH copy (index.ts: the full route is not ready, so the "Best available" row would be a dead end). */
+export function forgetHiddenStreams(info: VideoInfo): void {
+  hidden.delete(info);
 }
 
 export interface YtdlpPick {
@@ -428,6 +467,84 @@ export function pickYtdlpFormat(info: VideoInfo, uiFormatId: string): YtdlpPick 
   return null;
 }
 
+/** Identity of a concrete attempt: "<video or single id>+<audio id or empty>". */
+export const ytdlpPickKey = (p: Pick<YtdlpPick, "formatId" | "audioFormatId">): string => `${p.formatId}+${p.audioFormatId ?? ""}`;
+
+/** Concrete alternatives for the download workaround ladder (download.ts), split by watermark. */
+export interface YtdlpAlternatives {
+  /** Non-watermarked, best first: single files (progressive, or audio-only for audio), then muxable pairs. */
+  clean: YtdlpPick[];
+  /** Watermarked versions (TikTok "download" ids or a "watermark" note), same order. Tried only after every other step. */
+  watermarked: YtdlpPick[];
+}
+
+/**
+ * Pure, TikTok / Instagram / other non-YouTube legacy infos only (YouTube and non-ytdlp infos give two empty
+ * lists): every concrete format worth trying after `primary` (the pickYtdlpFormat result, or null) failed.
+ * The primary itself is left out. Video ("video:<h>" | "video:best"): progressive files at or below the primary's
+ * height (or the requested limit), highest first, streams with a known audio codec before unknown ones; heightless
+ * progressive files after those; then video-only + audio-only pairs the native muxer accepts (every matching audio,
+ * best first). Audio ("audio:m4a"): the other audio-only M4A streams, then progressive MP4s (AAC or unknown audio
+ * codec) for a remux. Only http(s) formats from `info.streams`; HLS/DASH are left to the full yt-dlp route.
+ */
+export function ytdlpAlternatives(info: VideoInfo, uiFormatId: string, primary: YtdlpPick | null): YtdlpAlternatives {
+  const out: YtdlpAlternatives = { clean: [], watermarked: [] };
+  if (info.source !== "ytdlp" || isYouTubeInfo(info)) return out;
+  const marked = watermarked.get(info);
+  const isMarked = (s: StreamInfo) => !!marked?.has(s.id) || /^download/i.test(s.id);
+  const rank = sameHeightRank(info);
+  const seen = new Set<string>(primary ? [ytdlpPickKey(primary)] : []);
+  const add = (s: StreamInfo, p: YtdlpPick) => {
+    const key = ytdlpPickKey(p);
+    if (seen.has(key)) return;
+    seen.add(key);
+    (isMarked(s) ? out.watermarked : out.clean).push(p);
+  };
+  // Known heights first (highest first), heightless last; same height: known audio codec, then the picker's rank.
+  const byHeightThenRank = (a: StreamInfo, b: StreamInfo) =>
+    Number(a.height === undefined) - Number(b.height === undefined) ||
+    (b.height ?? 0) - (a.height ?? 0) ||
+    Number(!a.acodec) - Number(!b.acodec) ||
+    rank(a, b);
+
+  const [kind, arg] = uiFormatId.split(":");
+  if (kind === "video") {
+    const limit = arg === "best" ? 100000 : /^\d+$/.test(arg ?? "") ? Number(arg) : 0;
+    if (limit <= 0) return out;
+    const cap = Math.min(limit, primary?.height ?? limit);
+    const fits = (s: StreamInfo) => s.height === undefined || s.height <= cap;
+    const progressive = info.streams.filter((s) => s.kind === "progressive" && fits(s)).toSorted(byHeightThenRank);
+    for (const s of progressive) add(s, { formatId: s.id, ext: s.ext || "mp4", needsRemux: false, height: s.height, sizeBytes: s.sizeBytes });
+    const videoOnly = info.streams.filter((s) => s.kind === "video-only" && fits(s)).toSorted(byHeightThenRank);
+    for (const v of videoOnly) {
+      const container = muxContainerFor(v);
+      if (!container) continue;
+      const audios = info.streams.filter((s) => s.kind === "audio-only" && audioMatches(s, container)).toSorted(byAudioQuality);
+      for (const a of audios) {
+        add(v, {
+          formatId: v.id,
+          ext: container,
+          needsRemux: false,
+          height: v.height,
+          sizeBytes: v.sizeBytes,
+          audioFormatId: a.id,
+          muxExt: muxOutputExt(v, container),
+        });
+      }
+    }
+    return out;
+  }
+  if (uiFormatId === "audio:m4a") {
+    const audio = info.streams.filter((s) => s.kind === "audio-only" && s.ext === "m4a").toSorted(byAudioQuality);
+    for (const s of audio) add(s, { formatId: s.id, ext: "m4a", needsRemux: false, sizeBytes: s.sizeBytes });
+    const prog = info.streams
+      .filter((s) => s.kind === "progressive" && s.ext === "mp4" && (!s.acodec || /^(mp4a|aac)/i.test(s.acodec)))
+      .toSorted((a, b) => Number(!a.acodec) - Number(!b.acodec) || (a.sizeBytes ?? Infinity) - (b.sizeBytes ?? Infinity));
+    for (const s of prog) add(s, { formatId: s.id, ext: "mp4", needsRemux: true, height: s.height, sizeBytes: s.sizeBytes });
+  }
+  return out;
+}
+
 /** Any rejection text -> AppError. Never throws. */
 export function mapYtdlpError(message: string): AppError {
   const text = typeof message === "string" ? message : rawText(message);
@@ -567,23 +684,29 @@ export async function muxAndroid(args: {
 
 const RETRYABLE: ReadonlySet<string> = new Set(["network", "timeout", "rate_limited"]);
 
+/** Codes the TS side may retry once on top of the Python bridge's own ladder (never rate_limited: it already waited). */
+export const TIKTOK_IG_TS_RETRY: ReadonlySet<string> = new Set(["network", "timeout"]);
+
 /**
- * Run `fn`, retrying network / timeout / rate_limited failures up to `retries` times with `delays` (ms) between
- * attempts (default 2 s then 6 s). Checks `signal` before every retry; an abort throws "cancelled".
+ * Run `fn`, retrying network / timeout / rate_limited failures (or `codes`) up to `retries` times with `delays` (ms)
+ * between attempts (default 2 s then 6 s). Checks `signal` before every retry; an abort throws "cancelled".
+ * TikTok / Instagram: the Python bridge already retries (3 attempts, one 8 s rate-limit wait), so the ladder passes
+ * at most one extra TS attempt for network / timeout only (TIKTOK_IG_TS_RETRY).
  */
 export async function runWithRetry<T>(
   fn: (attempt: number) => Promise<T>,
-  opts: { signal?: AbortSignal; retries?: number; delays?: number[] } = {},
+  opts: { signal?: AbortSignal; retries?: number; delays?: number[]; codes?: ReadonlySet<string> } = {},
 ): Promise<T> {
   const retries = opts.retries ?? 2;
   const delays = opts.delays ?? [2000, 6000];
+  const retryable = opts.codes ?? RETRYABLE;
   for (let attempt = 0; ; attempt++) {
     if (opts.signal?.aborted) throw new EngineError(appError("cancelled"));
     try {
       return await fn(attempt);
     } catch (e) {
       const code = (e as { code?: unknown } | null)?.code;
-      if (attempt >= retries || typeof code !== "string" || !RETRYABLE.has(code)) throw e;
+      if (attempt >= retries || typeof code !== "string" || !retryable.has(code)) throw e;
       const ms = delays[Math.min(attempt, delays.length - 1)] ?? 0;
       await new Promise<void>((resolve) => {
         const t = setTimeout(done, ms);

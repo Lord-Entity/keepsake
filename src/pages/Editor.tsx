@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
-import { EmptyState } from "../components/ui/EmptyState";
 import { Spinner } from "../components/ui/Loader";
 import { PAGE_BOTTOM } from "../components/layout/page";
 import { editorEngine } from "../editor/engine";
@@ -14,11 +13,13 @@ import {
   type EditorCapabilities,
   type EditorInput,
   type EditorOutput,
+  type MediaKind,
   type MediaProbe,
 } from "../editor/types";
 import { CropStage } from "../editor/ui/CropStage";
 import { applyPreset, fullRect, isFullFrame, presetRatio, roundCrop, type Size } from "../editor/ui/crop-math";
 import { EditorControls } from "../editor/ui/EditorControls";
+import { EditorHero } from "../editor/ui/EditorHero";
 import { TrimBar } from "../editor/ui/TrimBar";
 import { openFile } from "../state/native";
 import { notify } from "../state/toast";
@@ -51,14 +52,24 @@ export function EditorPage({ phone }: { phone: boolean }) {
   }, [state]);
   const loadAbort = useRef<AbortController | null>(null);
 
-  const pick = useCallback(async () => {
+  const [picking, setPicking] = useState(false);
+  const pickingRef = useRef(false);
+
+  const pick = useCallback(async (kind?: MediaKind) => {
+    if (pickingRef.current) return;
+    pickingRef.current = true;
+    setPicking(true);
     let input: EditorInput | null;
     try {
-      input = await editorEngine.pickMedia();
+      input = await editorEngine.pickMedia(kind);
     } catch (e) {
       notify({ tone: "error", title: "Couldn't open the file", body: errorText(e) });
       return;
+    } finally {
+      pickingRef.current = false;
+      setPicking(false);
     }
+    // null: the picker was closed without a choice (also Android's back button). Nothing to report.
     if (!input) return;
     const prev = stateRef.current;
     loadAbort.current?.abort();
@@ -69,8 +80,9 @@ export function EditorPage({ phone }: { phone: boolean }) {
     const dropPrev = () => {
       if (prev.phase === "ready") revoke(prev.url);
     };
+    const urlP = editorEngine.previewUrl(input);
     try {
-      const [probe, url] = await Promise.all([editorEngine.probe(input, ac.signal), editorEngine.previewUrl(input)]);
+      const [probe, url] = await Promise.all([editorEngine.probe(input, ac.signal), urlP]);
       if (ac.signal.aborted) {
         revoke(url);
         dropPrev();
@@ -83,6 +95,9 @@ export function EditorPage({ phone }: { phone: boolean }) {
       dropPrev();
       setState({ phase: "ready", input, probe, url });
     } catch (e) {
+      // A failed probe rejects Promise.all before the preview URL is used: free it (Android: a whole-file blob).
+      // Revoking twice (the size check above already did) is harmless.
+      void urlP.then(revoke, () => undefined);
       if (ac.signal.aborted) {
         dropPrev();
         return;
@@ -100,6 +115,14 @@ export function EditorPage({ phone }: { phone: boolean }) {
     }
   }, []);
 
+  // Back to the start screen (frees the preview URL).
+  const close = useCallback(() => {
+    loadAbort.current?.abort();
+    const s = stateRef.current;
+    if (s.phase === "ready") revoke(s.url);
+    setState({ phase: "empty" });
+  }, []);
+
   // Leaving the tab: stop probing and free the preview URL. A running export finishes on its own.
   useEffect(
     () => () => {
@@ -113,16 +136,7 @@ export function EditorPage({ phone }: { phone: boolean }) {
   if (state.phase === "empty") {
     return (
       <div className={`flex h-full min-w-0 flex-col ${PAGE_BOTTOM}`}>
-        <EmptyState
-          icon="image"
-          title="Edit a photo or video"
-          body="Crop, trim and turn sound off, then export a new copy. Your original stays untouched."
-          action={
-            <Button variant="primary" icon="folder" size="lg" onClick={() => void pick()}>
-              Choose a photo or video
-            </Button>
-          }
-        />
+        <EditorHero phone={phone} busy={picking} onPick={(k) => void pick(k)} />
       </div>
     );
   }
@@ -153,12 +167,23 @@ export function EditorPage({ phone }: { phone: boolean }) {
       key={state.url}
       loaded={state}
       phone={phone}
-      onReplace={() => void pick()}
+      onPick={(k) => void pick(k)}
+      onClose={close}
     />
   );
 }
 
-function EditorWorkspace({ loaded, phone, onReplace }: { loaded: Loaded; phone: boolean; onReplace: () => void }) {
+function EditorWorkspace({
+  loaded,
+  phone,
+  onPick,
+  onClose,
+}: {
+  loaded: Loaded;
+  phone: boolean;
+  onPick: (kind?: MediaKind) => void;
+  onClose: () => void;
+}) {
   const { input, probe, url } = loaded;
   const video = input.kind === "video";
   const pw = probe.width;
@@ -175,6 +200,8 @@ function EditorWorkspace({ loaded, phone, onReplace }: { loaded: Loaded; phone: 
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [quality, setQuality] = useState(92);
+  const [saved, setSaved] = useState<{ name: string; path: string } | null>(null);
   const exportAbort = useRef<AbortController | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const trimRef = useRef(trim);
@@ -200,7 +227,8 @@ function EditorWorkspace({ loaded, phone, onReplace }: { loaded: Loaded; phone: 
   }, [video]);
   const checking = video && videoCaps === null;
   const caps = video ? (videoCaps ?? FULL_CAPS) : FULL_CAPS;
-  const canCrop = !checking && caps.crop;
+  // The crop frame shows at once (optimistic while checking); Export stays blocked until the check is done.
+  const canCrop = caps.crop;
   const nothing = video && !checking && !caps.crop && !caps.trim && !caps.mute;
 
   const ratio = presetRatio(preset, size);
@@ -215,9 +243,9 @@ function EditorWorkspace({ loaded, phone, onReplace }: { loaded: Loaded; phone: 
       if (s > 0.001) j.trimStart = Math.round(s * 1000) / 1000;
       if (e < duration - 0.001) j.trimEnd = Math.round(e * 1000) / 1000;
     }
-    if (j.output === "jpg") j.quality = 92;
+    if (j.output === "jpg") j.quality = Math.min(100, Math.max(1, Math.round(quality)));
     return j;
-  }, [input, video, probe.hasAudio, audio, output, cropped, canCrop, rounded, trim, duration]);
+  }, [input, video, probe.hasAudio, audio, output, cropped, canCrop, rounded, trim, duration, quality]);
   const invalid = validateJob(job, probe);
 
   // React does not reliably reflect `muted`; set the property directly.
@@ -272,6 +300,7 @@ function EditorWorkspace({ loaded, phone, onReplace }: { loaded: Loaded; phone: 
     exportAbort.current = ac;
     setExporting(true);
     setProgress(null);
+    setSaved(null);
     let last = -1;
     try {
       const res = await editorEngine.exportEdit(
@@ -285,6 +314,7 @@ function EditorWorkspace({ loaded, phone, onReplace }: { loaded: Loaded; phone: 
         },
         ac.signal,
       );
+      setSaved({ name: res.name, path: res.path });
       notify({
         tone: "success",
         title: "Saved",
@@ -347,6 +377,7 @@ function EditorWorkspace({ loaded, phone, onReplace }: { loaded: Loaded; phone: 
       }}
       phone={phone}
       cropDisabled={!canCrop}
+      readout={`${rounded.w} × ${rounded.h}`}
       className={phone ? "h-[min(56vh,520px)] min-h-[260px] w-full" : "h-[min(64vh,680px)] min-h-[320px] w-full"}
     >
       {media}
@@ -393,7 +424,16 @@ function EditorWorkspace({ loaded, phone, onReplace }: { loaded: Loaded; phone: 
       error={invalid}
       onExport={() => void runExport()}
       onCancel={() => exportAbort.current?.abort()}
-      onReplace={onReplace}
+      onReplace={() => onPick(input.kind)}
+      onPickKind={(k) => onPick(k)}
+      quality={quality}
+      onQuality={setQuality}
+      trim={video ? trim : undefined}
+      duration={video ? duration : undefined}
+      canTrim={caps.trim}
+      saved={saved}
+      onOpenSaved={saved?.path ? () => void openFile(saved.path) : undefined}
+      onEditAnother={onClose}
       phone={phone}
       canCrop={canCrop}
       canMute={caps.mute}

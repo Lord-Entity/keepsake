@@ -80,6 +80,7 @@ const {
   downloadAndroid,
   fetchAndroidInfo,
   fetchAndroidYouTubeInfo,
+  hiddenStreams,
   mapYtdlpError,
   ytdlpInfoToVideoInfo,
 } = await import("../android-ytdlp");
@@ -756,5 +757,335 @@ describe("error codes", () => {
       code: "js_runtime_missing",
       cookiesHint: false,
     });
+  });
+});
+
+// ---------------- TikTok / Instagram workaround ladder ----------------
+
+const NOT_READY = { ...READY, ready: false, problems: ["ffmpeg missing"] };
+const LADDER_NOTE = "The chosen version failed, so Keepsake saved the next best one.";
+const FULL_1080 = ["-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best", "--merge-output-format", "mp4/mkv"];
+
+function ttRaw(formats) {
+  return { ...rawTikTok(), formats };
+}
+
+function ladderReq(raw, url, formatId = "video:1080", over = {}) {
+  return {
+    id: "job-x",
+    url,
+    info: ytdlpInfoToVideoInfo(raw, url),
+    mode: "video",
+    formatId,
+    outputDir: DL,
+    ...over,
+  };
+}
+
+const okDownload = (args) => ({ path: `${args.outDir}/${args.fileName}.${args.fileName === "audio" ? "m4a" : "mp4"}`, bytes: 10 });
+const fails = (code) => {
+  throw `ytdlp:${code}: x`;
+};
+
+function rawInstagramMuxed() {
+  return {
+    ...rawInstagram(),
+    formats: [
+      fmt({ format_id: "dash-v", vcodec: "avc1", acodec: "none", height: 1080 }),
+      fmt({ format_id: "dash-a", ext: "m4a", vcodec: "none", acodec: "mp4a.40.2", height: null, fps: null }),
+      fmt({ format_id: "prog", vcodec: "avc1", acodec: "mp4a.40.2", height: 720 }),
+    ],
+  };
+}
+
+describe("TikTok / Instagram workaround ladder: first step unchanged", () => {
+  test("TikTok progressive pick: one ytdlp_download with exactly 5 keys, no status, no info, no note", async () => {
+    setHandlers({ ytdlp_download: async (a) => okDownload(a) });
+    const final = await startDownload(ladderReq(rawTikTok(), TT_URL), () => {}).done;
+    expect(final.status).toBe("done");
+    expect(final.note).toBeUndefined();
+    expect(calls("ytdlp_download")).toHaveLength(1);
+    const sent = calls("ytdlp_download")[0][1];
+    expect(sent).toEqual({
+      url: "https://www.tiktok.com/@someone/video/7300",
+      formatId: "h264_1080p_1-0",
+      outDir: DL,
+      fileName: "A clip",
+      jobId: "job-x",
+    });
+    expect(Object.keys(sent).toSorted()).toEqual(["fileName", "formatId", "jobId", "outDir", "url"]);
+    expect(calls("ytdlp_status")).toHaveLength(0);
+    expect(calls("ytdlp_info")).toHaveLength(0);
+  });
+
+  test("Instagram muxed pick: video -v, audio -a, then one ytdlp_mux; no status", async () => {
+    setHandlers({
+      ytdlp_download: async (a) => okDownload(a),
+      ytdlp_mux: async () => ({ path: `${DL}/Reel.mp4`, bytes: 20 }),
+    });
+    const final = await startDownload(ladderReq(rawInstagramMuxed(), IG_URL), () => {}).done;
+    expect(final.status).toBe("done");
+    expect(final.filePath).toBe(`${DL}/Reel.mp4`);
+    expect(final.note).toBeUndefined();
+    const dls = calls("ytdlp_download").map((c) => c[1]);
+    expect(dls).toHaveLength(2);
+    expect(dls[0]).toEqual({ url: IG_URL, formatId: "dash-v", outDir: "/data/cache/ytdlp-job-x", fileName: "video", jobId: "job-x-v" });
+    expect(dls[1]).toEqual({ url: IG_URL, formatId: "dash-a", outDir: "/data/cache/ytdlp-job-x", fileName: "audio", jobId: "job-x-a" });
+    expect(calls("ytdlp_mux")).toHaveLength(1);
+    expect(calls("ytdlp_mux")[0][1]).toEqual({
+      videoPath: "/data/cache/ytdlp-job-x/video.mp4",
+      audioPath: "/data/cache/ytdlp-job-x/audio.m4a",
+      outDir: DL,
+      fileName: "Reel",
+    });
+    expect(calls("ytdlp_status")).toHaveLength(0);
+  });
+
+  test("mux_failed: the built-in fallback downloads prog as one file with the request id", async () => {
+    setHandlers({
+      ytdlp_download: async (a) => okDownload(a),
+      ytdlp_mux: async () => fails("mux_failed"),
+    });
+    const final = await startDownload(ladderReq(rawInstagramMuxed(), IG_URL), () => {}).done;
+    expect(final.status).toBe("done");
+    expect(final.note).toBeUndefined();
+    const prog = calls("ytdlp_download").filter((c) => c[1].formatId === "prog");
+    expect(prog).toHaveLength(1);
+    expect(prog[0][1].jobId).toBe("job-x");
+    expect(calls("ytdlp_status")).toHaveLength(0);
+  });
+});
+
+describe("TikTok / Instagram workaround ladder: steps", () => {
+  test("step 2: next best progressive format is saved with the note, no status call", async () => {
+    setHandlers({
+      ytdlp_download: async (a) => (a.formatId === "h264_1080p_1-0" ? fails("forbidden") : okDownload(a)),
+    });
+    const final = await startDownload(ladderReq(rawTikTok(), TT_URL), () => {}).done;
+    expect(final.status).toBe("done");
+    expect(final.note).toBe(LADDER_NOTE);
+    expect(calls("ytdlp_download").map((c) => c[1].formatId)).toEqual(["h264_1080p_1-0", "h264_720p_1-0"]);
+    expect(calls("ytdlp_status")).toHaveLength(0);
+  });
+
+  test("step 3: every http format unavailable, ready -> the full yt-dlp route runs", async () => {
+    await setHandlersAndStatus({
+      ytdlp_status: async () => READY,
+      ytdlp_download: async (a) => (a.full === true ? okDownload(a) : fails("format_unavailable")),
+    });
+    const final = await startDownload(ladderReq(rawTikTok(), TT_URL), () => {}).done;
+    expect(final.status).toBe("done");
+    expect(final.note).toBe(LADDER_NOTE);
+    const full = calls("ytdlp_download").filter((c) => c[1].full === true);
+    expect(full).toHaveLength(1);
+    expect(full[0][1]).toEqual({
+      url: "https://www.tiktok.com/@someone/video/7300",
+      args: FULL_1080,
+      outDir: DL,
+      fileName: "A clip",
+      jobId: "job-x",
+      full: true,
+    });
+  });
+
+  test("HLS-only post, ready: exactly one ytdlp_download, the full one", async () => {
+    const raw = ttRaw([fmt({ format_id: "hls-1080", protocol: "m3u8_native", height: 1080 })]);
+    const info = ytdlpInfoToVideoInfo(raw, TT_URL);
+    expect(info.streams).toEqual([]);
+    expect(info.hasVideo).toBe(true);
+    expect(info.kind).toBe("video");
+    await setHandlersAndStatus({ ytdlp_status: async () => READY, ytdlp_download: async (a) => okDownload(a) });
+    const final = await startDownload(ladderReq(raw, TT_URL, "video:best"), () => {}).done;
+    expect(final.status).toBe("done");
+    expect(calls("ytdlp_download")).toHaveLength(1);
+    const sent = calls("ytdlp_download")[0][1];
+    expect(sent.full).toBe(true);
+    expect(sent.args).toEqual(["-f", "bestvideo+bestaudio/best/best", "--merge-output-format", "mp4/mkv"]);
+    expect("formatId" in sent).toBe(false);
+  });
+
+  test("HLS-only post, not ready: format_unavailable naming the built-in downloader, no download", async () => {
+    const raw = ttRaw([fmt({ format_id: "hls-1080", protocol: "m3u8_native", height: 1080 })]);
+    await setHandlersAndStatus({ ytdlp_status: async () => NOT_READY, ytdlp_download: async (a) => okDownload(a) });
+    const final = await startDownload(ladderReq(raw, TT_URL, "video:best"), () => {}).done;
+    expect(final.status).toBe("failed");
+    expect(final.error.code).toBe("format_unavailable");
+    expect(final.error.message).toContain("built-in downloader");
+    expect(calls("ytdlp_download")).toHaveLength(0);
+  });
+
+  test("watermarked version goes last: after the clean one fails, not ready -> download", async () => {
+    const raw = ttRaw([
+      fmt({ format_id: "download", format_note: "watermarked", height: 1080 }),
+      fmt({ format_id: "h264_1080p_1-0", vcodec: "avc1.64001f", height: 1080 }),
+    ]);
+    await setHandlersAndStatus({
+      ytdlp_status: async () => NOT_READY,
+      ytdlp_download: async (a) => (a.formatId === "h264_1080p_1-0" ? fails("forbidden") : okDownload(a)),
+    });
+    const final = await startDownload(ladderReq(raw, TT_URL), () => {}).done;
+    expect(final.status).toBe("done");
+    expect(final.note).toBe(LADDER_NOTE);
+    expect(calls("ytdlp_download").map((c) => c[1].formatId)).toEqual(["h264_1080p_1-0", "download"]);
+  });
+
+  test("watermarked version goes last: ready with a failing full route -> clean, full, then download", async () => {
+    const raw = ttRaw([
+      fmt({ format_id: "download", format_note: "watermarked", height: 1080 }),
+      fmt({ format_id: "h264_1080p_1-0", vcodec: "avc1.64001f", height: 1080 }),
+    ]);
+    await setHandlersAndStatus({
+      ytdlp_status: async () => READY,
+      ytdlp_download: async (a) => {
+        if (a.formatId === "h264_1080p_1-0") return fails("forbidden");
+        if (a.full === true) return fails("unknown");
+        return okDownload(a);
+      },
+    });
+    const final = await startDownload(ladderReq(raw, TT_URL), () => {}).done;
+    expect(final.status).toBe("done");
+    expect(final.note).toBe(LADDER_NOTE);
+    const order = calls("ytdlp_download").map((c) => c[1].formatId ?? c[1].args);
+    expect(order).toEqual(["h264_1080p_1-0", FULL_1080, "download"]);
+  });
+
+  test("all steps fail: the primary error code is kept and the detail lists what was tried", async () => {
+    await setHandlersAndStatus({ ytdlp_status: async () => NOT_READY, ytdlp_download: async () => fails("forbidden") });
+    const final = await startDownload(ladderReq(rawTikTok(), TT_URL), () => {}).done;
+    expect(final.status).toBe("failed");
+    expect(final.error.code).toBe("forbidden");
+    expect(final.error.detail).toContain("also tried");
+  });
+
+  test("an empty file counts as a failure and the ladder moves to the next alternative", async () => {
+    setHandlers({
+      ytdlp_download: async (a) => (a.formatId === "h264_1080p_1-0" ? { path: `${a.outDir}/${a.fileName}.mp4`, bytes: 0 } : okDownload(a)),
+    });
+    const final = await startDownload(ladderReq(rawTikTok(), TT_URL), () => {}).done;
+    expect(final.status).toBe("done");
+    expect(final.note).toBe(LADDER_NOTE);
+    expect(calls("ytdlp_download").map((c) => c[1].formatId)).toEqual(["h264_1080p_1-0", "h264_720p_1-0"]);
+  });
+});
+
+describe("TikTok / Instagram workaround ladder: stops", () => {
+  test("final errors never ladder: one download, no status, same code", async () => {
+    for (const code of ["login_required", "not_found", "no_space", "permission", "too_large"]) {
+      invokeMock.mockClear();
+      setHandlers({ ytdlp_download: async () => fails(code) });
+      const final = await startDownload(ladderReq(rawTikTok(), TT_URL), () => {}).done;
+      expect(calls("ytdlp_download")).toHaveLength(1);
+      expect(calls("ytdlp_status")).toHaveLength(0);
+      expect(final.status).toBe("failed");
+      expect(final.error.code).toBe(code);
+    }
+  });
+
+  test("rate_limited stops at once: one download, no retry, no ladder", async () => {
+    setHandlers({ ytdlp_download: async () => fails("rate_limited") });
+    const final = await startDownload(ladderReq(rawTikTok(), TT_URL), () => {}).done;
+    expect(calls("ytdlp_download")).toHaveLength(1);
+    expect(calls("ytdlp_status")).toHaveLength(0);
+    expect(final.status).toBe("failed");
+    expect(final.error.code).toBe("rate_limited");
+  });
+
+  test("cancel during a ladder step cancels only the running job id", async () => {
+    // Like the bridge: the running download rejects "cancelled" once ytdlp_cancel arrives for its job id.
+    let rejectRunning;
+    setHandlers({
+      ytdlp_download: async (a) => {
+        if (a.formatId === "h264_1080p_1-0") return fails("forbidden");
+        return new Promise((_, reject) => {
+          rejectRunning = reject;
+        });
+      },
+      ytdlp_cancel: async () => {
+        rejectRunning?.("ytdlp:cancelled: Cancelled by user.");
+        return {};
+      },
+    });
+    const handle = startDownload(ladderReq(rawTikTok(), TT_URL), () => {});
+    await waitFor(() => calls("ytdlp_download").length === 2);
+    handle.cancel();
+    await waitFor(() => calls("ytdlp_cancel").length >= 1);
+    const final = await handle.done;
+    expect(final.status).toBe("cancelled");
+    for (const c of calls("ytdlp_cancel")) expect(c[1]).toEqual({ jobId: "job-x" });
+  });
+});
+
+describe("TikTok / Instagram workaround ladder: YouTube is excluded", () => {
+  test("legacy (non-full) YouTube info: one ytdlp_download (the video part), no ladder, no status, youtubei fallback once", async () => {
+    const url = "https://www.youtube.com/watch?v=abc";
+    setHandlers({ ytdlp_download: async () => fails("forbidden") });
+    const req = { id: "job-yt", url, info: ytdlpInfoToVideoInfo(rawYoutube(), url), mode: "video", formatId: "video:1080", outputDir: DL };
+    const final = await startDownload(req, () => {}).done;
+    expect(calls("ytdlp_download")).toHaveLength(1);
+    expect(calls("ytdlp_download")[0][1].formatId).toBe("137");
+    expect(calls("ytdlp_download")[0][1].jobId).toBe("job-yt-v");
+    expect(calls("ytdlp_status")).toHaveLength(0);
+    expect(fetchYouTubeInfoMock).toHaveBeenCalledTimes(1);
+    expect(final.status).toBe("failed");
+  });
+
+  test("ready status, legacy YouTube info, failing download: one ytdlp_download without full, no status, no info call", async () => {
+    const url = "https://www.youtube.com/watch?v=abc";
+    await setHandlersAndStatus({ ytdlp_status: async () => READY, ytdlp_download: async () => fails("forbidden") });
+    invokeMock.mockClear();
+    const req = { id: "job-yt", url, info: ytdlpInfoToVideoInfo(rawYoutube(), url), mode: "video", formatId: "video:1080", outputDir: DL };
+    const final = await startDownload(req, () => {}).done;
+    expect(final.status).toBe("failed");
+    expect(calls("ytdlp_download")).toHaveLength(1);
+    expect(calls("ytdlp_download")[0][1].full).toBeUndefined();
+    expect(calls("ytdlp_status")).toHaveLength(0);
+    expect(calls("ytdlp_info")).toHaveLength(0);
+  });
+
+  test("ready status, full YouTube info, failing download: one full ytdlp_download, no status, never a formatId job", async () => {
+    await setHandlersAndStatus({ ytdlp_status: async () => READY, ytdlp_download: async () => fails("forbidden") });
+    invokeMock.mockClear();
+    const final = await startDownload(ytReq("video:1080"), () => {}).done;
+    expect(final.status).toBe("failed");
+    expect(calls("ytdlp_download")).toHaveLength(1);
+    expect(calls("ytdlp_download")[0][1].full).toBe(true);
+    expect("formatId" in calls("ytdlp_download")[0][1]).toBe(false);
+    expect(calls("ytdlp_status")).toHaveLength(0);
+  });
+});
+
+const hlsOnlyRaw = () => ttRaw([fmt({ format_id: "hls-1080", protocol: "m3u8_native", height: 1080 })]);
+
+describe("TikTok / Instagram workaround ladder: offline cap", () => {
+  test("a network failure on an alternative stops the ladder: no full route, no watermarked, no status call", async () => {
+    // First step fails with forbidden (no TS retry, so no 2 s real delay); the alternative (retries 0) fails offline.
+    const raw = ttRaw([
+      fmt({ format_id: "download", format_note: "watermarked", height: 1080 }),
+      fmt({ format_id: "h264_1080p_1-0", vcodec: "avc1.64001f", height: 1080 }),
+      fmt({ format_id: "h264_720p_1-0", vcodec: "avc1.64001f", height: 720 }),
+    ]);
+    setHandlers({ ytdlp_download: async (a) => (a.formatId === "h264_1080p_1-0" ? fails("forbidden") : fails("network")) });
+    const final = await startDownload(ladderReq(raw, TT_URL), () => {}).done;
+    expect(final.status).toBe("failed");
+    expect(final.error.code).toBe("forbidden");
+    expect(final.error.detail).toContain("also tried h264_720p_1-0+");
+    expect(calls("ytdlp_download").map((c) => c[1].formatId)).toEqual(["h264_1080p_1-0", "h264_720p_1-0"]);
+    expect(calls("ytdlp_status")).toHaveLength(0);
+  });
+});
+
+describe("fetchInfo: HLS-only TikTok post", () => {
+  test("full route not ready: the hidden HLS copy is dropped (disabled row), the info is still a video", async () => {
+    await setHandlersAndStatus({ ytdlp_status: async () => NOT_READY, ytdlp_info: async () => ({ ok: true, info: hlsOnlyRaw() }) });
+    const v = await fetchInfo(TT_URL);
+    expect(v.streams).toEqual([]);
+    expect(hiddenStreams(v)).toEqual([]);
+    expect(calls("ytdlp_info")[0][1]).toEqual({ url: TT_URL });
+  });
+
+  test("full route ready: the hidden HLS copy is kept for the Best available row", async () => {
+    await setHandlersAndStatus({ ytdlp_status: async () => READY, ytdlp_info: async () => ({ ok: true, info: hlsOnlyRaw() }) });
+    const v = await fetchInfo(TT_URL);
+    expect(hiddenStreams(v).map((s) => s.id)).toEqual(["hls-1080"]);
   });
 });

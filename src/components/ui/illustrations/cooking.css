@@ -1,0 +1,394 @@
+/*
+ * CookingScene ("Kip is cooking") styles. Paints only with the --ill-* tokens from
+ * illustrations.css (imported via Scene), so light/dark follow the same selectors.
+ * Root state classes: .ck-s0|1|2 (stage, only meaningful with .ck-working) and
+ * .ck-working|success|error. Every CSS-transformed element uses transform-box: view-box
+ * with origins in scene units, or fill-box for small self-contained particles.
+ * Static base = reduced-motion pose; all animation/transition lives in no-preference.
+ */
+
+/* ---- Pot tipping over on error (all pot layers share .ck-tip) ---- */
+.ck-tip {
+  transform-box: view-box;
+  transform-origin: 182px 140px;
+  transform: rotate(0deg);
+}
+.ck-error .ck-tip {
+  transform: rotate(14deg);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ck-tip {
+    transition: transform 0.7s cubic-bezier(0.34, 1.3, 0.5, 1);
+  }
+}
+
+/* ======== Stove, pot and lid ======== */
+
+/* ---- flames: outer = size, inner = flicker ---- */
+.ck-flames { transform-box: view-box; transform-origin: 158px 141px; transform: scale(1); }
+.ck-working.ck-s0 .ck-flames { transform: scale(.7); }
+.ck-working.ck-s1 .ck-flames { transform: scale(1); }
+.ck-working.ck-s2 .ck-flames { transform: scale(1.3); }
+.ck-success .ck-flames { transform: scale(.55); }
+.ck-error .ck-flames { transform: scale(.2); opacity: 0; }
+
+.ck-flick { transform-box: view-box; }
+.ck-fl-a { transform-origin: 133px 141px; }
+.ck-fl-b { transform-origin: 158px 141px; }
+.ck-fl-c { transform-origin: 181px 141px; }
+
+/* ---- error-only extras (static base) ---- */
+.ck-smoke { opacity: 0; }
+.ck-error .ck-smoke { opacity: .9; }
+.ck-smoke-in { transform-box: view-box; transform-origin: 127px 131px; }
+
+.ck-spill { opacity: 0; transform-box: view-box; transform-origin: 180px 149px; transform: scaleX(.2); }
+.ck-error .ck-spill { opacity: 1; transform: scaleX(1); }
+
+/* ---- soup ---- */
+.ck-soup { transform-box: view-box; transform-origin: 158px 108px; }
+
+/* ---- lid: outer = state pose, inner = rattle ---- */
+.ck-lid { transform-box: view-box; transform-origin: 182px 108px; transform: rotate(50deg); }
+.ck-working.ck-s2 .ck-lid { transform: rotate(0deg); }
+.ck-success .ck-lid { transform: translate(26px, -46px) rotate(28deg); }
+.ck-error .ck-lid { transform: translate(34px, 36px) rotate(8deg); }
+
+.ck-lid-rattle { transform-box: view-box; transform-origin: 158px 108px; }
+.ck-tick { opacity: 0; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .ck-flames { transition: transform .6s cubic-bezier(.34, 1.3, .5, 1), opacity .4s ease; }
+  .ck-smoke { transition: opacity .5s ease .35s; }
+  .ck-spill { transition: transform .7s cubic-bezier(.34, 1.3, .5, 1) .5s, opacity .4s ease .5s; }
+  .ck-lid { transition: transform .6s cubic-bezier(.34, 1.3, .5, 1); }
+
+  .ck-working .ck-flick,
+  .ck-success .ck-flick { animation: ck-flick 1.5s ease-in-out infinite; }
+  .ck-working.ck-s0 .ck-flick { animation-duration: 2s; }
+  .ck-working.ck-s2 .ck-flick { animation-duration: .5s; }
+  .ck-success .ck-flick { animation-duration: 2.6s; }
+  .ck-fl-b { animation-delay: -.35s; }
+  .ck-fl-c { animation-delay: -.7s; }
+
+  .ck-error .ck-smoke-in { animation: ck-smoke-rise 2.4s ease-out infinite; }
+
+  .ck-working.ck-s1 .ck-soup { animation: ck-soup-sway 2.2s ease-in-out infinite; }
+  .ck-working.ck-s2 .ck-soup { animation: ck-soup-sway 1s ease-in-out infinite; }
+
+  .ck-working.ck-s2 .ck-lid-rattle { animation: ck-lid-rattle .84s ease-in-out infinite; }
+  .ck-working.ck-s2 .ck-tick { animation: ck-tick .84s ease-in-out infinite; }
+  .ck-working.ck-s2 .ck-tick-r { animation-delay: .06s; }
+}
+
+@keyframes ck-flick {
+  0%, 100% { transform: scaleY(1) scaleX(1); }
+  35% { transform: scaleY(1.12) scaleX(.94); }
+  70% { transform: scaleY(.9) scaleX(1.05); }
+}
+
+@keyframes ck-smoke-rise {
+  0% { transform: translateY(2px); opacity: 0; }
+  25% { opacity: 1; }
+  100% { transform: translateY(-8px); opacity: 0; }
+}
+
+@keyframes ck-soup-sway {
+  0%, 100% { transform: scaleX(1) translateX(0); }
+  50% { transform: scaleX(.96) translateX(1.2px); }
+}
+
+@keyframes ck-lid-rattle {
+  0%, 52%, 100% { transform: translateY(0) rotate(0deg); }
+  8% { transform: translateY(-1.8px) rotate(-3deg); }
+  16% { transform: translateY(0) rotate(3deg); }
+  26% { transform: translateY(-1.4px) rotate(-2.5deg); }
+  36% { transform: translateY(0) rotate(2deg); }
+  44% { transform: translateY(-.6px) rotate(-1deg); }
+}
+
+@keyframes ck-tick {
+  0%, 52%, 100% { opacity: 0; }
+  8%, 26% { opacity: 1; }
+  16%, 36% { opacity: .3; }
+}
+
+/* ======== Steam, bubbles, ingredients, sparkles, confetti ======== */
+
+/* Steam */
+.ck-curl,
+.ck-puff,
+.ck-bub,
+.ck-ing,
+.ck-spark,
+.ck-cf {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.ck-curl { opacity: 0; transform: translateY(-12px); }
+.ck-puff { opacity: 0; }
+.ck-working .ck-curl1 { opacity: 0.5; }
+.ck-working.ck-s1 .ck-curl2,
+.ck-working.ck-s1 .ck-curl3,
+.ck-working.ck-s2 .ck-curl2,
+.ck-working.ck-s2 .ck-curl3 { opacity: 0.5; }
+.ck-success .ck-curl1,
+.ck-success .ck-curl2 { opacity: 0.25; }
+
+/* Bubbles: hidden at rest */
+.ck-bub { opacity: 0; }
+
+/* Ingredients: hidden at rest, chain link rests at the rim in s0/s1 */
+.ck-ing { opacity: 0; }
+.ck-working.ck-s0 .ck-ing1,
+.ck-working.ck-s1 .ck-ing1 { opacity: 1; }
+
+/* Sparkles: shown in s2 + success */
+.ck-spark { opacity: 0; }
+.ck-working.ck-s2 .ck-spark,
+.ck-success .ck-spark { opacity: 0.9; }
+
+/* Confetti: never visible statically */
+.ck-cf { opacity: 0; }
+.ck-cf1  { --dx: -30px; --dy: -34px; --r: 200deg; }
+.ck-cf2  { --dx: -18px; --dy: -46px; --r: 90deg; }
+.ck-cf3  { --dx: -42px; --dy: -14px; --r: 260deg; }
+.ck-cf4  { --dx: -8px;  --dy: -52px; --r: 140deg; }
+.ck-cf5  { --dx: 6px;   --dy: -48px; --r: -160deg; }
+.ck-cf6  { --dx: 20px;  --dy: -44px; --r: 120deg; }
+.ck-cf7  { --dx: 32px;  --dy: -32px; --r: -220deg; }
+.ck-cf8  { --dx: 44px;  --dy: -16px; --r: 180deg; }
+.ck-cf9  { --dx: -36px; --dy: -26px; --r: -120deg; }
+.ck-cf10 { --dx: 38px;  --dy: -42px; --r: 300deg; }
+.ck-cf11 { --dx: 12px;  --dy: -36px; --r: 240deg; }
+.ck-cf12 { --dx: -24px; --dy: -22px; --r: -300deg; }
+
+@media (prefers-reduced-motion: no-preference) {
+  /* ---- Steam ---- */
+  .ck-working.ck-s0 .ck-curl1 { animation: ck-steam 3.2s ease-in-out infinite; }
+  .ck-working.ck-s1 .ck-curl { animation: ck-steam 2.4s ease-in-out infinite; }
+  .ck-working.ck-s1 .ck-curl2 { animation-delay: 0.8s; }
+  .ck-working.ck-s1 .ck-curl3 { animation-delay: 1.6s; }
+  .ck-working.ck-s2 .ck-curl { animation: ck-steam 1.8s ease-in-out infinite; }
+  .ck-working.ck-s2 .ck-curl2 { animation-delay: 0.6s; }
+  .ck-working.ck-s2 .ck-curl3 { animation-delay: 1.2s; }
+  .ck-success .ck-curl1,
+  .ck-success .ck-curl2 { animation: ck-steam-soft 3.2s ease-in-out infinite; }
+  .ck-success .ck-curl2 { animation-delay: 1.4s; }
+  .ck-working.ck-s2 .ck-puff1 { animation: ck-puff-l 1.8s ease-out infinite; }
+  .ck-working.ck-s2 .ck-puff2 { animation: ck-puff-r 1.8s ease-out 0.9s infinite; }
+
+  /* ---- Bubbles ---- */
+  .ck-working.ck-s1 .ck-bub,
+  .ck-working.ck-s2 .ck-bub { animation: ck-bubble 1.6s ease-in-out infinite; }
+  .ck-working.ck-s1 .ck-bub2 { animation-delay: 0.35s; }
+  .ck-working.ck-s1 .ck-bub3 { animation-delay: 0.7s; }
+  .ck-working.ck-s1 .ck-bub4 { animation-delay: 1.05s; }
+  .ck-working.ck-s1 .ck-bub5 { animation-delay: 1.3s; }
+  .ck-working.ck-s2 .ck-bub { animation-duration: 1.1s; }
+  .ck-working.ck-s2 .ck-bub2 { animation-delay: 0.25s; }
+  .ck-working.ck-s2 .ck-bub3 { animation-delay: 0.5s; }
+  .ck-working.ck-s2 .ck-bub4 { animation-delay: 0.75s; }
+  .ck-working.ck-s2 .ck-bub5 { animation-delay: 0.9s; }
+
+  /* ---- Ingredients ---- */
+  .ck-working.ck-s0 .ck-ing1 { animation: ck-drop 2.8s ease-in infinite; }
+  .ck-working.ck-s1 .ck-ing { animation: ck-drop 3.6s ease-in infinite; }
+  .ck-working.ck-s1 .ck-ing2 { animation-delay: 0.9s; }
+  .ck-working.ck-s1 .ck-ing3 { animation-delay: 1.8s; }
+  .ck-working.ck-s1 .ck-ing4 { animation-delay: 2.7s; }
+
+  /* ---- Sparkles ---- */
+  .ck-working.ck-s2 .ck-spark,
+  .ck-success .ck-spark { animation: ck-twinkle 1.6s ease-in-out infinite; }
+  .ck-working.ck-s2 .ck-spark2,
+  .ck-success .ck-spark2 { animation-delay: 0.5s; }
+  .ck-working.ck-s2 .ck-spark3,
+  .ck-success .ck-spark3 { animation-delay: 1s; }
+
+  /* ---- Confetti (once) ---- */
+  .ck-success .ck-cf { animation: ck-burst 1.3s ease-out 0.45s 1 both; }
+  .ck-success .ck-cf2  { animation-delay: 0.5s; }
+  .ck-success .ck-cf3  { animation-delay: 0.47s; }
+  .ck-success .ck-cf4  { animation-delay: 0.55s; }
+  .ck-success .ck-cf5  { animation-delay: 0.5s; }
+  .ck-success .ck-cf6  { animation-delay: 0.52s; }
+  .ck-success .ck-cf7  { animation-delay: 0.48s; }
+  .ck-success .ck-cf8  { animation-delay: 0.54s; }
+  .ck-success .ck-cf9  { animation-delay: 0.46s; }
+  .ck-success .ck-cf10 { animation-delay: 0.56s; }
+  .ck-success .ck-cf11 { animation-delay: 0.5s; }
+  .ck-success .ck-cf12 { animation-delay: 0.53s; }
+
+  @keyframes ck-steam {
+    0%   { opacity: 0;   transform: translate(0, 0); }
+    25%  { opacity: 0.7; transform: translate(3px, -8px); }
+    60%  { opacity: 0.5; transform: translate(-3px, -19px); }
+    100% { opacity: 0;   transform: translate(2px, -30px); }
+  }
+  @keyframes ck-steam-soft {
+    0%   { opacity: 0;    transform: translate(0, 0); }
+    30%  { opacity: 0.35; transform: translate(3px, -8px); }
+    100% { opacity: 0;    transform: translate(-2px, -28px); }
+  }
+  @keyframes ck-puff-l {
+    0%   { opacity: 0;   transform: translate(0, 0) scale(0.6); }
+    25%  { opacity: 0.8; }
+    100% { opacity: 0;   transform: translate(-9px, -12px) scale(1.5); }
+  }
+  @keyframes ck-puff-r {
+    0%   { opacity: 0;   transform: translate(0, 0) scale(0.6); }
+    25%  { opacity: 0.8; }
+    100% { opacity: 0;   transform: translate(9px, -12px) scale(1.5); }
+  }
+  @keyframes ck-bubble {
+    0%   { opacity: 1; transform: scale(0); }
+    55%  { opacity: 1; transform: scale(1); }
+    75%  { opacity: 1; transform: scale(1.2); }
+    100% { opacity: 0; transform: scale(0); }
+  }
+  @keyframes ck-drop {
+    0%   { opacity: 0; transform: translateY(-86px) rotate(-25deg); }
+    12%  { opacity: 1; }
+    80%  { opacity: 1; transform: translateY(0) rotate(0deg); }
+    100% { opacity: 0; transform: translateY(8px) rotate(0deg) scale(0.6); }
+  }
+  @keyframes ck-twinkle {
+    0%, 100% { opacity: 0.25; transform: scale(0.6) rotate(0deg); }
+    50%      { opacity: 1;    transform: scale(1.15) rotate(20deg); }
+  }
+  @keyframes ck-burst {
+    0%   { opacity: 0; transform: translate(0, 0) rotate(0deg); }
+    8%   { opacity: 1; }
+    55%  { opacity: 1; transform: translate(var(--dx), var(--dy)) rotate(var(--r)); }
+    100% {
+      opacity: 0;
+      transform: translate(calc(var(--dx) * 1.15), calc(var(--dy) + 34px)) rotate(calc(var(--r) * 1.5));
+    }
+  }
+}
+
+/* ======== Kip the cook and the success plate ======== */
+/* ---- CookKip: static base (reduced-motion pose = working, happy, spoon out) ---- */
+.ck-kip-bob,
+.ck-arm-l,
+.ck-arm-r,
+.ck-stir,
+.ck-spoon,
+.ck-blink,
+.ck-sweat,
+.ck-plate,
+.ck-glow {
+  transform-box: view-box;
+}
+.ck-arm-l { transform-origin: 65px 122px; transform: rotate(0deg); }
+.ck-arm-r,
+.ck-stir { transform-origin: 111px 122px; }
+.ck-arm-r { transform: rotate(0deg); }
+.ck-blink { transform-origin: 90px 118px; }
+.ck-glow { transform-origin: 158px 70px; }
+
+.ck-face-happy { opacity: 1; }
+.ck-face-curious,
+.ck-face-joy,
+.ck-face-sad { opacity: 0; }
+.ck-spoon { opacity: 1; }
+.ck-sweat { opacity: 0; }
+
+/* Almost there: curious, arm down, spoon away */
+.ck-working.ck-s2 .ck-face-happy { opacity: 0; }
+.ck-working.ck-s2 .ck-face-curious { opacity: 1; }
+.ck-working.ck-s2 .ck-arm-r { transform: rotate(112deg); }
+.ck-working.ck-s2 .ck-spoon { opacity: 0; }
+
+/* Success: joy, both arms up */
+.ck-success .ck-face-happy { opacity: 0; }
+.ck-success .ck-face-joy { opacity: 1; }
+.ck-success .ck-arm-l { transform: rotate(122deg); }
+.ck-success .ck-arm-r { transform: rotate(-10deg); }
+.ck-success .ck-spoon { opacity: 0; }
+
+/* Error: sad, arm down, spoon away, sweatdrop */
+.ck-error .ck-face-happy { opacity: 0; }
+.ck-error .ck-face-sad { opacity: 1; }
+.ck-error .ck-arm-r { transform: rotate(112deg); }
+.ck-error .ck-spoon { opacity: 0; }
+.ck-error .ck-sweat { opacity: 1; }
+
+/* ---- Plate: static base hidden inside the pot ---- */
+.ck-plate { transform-origin: 158px 80px; transform: translateY(56px); opacity: 0; }
+.ck-glow { opacity: 0.3; }
+.ck-success .ck-plate { transform: translateY(0); opacity: 1; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .ck-arm-l,
+  .ck-arm-r {
+    transition: transform 0.6s cubic-bezier(0.34, 1.3, 0.5, 1);
+  }
+  .ck-spoon,
+  .ck-sweat,
+  .ck-face-happy,
+  .ck-face-curious,
+  .ck-face-joy,
+  .ck-face-sad {
+    transition: opacity 0.4s ease;
+  }
+  .ck-plate {
+    transition: transform 0.8s cubic-bezier(0.34, 1.4, 0.5, 1), opacity 0.4s ease;
+  }
+  .ck-success .ck-plate {
+    transition-delay: 0.25s;
+  }
+
+  /* Bob */
+  .ck-working.ck-s0 .ck-kip-bob { animation: ck-bob-slow 3.6s ease-in-out infinite; }
+  .ck-working.ck-s1 .ck-kip-bob { animation: ck-bob-slow 2.4s ease-in-out infinite; }
+  .ck-working.ck-s2 .ck-kip-bob { animation: ck-hop 0.9s ease-in-out infinite; }
+  .ck-success .ck-kip-bob { animation: ck-joy-bounce 1.2s ease-in-out infinite; }
+
+  /* Stirring */
+  .ck-working.ck-s0 .ck-stir { animation: ck-stir 2.4s ease-in-out infinite; }
+  .ck-working.ck-s1 .ck-stir { animation: ck-stir 1.2s ease-in-out infinite; }
+
+  .ck-blink { animation: ck-blink 5s ease-in-out infinite; }
+  .ck-error .ck-sweat { animation: ck-sweat-slide 3s ease-in-out infinite; }
+  .ck-success .ck-glow { animation: ck-glow 2.4s ease-in-out infinite; }
+}
+
+@keyframes ck-bob-slow {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+@keyframes ck-hop {
+  0%, 100% { transform: translateY(0); }
+  35% { transform: translateY(-4px); }
+  60% { transform: translateY(0); }
+  75% { transform: translateY(-1.5px); }
+}
+@keyframes ck-joy-bounce {
+  0%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-7px); }
+  60% { transform: translateY(-7px); }
+  80% { transform: translateY(0); }
+}
+@keyframes ck-stir {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(-7deg); }
+  50% { transform: rotate(0deg); }
+  75% { transform: rotate(6deg); }
+}
+@keyframes ck-blink {
+  0%, 94%, 100% { transform: scaleY(1); }
+  97% { transform: scaleY(0.1); }
+}
+@keyframes ck-sweat-slide {
+  0% { transform: translateY(0); opacity: 1; }
+  70% { transform: translateY(6px); opacity: 0.2; }
+  71% { transform: translateY(0); opacity: 0; }
+  85% { transform: translateY(0); opacity: 1; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+@keyframes ck-glow {
+  0%, 100% { transform: scale(0.94); opacity: 0.22; }
+  50% { transform: scale(1.06); opacity: 0.38; }
+}

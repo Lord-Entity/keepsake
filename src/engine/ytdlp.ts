@@ -115,6 +115,74 @@ function isFinal(code: AppError["code"]): boolean {
   return code === "cancelled" || code === "js_runtime_missing" || code === "ytdlp_missing";
 }
 
+// ---------------- TikTok / Instagram workaround ladder ----------------
+
+export type LadderSite = "tiktok" | "instagram";
+
+/** TikTok or Instagram host (any subdomain), else undefined. YouTube and every other site never ladder. */
+export function ladderSite(url: string): LadderSite | undefined {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+  } catch {
+    return undefined;
+  }
+  const is = (d: string) => host === d || host.endsWith(`.${d}`);
+  if (is("tiktok.com")) return "tiktok";
+  if (is("instagram.com") || is("instagr.am")) return "instagram";
+  return undefined;
+}
+
+/**
+ * Extra args for attempts 2, 3, ... after a failed first attempt (attempt 1 adds nothing). Each step goes in front of
+ * `-- URL`; the user's cookie setting is kept as-is on every step and never widened.
+ * - tiktok step 2: the mobile API (yt-dlp README `tiktok:api_hostname`, `app_info`; the iid is a placeholder).
+ *   yt-dlp falls back to the webpage on its own when the API fails, so this is never worse than attempt 1.
+ * - instagram step 2: the iOS `X-IG-App-ID` (yt-dlp README `instagram:app_id`).
+ * - step 3: IPv4 only and a Safari TLS fingerprint (curl_cffi; the bundled yt-dlp lists safari targets).
+ */
+export const LADDER_STEPS: Readonly<Record<LadderSite, readonly (readonly string[])[]>> = {
+  tiktok: [
+    ["--extractor-args", "tiktok:api_hostname=api22-normal-c-alisg.tiktokv.com;app_info=7351144126450059040"],
+    ["--force-ipv4", "--impersonate", "safari"],
+  ],
+  instagram: [
+    ["--extractor-args", "instagram:app_id=ios"],
+    ["--force-ipv4", "--impersonate", "safari"],
+  ],
+};
+
+/** Steps to try after attempt 1 fails for this URL (empty for every non-TikTok/Instagram URL). */
+export function ladderSteps(url: string): readonly (readonly string[])[] {
+  const site = ladderSite(url);
+  return site ? LADDER_STEPS[site] : [];
+}
+
+/** Errors another request shape can fix. Everything else (cancel, missing binaries, disk, private, removed...) is final. */
+const LADDER_CODES: ReadonlySet<AppError["code"]> = new Set<AppError["code"]>([
+  "unknown",
+  "network",
+  "timeout",
+  "ssl",
+  "forbidden",
+  "rate_limited",
+  "login_required",
+  "ip_blocked",
+  "anti_bot",
+  "parse_failed",
+  "no_formats",
+]);
+
+/** True when a failure with this code may be retried with the next ladder step (exported for tests). */
+export function laddersAfter(code: AppError["code"]): boolean {
+  return LADDER_CODES.has(code) && !isFinal(code);
+}
+
+function ladderNote(err: AppError, steps: number): AppError {
+  const note = `Also tried ${steps} workaround${steps === 1 ? "" : "s"}.`;
+  return { ...err, detail: err.detail ? `${err.detail} ${note}` : note };
+}
+
 function assertHttpUrl(url: string) {
   let u: URL;
   try {
@@ -234,6 +302,7 @@ export async function fetchInfoYtdlp(url: string, opts: InfoOpts = {}): Promise<
     return await fetchInfoOnce(url, opts);
   } catch (e) {
     const first = toAppError(e);
+    if (first.code !== "bot_check" && ladderSteps(url).length > 0) return fetchInfoLadder(url, opts, e, first);
     if (first.code !== "bot_check" || !wantsFallback(opts.cookiesBrowser)) throw e;
     const tried: string[] = [];
     for (const b of await fallbackBrowsers()) {
@@ -250,13 +319,29 @@ export async function fetchInfoYtdlp(url: string, opts: InfoOpts = {}): Promise<
   }
 }
 
-async function fetchInfoOnce(url: string, opts: InfoOpts): Promise<VideoInfo> {
+/** TikTok/Instagram only: after a ladderable first failure, try each LADDER_STEPS entry; rethrow the first error. */
+async function fetchInfoLadder(url: string, opts: InfoOpts, firstThrown: unknown, first: AppError): Promise<VideoInfo> {
+  if (!laddersAfter(first.code)) throw firstThrown;
+  const steps = ladderSteps(url);
+  for (const extra of steps) {
+    if (opts.signal?.aborted) fail("cancelled");
+    try {
+      return await fetchInfoOnce(url, opts, extra);
+    } catch (e2) {
+      if (opts.signal?.aborted) fail("cancelled");
+      if (!laddersAfter(toAppError(e2).code)) throw e2;
+    }
+  }
+  throw new EngineError(ladderNote(first, steps.length));
+}
+
+async function fetchInfoOnce(url: string, opts: InfoOpts, extra: readonly string[] = []): Promise<VideoInfo> {
   assertHttpUrl(url);
   const jobId = `info-${crypto.randomUUID()}`;
   const onAbort = () => void cancelYtdlp(jobId).catch(() => undefined);
   opts.signal?.addEventListener("abort", onAbort, { once: true });
   try {
-    const args = [...baseArgs(opts.cookiesBrowser), "-J", "-i", "--flat-playlist", "--", url];
+    const args = [...baseArgs(opts.cookiesBrowser), "-J", "-i", "--flat-playlist", ...extra, "--", url];
     const r = await runYtdlp(jobId, args, undefined, undefined, () => !!opts.signal?.aborted);
     if (opts.signal?.aborted) fail("cancelled");
     const json = r.stdout.find((l) => l.trimStart().startsWith("{"));
@@ -364,7 +449,7 @@ export function selectionArgs(
 export function buildDownloadArgs(
   req: DownloadRequest,
   outDir: string,
-  opts: { heightFallback?: boolean } = {},
+  opts: { heightFallback?: boolean; extra?: readonly string[] } = {},
 ): { args: string[]; tempDir: string } {
   assertHttpUrl(req.url);
   const tempDir = keepTempOnFailure(req.id, outDir);
@@ -414,6 +499,8 @@ export function buildDownloadArgs(
   } else {
     fail("format_unavailable", req.formatId);
   }
+  // Ladder step args (TikTok/Instagram retries only); attempt 1 passes none, so its argv is unchanged.
+  if (opts.extra) a.push(...opts.extra);
   a.push("--", req.url);
   return { args: a, tempDir };
 }
@@ -514,9 +601,14 @@ export async function downloadYtdlp(
   isCancelled: () => boolean,
 ): Promise<DownloadProgress> {
   let first = await downloadOnce(req, outDir, emit, isCancelled);
+  let heightFallback = false;
   // A picked stream that yt-dlp rejects: retry once with the height-based selector for the same request.
   if (first.status === "failed" && first.error?.code === "format_unavailable" && req.streamId && !isCancelled()) {
+    heightFallback = true;
     first = await downloadOnce(req, outDir, emit, isCancelled, true);
+  }
+  if (first.status === "failed" && first.error && first.error.code !== "bot_check" && ladderSteps(req.url).length > 0) {
+    return downloadLadder(req, outDir, emit, isCancelled, first, heightFallback);
   }
   if (first.status !== "failed" || first.error?.code !== "bot_check" || !wantsFallback(req.cookiesBrowser)) {
     return first;
@@ -541,14 +633,45 @@ export async function downloadYtdlp(
   return { ...first, error: triedDetail(first.error, tried) };
 }
 
+/**
+ * TikTok/Instagram only: after a ladderable failure, retry with each LADDER_STEPS entry (same request, same cookie
+ * setting, same job id and temp folder) and stop at the first success or at a final error.
+ */
+async function downloadLadder(
+  req: DownloadRequest,
+  outDir: string,
+  emit: (p: DownloadProgress) => void,
+  isCancelled: () => boolean,
+  first: DownloadProgress,
+  heightFallback: boolean,
+): Promise<DownloadProgress> {
+  if (!first.error || !laddersAfter(first.error.code)) return first;
+  const steps = ladderSteps(req.url);
+  for (const extra of steps) {
+    if (isCancelled()) return { id: req.id, status: "cancelled", downloadedBytes: 0, error: appError("cancelled") };
+    emit({ id: req.id, status: "downloading", downloadedBytes: 0 });
+    let r: DownloadProgress;
+    try {
+      r = await downloadOnce(req, outDir, emit, isCancelled, heightFallback, extra);
+    } catch (e) {
+      if (isCancelled() || !laddersAfter(toAppError(e).code)) throw e;
+      continue;
+    }
+    if (r.status === "done") return { ...r, note: r.note ?? "Retried with a workaround" };
+    if (r.status === "cancelled" || !r.error || !laddersAfter(r.error.code)) return r;
+  }
+  return { ...first, error: ladderNote(first.error, steps.length) };
+}
+
 async function downloadOnce(
   req: DownloadRequest,
   outDir: string,
   emit: (p: DownloadProgress) => void,
   isCancelled: () => boolean,
   heightFallback = false,
+  extra?: readonly string[],
 ): Promise<DownloadProgress> {
-  const { args, tempDir } = buildDownloadArgs(req, outDir, { heightFallback });
+  const { args, tempDir } = buildDownloadArgs(req, outDir, { heightFallback, extra });
   let last: DownloadProgress = { id: req.id, status: "downloading", downloadedBytes: 0 };
   const files: string[] = [];
   const errors: string[] = [];

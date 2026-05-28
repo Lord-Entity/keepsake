@@ -1,72 +1,121 @@
 import { motion, useReducedMotion } from "motion/react";
+import { useEffect, useRef, type KeyboardEvent } from "react";
 import { useActiveCount } from "../../state/downloads";
 import { navigate, usePage } from "../../state/nav";
 import { Icon } from "../ui/Icon";
 import { t } from "../ui/motion";
-import { TAB_ITEMS } from "./nav-items";
+import { TAB_CENTER, TAB_ITEMS, tabForPage } from "./nav-items";
 
 /**
- * Phone navigation (UI_MOBILE.md): 64px row plus the bottom safe-area inset,
- * 24px icons, 12px labels, 48px+ touch targets. The active pill is notched on its
- * lower edge with an accent bead seated in the notch; both slide (layoutId).
- * Six slots: Home, Downloads, Library, Editor, Favorites, Settings (Sources lives on
- * Home). At 360dp each slot is ~58dp wide, so labels truncate rather than wrap on
- * the narrowest phones; the min-w-12 floor keeps every target at 48dp.
+ * Phone navigation: a floating, rounded bar that still sits in flow below <main>, so
+ * page content never hides behind it. Five tabs: Home, Library, Editor (raised accent
+ * circle in the centre), Favorites, Settings. Downloads and Sources are reached from
+ * Home, and the bar keeps Home highlighted while they are open. Home shows a dot while
+ * downloads run. Every target is at least 48dp (min-w-12 / min-h-12) and labels
+ * truncate rather than wrap on narrow phones. Reduced motion is honoured (no tap
+ * scale, no pill/circle spring). Arrow/Home/End keys rove focus between tabs.
  */
 export function TabBar() {
   const page = usePage();
   const active = useActiveCount();
   const reduced = useReducedMotion();
   const spring = reduced ? { duration: 0 } : t.spring;
+  const listRef = useRef<HTMLDivElement>(null);
+  const current = tabForPage(page);
+
+  // The phone toast stack offsets itself by this var: 88 = 16 top pad + 64 bar + 8 bottom pad.
+  useEffect(() => {
+    document.documentElement.style.setProperty("--tabbar-h", "88px");
+    return () => {
+      document.documentElement.style.removeProperty("--tabbar-h");
+    };
+  }, []);
+
+  const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const last = TAB_ITEMS.length - 1;
+    let next: number;
+    if (e.key === "ArrowRight") next = index === last ? 0 : index + 1;
+    else if (e.key === "ArrowLeft") next = index === 0 ? last : index - 1;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = last;
+    else return;
+    e.preventDefault();
+    navigate(TAB_ITEMS[next].page);
+    listRef.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+  };
+
   return (
-    // In flow below <main> (never overlays content). The 64px row sits above the
-    // gesture/nav-bar inset; side insets keep tabs clear of landscape cutouts.
     <nav
       aria-label="Main"
-      className="shrink-0 border-t border-line bg-sidebar pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]"
+      className="shrink-0 bg-app pt-4 pr-[max(0.75rem,env(safe-area-inset-right))] pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pl-[max(0.75rem,env(safe-area-inset-left))]"
     >
-      <div className="flex h-16 items-stretch px-1">
-        {TAB_ITEMS.map((item) => {
-          const on = page === item.page || (item.page === "home" && page === "sources");
+      <div
+        ref={listRef}
+        role="tablist"
+        aria-label="Main sections"
+        aria-orientation="horizontal"
+        className="relative flex h-16 items-stretch rounded-[24px] border border-line bg-card px-1.5 shadow-lift"
+      >
+        {TAB_ITEMS.map((item, index) => {
+          const on = item.page === current;
+          const center = item.page === TAB_CENTER;
+          const running = item.page === "home" && active > 0;
           return (
             <motion.button
-              key={item.page}
+              key={item.key}
               type="button"
-              whileTap={{ scale: 0.95 }}
+              role="tab"
+              id={`tab-${item.page}`}
+              aria-selected={on}
+              aria-label={
+                running ? `Home, ${active} download${active === 1 ? "" : "s"} running` : undefined
+              }
+              tabIndex={on ? 0 : -1}
+              whileTap={reduced ? undefined : { scale: 0.94 }}
               transition={t.press}
               onClick={() => navigate(item.page)}
-              aria-current={on ? "page" : undefined}
-              className={`relative flex min-h-12 min-w-12 flex-1 flex-col items-center justify-center gap-1 text-[11px] leading-4 font-medium transition-colors duration-150 ${
+              onKeyDown={(e) => onKeyDown(e, index)}
+              className={`relative flex min-h-12 min-w-12 flex-1 flex-col items-center justify-center gap-0.5 rounded-[18px] text-[11px] leading-4 font-medium outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring ${
                 on ? "text-accent" : "text-fg-2"
               }`}
             >
-              <span className="relative flex h-8 w-12 items-center justify-center">
-                {on && (
-                  <>
+              {center ? (
+                <motion.span
+                  aria-hidden="true"
+                  className="relative -mt-4 flex size-14 items-center justify-center rounded-full bg-accent text-on-accent shadow-lift ring-4 ring-app"
+                  animate={{ scale: on && !reduced ? 1.06 : 1 }}
+                  transition={spring}
+                >
+                  <Icon name={item.icon} size={24} strokeWidth={2} />
+                </motion.span>
+              ) : (
+                <>
+                  {on && (
                     <motion.span
-                      layoutId="tabbar-active"
+                      layoutId="tabbar-pill"
                       transition={spring}
-                      className="notch-thumb absolute inset-0 rounded-full bg-accent-soft"
                       aria-hidden="true"
+                      className="absolute inset-x-0.5 inset-y-1.5 rounded-[18px] bg-accent-soft"
                     />
-                    <motion.span
-                      layoutId="tabbar-bead"
-                      transition={spring}
-                      className="absolute bottom-[-2px] left-1/2 size-[5px] -translate-x-1/2 rounded-full bg-accent"
-                      aria-hidden="true"
-                    />
-                  </>
-                )}
-                <span className="relative">
-                  <Icon name={item.icon} size={22} />
-                  {item.page === "downloads" && active > 0 && (
-                    <span className="absolute -top-1 -right-2 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] text-on-accent">
-                      {active}
-                    </span>
                   )}
-                </span>
+                  <span className="relative">
+                    <Icon name={item.icon} size={22} strokeWidth={on ? 2.1 : 1.75} />
+                    {running && (
+                      <span
+                        aria-hidden="true"
+                        className="absolute -top-0.5 -right-1 size-2 rounded-full bg-accent ring-2 ring-card"
+                      />
+                    )}
+                  </span>
+                </>
+              )}
+              <span
+                className={`relative max-w-full truncate px-0.5 ${
+                  center ? `font-semibold ${on ? "text-accent" : "text-fg"}` : ""
+                }`}
+              >
+                {item.label}
               </span>
-              <span className="max-w-full truncate px-0.5">{item.label}</span>
             </motion.button>
           );
         })}

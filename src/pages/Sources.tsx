@@ -50,7 +50,7 @@ export function SourcesPage({ phone }: { phone: boolean }) {
     return (
       <>
         <EmptyState
-          icon="sources"
+          illustration="sources"
           title="No sources yet"
           body="Add a YouTube channel, an Instagram or TikTok profile, or any playlist. Download from it any time."
           action={

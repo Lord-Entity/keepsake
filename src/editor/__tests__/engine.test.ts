@@ -47,7 +47,8 @@ mock.module("../../state/settings", () => ({
   settingsStore: { get: () => ({ saveDir: "", saveTreeUri: "" }) },
 }));
 
-const { editorEngine } = await import("../engine");
+const { editorEngine, webAccept } = await import("../engine");
+const { desktopEngine } = await import("../engine-desktop");
 const { EditorError } = await import("../types");
 
 const PROBE = { width: 1920, height: 1080, duration: 10, hasAudio: true, rotation: 0 };
@@ -93,6 +94,45 @@ describe("dispatch", () => {
     expect(await editorEngine.probe(v)).toEqual(PROBE);
     expect(calls("plugin:keepsake-media|editor_probe")[0][1]).toEqual({ uri: v.uri });
     expect(calls("editor_probe").length).toBe(0);
+  });
+});
+
+describe("pickMedia kind", () => {
+  test("the kind is passed through; omitted means the platform module gets no argument", async () => {
+    const real = desktopEngine.pickMedia;
+    const seen = [];
+    desktopEngine.pickMedia = async (...args) => {
+      seen.push(args);
+      return null;
+    };
+    try {
+      expect(await editorEngine.pickMedia()).toBeNull();
+      expect(await editorEngine.pickMedia("photo")).toBeNull();
+      expect(await editorEngine.pickMedia("video")).toBeNull();
+    } finally {
+      desktopEngine.pickMedia = real;
+    }
+    expect(seen).toEqual([[], ["photo"], ["video"]]);
+  });
+
+  test("a picker failure still maps to an EditorError", async () => {
+    const real = desktopEngine.pickMedia;
+    desktopEngine.pickMedia = async () => {
+      throw "boom";
+    };
+    try {
+      const e = await rejection(editorEngine.pickMedia("photo"));
+      expect(e).toBeInstanceOf(EditorError);
+      expect(e.code).toBe("unsupported");
+    } finally {
+      desktopEngine.pickMedia = real;
+    }
+  });
+
+  test("webAccept limits the dev-preview file input to the requested kind", () => {
+    expect(webAccept("photo")).toBe(".jpg,.jpeg,.png,.webp,.bmp,.gif,.avif");
+    expect(webAccept("video")).toBe(".mp4,.mov,.m4v,.mkv,.webm,.avi,.3gp,.ts,.mts");
+    expect(webAccept()).toBe(`${webAccept("photo")},${webAccept("video")}`);
   });
 });
 

@@ -144,6 +144,8 @@ const FLAGS_NO_VALUE: &[&str] = &[
     "--no-cache-dir",
     "--list-extractors",
     "--no-color",
+    // TikTok/Instagram workaround ladder (src/engine/ytdlp.ts LADDER_STEPS).
+    "--force-ipv4",
 ];
 
 /// Flags the TypeScript side may pass that take exactly one value (the next argument).
@@ -182,6 +184,7 @@ const FLAGS_WITH_VALUE: &[&str] = &[
     "--cookies-from-browser",
     "--extractor-args",
     "--proxy",
+    "--impersonate",
 ];
 
 fn validate_job_id(id: &str) -> Result<(), String> {
@@ -225,12 +228,25 @@ fn validate_args(args: &[String]) -> Result<(), String> {
             if a == "--js-runtimes" && !js_runtime_ok(v.as_str()) {
                 return Err("only --js-runtimes node or node:<absolute path> is allowed".into());
             }
+            if a == "--impersonate" && !impersonate_ok(v.as_str()) {
+                return Err("--impersonate needs a CLIENT[:OS] target name".into());
+            }
             i += 2;
         } else {
             return Err(format!("yt-dlp argument not allowed: {a}"));
         }
     }
     Ok(())
+}
+
+/// `--impersonate` value: a yt-dlp `CLIENT[:OS]` target such as `safari` or `chrome-131:android-14`.
+fn impersonate_ok(v: &str) -> bool {
+    !v.is_empty()
+        && v.len() <= 40
+        && !v.starts_with('-')
+        && v
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | ':' | '_'))
 }
 
 /// `--js-runtimes` value: `node` or `node:<absolute path>` (yt-dlp `RUNTIME[:PATH]`).
@@ -1152,6 +1168,27 @@ mod tests {
         assert!(validate_args(&s(&["--retries"])).is_err());
         assert!(validate_args(&s(&["--cookies", "c.txt"])).is_err());
         assert!(validate_args(&s(&["--no-playlist", "--exec", "x"])).is_err());
+    }
+
+    #[test]
+    fn allows_ladder_flags() {
+        let a = s(&[
+            "-J",
+            "--extractor-args",
+            "tiktok:api_hostname=api22-normal-c-alisg.tiktokv.com;app_info=7351144126450059040",
+            "--force-ipv4",
+            "--impersonate",
+            "safari",
+            "--",
+            "https://www.tiktok.com/@a/video/1",
+        ]);
+        assert!(validate_args(&a).is_ok());
+        assert!(validate_args(&s(&["--impersonate", "chrome-131:android-14"])).is_ok());
+        assert!(validate_args(&s(&["--impersonate"])).is_err());
+        assert!(validate_args(&s(&["--impersonate", ""])).is_err());
+        assert!(validate_args(&s(&["--impersonate", "--exec"])).is_err());
+        assert!(validate_args(&s(&["--impersonate", "a b"])).is_err());
+        assert!(validate_args(&s(&["--impersonate", "x/../y"])).is_err());
     }
 
     #[test]
