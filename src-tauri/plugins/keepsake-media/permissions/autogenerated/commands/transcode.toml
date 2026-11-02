@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-transcode"
+description = "Enables the transcode command without any pre-configured scope."
+commands.allow = ["transcode"]
+
+[[permission]]
+identifier = "deny-transcode"
+description = "Denies the transcode command without any pre-configured scope."
+commands.deny = ["transcode"]

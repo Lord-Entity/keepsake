@@ -1,0 +1,71 @@
+{
+  "_comment": [
+    "Pinned sidecar downloads for scripts/fetch-binaries.ps1 and scripts/fetch-binaries.sh.",
+    "Each sidecar is saved as src-tauri/binaries/<name>-<target-triple>[.exe], matching externalBin in src-tauri/tauri.conf.json.",
+    "'triples' maps a Rust target triple to a platform key under each sidecar.",
+    "sha256 is the hash of the downloaded file. Every download is verified: a mismatch, or a pinned entry with an empty sha256, fails the script.",
+    "'pinned': false is only allowed as a temporary state; the scripts then print a loud warning with the computed hash.",
+    "yt-dlp hashes come from the release's SHA2-256SUMS file. ffmpeg hashes come from the release's SHA256SUMS.txt.",
+    "QuickJS-NG v0.18.0 publishes no SHA256SUMS file; its hashes are the sha256 digests GitHub lists for each release asset."
+  ],
+  "schemaVersion": 2,
+  "triples": {
+    "x86_64-pc-windows-msvc": "windows",
+    "x86_64-pc-windows-gnu": "windows",
+    "x86_64-unknown-linux-gnu": "linux",
+    "aarch64-apple-darwin": "macos"
+  },
+  "sidecars": {
+    "keepsake-yt-dlp": {
+      "version": "2026.08.19",
+      "source": "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19 (PyInstaller builds, no host Python needed)",
+      "pinned": true,
+      "windows": {
+        "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp.exe",
+        "sha256": "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a"
+      },
+      "linux": {
+        "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_linux",
+        "sha256": "58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a"
+      },
+      "macos": {
+        "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_macos",
+        "sha256": "0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202"
+      }
+    },
+    "keepsake-ffmpeg": {
+      "version": "v1.1.0 (FFmpeg 7.1.1 minimal LGPL build for yt-dlp)",
+      "source": "https://github.com/Abdullah-Masood-05/ffmpeg-ytdl-minimal-build/releases/tag/v1.1.0",
+      "pinned": true,
+      "windows": {
+        "url": "https://github.com/Abdullah-Masood-05/ffmpeg-ytdl-minimal-build/releases/download/v1.1.0/ffmpeg-windows-x86_64.exe",
+        "sha256": "f67d12822799b5a59baaa8b7e8ea656304877e35ce8f2c1c4f532b85752808bf"
+      },
+      "linux": {
+        "url": "https://github.com/Abdullah-Masood-05/ffmpeg-ytdl-minimal-build/releases/download/v1.1.0/ffmpeg-linux-x86_64",
+        "sha256": "52e8386640a160cf4719e353b563241f8ea37903c391abe31f15d353a78787ce"
+      },
+      "macos": {
+        "url": "https://github.com/Abdullah-Masood-05/ffmpeg-ytdl-minimal-build/releases/download/v1.1.0/ffmpeg-macos-arm64",
+        "sha256": "682dddcb68d18e2984e794b8f2397748a78f2b970148a62f44a7afbafc087889"
+      }
+    },
+    "keepsake-qjs": {
+      "version": "v0.18.0 (QuickJS-NG)",
+      "source": "https://github.com/quickjs-ng/quickjs/releases/tag/v0.18.0",
+      "pinned": true,
+      "windows": {
+        "url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.18.0/qjs-windows-x86_64.exe",
+        "sha256": "ff03398d74ea6e6bd3a8e58058f7003225abcac229d7d57775b7aaae812a49c7"
+      },
+      "linux": {
+        "url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.18.0/qjs-linux-x86_64",
+        "sha256": "85ded23b9fabe8c1644fc40a8d2bbdd71157affcbd807359c618cc717ee24d7d"
+      },
+      "macos": {
+        "url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.18.0/qjs-darwin-arm64",
+        "sha256": "91fe89916d3b0a6c01c4dc8382a99c3c1fd91ecfc214aa81ca051902bcce590d"
+      }
+    }
+  }
+}

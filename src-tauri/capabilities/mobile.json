@@ -1,0 +1,62 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Main window on Android. No window-control or shell permissions; yt-dlp is not available on Android.",
+  "windows": ["main"],
+  "platforms": ["android"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-theme",
+    "dialog:allow-open",
+    "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        { "path": "$DOWNLOAD" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$VIDEO/**" },
+        { "path": "$AUDIO/**" }
+      ]
+    },
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://youtube.com" },
+        { "url": "https://*.youtube.com" },
+        { "url": "https://youtu.be" },
+        { "url": "https://*.googlevideo.com" },
+        { "url": "https://youtubei.googleapis.com" },
+        { "url": "https://*.ytimg.com" },
+        { "url": "https://*.ggpht.com" },
+        { "url": "https://*.googleusercontent.com" }
+      ]
+    },
+    "keepsake-media:allow-transcode",
+    "fs:default",
+    "fs:allow-open",
+    "fs:allow-write",
+    "fs:allow-write-file",
+    "fs:allow-read-file",
+    "fs:allow-mkdir",
+    "fs:allow-exists",
+    "fs:allow-stat",
+    "fs:allow-rename",
+    "fs:allow-remove",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$DOWNLOAD" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$VIDEO" },
+        { "path": "$VIDEO/**" },
+        { "path": "$AUDIO" },
+        { "path": "$AUDIO/**" },
+        { "path": "$APPDATA" },
+        { "path": "$APPDATA/**" },
+        { "path": "$APPCACHE" },
+        { "path": "$APPCACHE/**" }
+      ]
+    }
+  ]
+}

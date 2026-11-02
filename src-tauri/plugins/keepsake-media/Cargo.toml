@@ -1,0 +1,20 @@
+[package]
+name = "tauri-plugin-keepsake-media"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+description = "Keepsake Android audio transcoding on platform MediaExtractor/MediaCodec/MediaMuxer."
+publish = false
+# tauri-plugin's build step requires `links` to be set and to match the package name.
+links = "tauri-plugin-keepsake-media"
+
+[lib]
+name = "tauri_plugin_keepsake_media"
+path = "src/lib.rs"
+
+[dependencies]
+tauri = { version = "2.12", default-features = false }
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+tauri-plugin = { version = "2.7", features = ["build"] }

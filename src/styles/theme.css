@@ -1,0 +1,813 @@
+@import "tailwindcss";
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+/*
+ * Tokens from UI_THEME_MOTION.md section 1.
+ * :root carries the shared scale tokens (spacing, radius, type, touch, safe area)
+ * and the light palette. The dark palette applies when the OS prefers dark and the
+ * app has not forced light, or when the app sets data-theme="dark" (settings.ts
+ * always resolves "system" to an explicit data-theme, and index.html starts dark).
+ */
+:root {
+  /* Spacing scale (4px grid). Tailwind's own --spacing is untouched. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  /* Radii. The organic surfaces (.card, .shape-*) keep one tighter corner. */
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --radius-pill: 999px;
+  /* Type scale (prefixed --fs- so Tailwind's --text-* sizes are not overridden). */
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 15px;
+  --fs-xl: 16px;
+  --lh-tight: 16px;
+  --lh-base: 20px;
+  --lh-loose: 22px;
+  --font-ui: system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", "Cantarell", "Ubuntu",
+    "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-code: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono",
+    monospace;
+  /* Touch and layout. --touch-min is the phone hit-area floor (.hit, .touch-row). */
+  --touch-min: 44px;
+  --tabbar-h: 64px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  /* Motion. */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 280ms;
+  /* Chart ramp (same in both themes). */
+  --chart-1: #e0634c;
+  --chart-2: #f09b86;
+  --chart-3: #883430;
+  --chart-4: #e3c3b9;
+
+  /* Light palette (default when nothing selects dark). */
+  --bg-app: #f6f6f7;
+  --bg-sidebar: #eeedec;
+  --bg-card: #ffffff;
+  --bg-card-hover: #ffffff;
+  --bg-inset: #f3f1f0;
+  --bg-card-tint: #fbe7e2;
+  --bg-card-tint-strong: #e0634c;
+  --border: #e4e1df;
+  --border-strong: #cfcac7;
+  --text-primary: #181615;
+  --text-secondary: #6a6461;
+  --text-muted: #9a9491;
+  --accent: #e0634c;
+  --accent-hover: #d45740;
+  --accent-active: #bf4b36;
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(224, 99, 76, 0.12);
+  --accent-border: rgba(224, 99, 76, 0.5);
+  --success: #1f9d63;
+  --warning: #b97812;
+  --danger: #d93036;
+  --focus-ring: #c8533e;
+  --shadow-card: 0 1px 2px rgba(24, 22, 21, 0.06), 0 4px 12px rgba(24, 22, 21, 0.04);
+  --shadow-lift: 0 2px 4px rgba(24, 22, 21, 0.06), 0 12px 28px rgba(24, 22, 21, 0.1);
+  --shadow-pop: 0 16px 48px rgba(24, 22, 21, 0.18);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg-app: #0b0908;
+    --bg-sidebar: #0f0e0d;
+    --bg-card: #151413;
+    --bg-card-hover: #1a1817;
+    --bg-inset: #1d1b1a;
+    --bg-card-tint: #3a1f1a;
+    --bg-card-tint-strong: #a94a37;
+    --border: #262322;
+    --border-strong: #3a3533;
+    --text-primary: #f2f0ef;
+    --text-secondary: #8f8a88;
+    --text-muted: #5e5957;
+    --accent: #e0634c;
+    --accent-hover: #ea735c;
+    --accent-active: #c8533e;
+    --accent-fg: #ffffff;
+    --accent-soft: rgba(224, 99, 76, 0.16);
+    --accent-border: rgba(224, 99, 76, 0.45);
+    --success: #4fbf8a;
+    --warning: #e8a94a;
+    --danger: #e5484d;
+    --focus-ring: #f08a75;
+    --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 24px rgba(0, 0, 0, 0.35);
+    --shadow-lift: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 14px 32px rgba(0, 0, 0, 0.5);
+    --shadow-pop: 0 16px 48px rgba(0, 0, 0, 0.6);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg-app: #0b0908;
+  --bg-sidebar: #0f0e0d;
+  --bg-card: #151413;
+  --bg-card-hover: #1a1817;
+  --bg-inset: #1d1b1a;
+  --bg-card-tint: #3a1f1a;
+  --bg-card-tint-strong: #a94a37;
+  --border: #262322;
+  --border-strong: #3a3533;
+  --text-primary: #f2f0ef;
+  --text-secondary: #8f8a88;
+  --text-muted: #5e5957;
+  --accent: #e0634c;
+  --accent-hover: #ea735c;
+  --accent-active: #c8533e;
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(224, 99, 76, 0.16);
+  --accent-border: rgba(224, 99, 76, 0.45);
+  --success: #4fbf8a;
+  --warning: #e8a94a;
+  --danger: #e5484d;
+  --focus-ring: #f08a75;
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-lift: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 14px 32px rgba(0, 0, 0, 0.5);
+  --shadow-pop: 0 16px 48px rgba(0, 0, 0, 0.6);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-app: var(--bg-app);
+  --color-sidebar: var(--bg-sidebar);
+  --color-card: var(--bg-card);
+  --color-card-hover: var(--bg-card-hover);
+  --color-inset: var(--bg-inset);
+  --color-tint: var(--bg-card-tint);
+  --color-tint-strong: var(--bg-card-tint-strong);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-fg: var(--text-primary);
+  --color-fg-2: var(--text-secondary);
+  --color-fg-3: var(--text-muted);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-active: var(--accent-active);
+  --color-on-accent: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-border: var(--accent-border);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-ring: var(--focus-ring);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --shadow-card: var(--shadow-card);
+  --shadow-lift: var(--shadow-lift);
+  --shadow-pop: var(--shadow-pop);
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-code);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+/* Full-height containers follow the dynamic viewport (Android system bars, keyboard). */
+@supports (height: 100dvh) {
+  body,
+  #root {
+    height: 100dvh;
+  }
+}
+
+html {
+  background: var(--bg-app);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* Android WebView: no grey flash on tap. */
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  line-height: var(--lh-base);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  /* No pull-to-refresh / rubber-band on the page itself. */
+  overscroll-behavior: none;
+}
+
+/* Buttons and button-like controls never start a text selection on long-press. */
+button,
+[role="button"],
+[role="tab"],
+[role="radio"],
+[role="switch"],
+[role="option"],
+[role="combobox"],
+[role="menuitem"] {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+input,
+textarea,
+.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* One focus ring for every control; pointer focus stays quiet. */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/*
+ * Touch targets. `.hit` adds an invisible, centered hit area of at least
+ * --touch-min on phones / coarse pointers without changing the visual size.
+ * In @layer components so a caller's `absolute` utility still wins.
+ */
+@layer components {
+  .hit {
+    position: relative;
+  }
+}
+@media (max-width: 759.98px), (pointer: coarse) {
+  .hit::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(100%, var(--touch-min));
+    height: max(100%, var(--touch-min));
+    transform: translate(-50%, -50%);
+  }
+  /* List rows (dropdown options) grow to the minimum outright. */
+  .touch-row {
+    min-height: var(--touch-min);
+  }
+}
+
+/* Modal panels (Dialog, Sheet, ActionModal): cap height; utilities may tighten it. */
+@layer components {
+  .modal-panel {
+    max-height: 85vh;
+    max-height: 85dvh;
+  }
+}
+[role="dialog"],
+[role="listbox"],
+.modal-panel {
+  overscroll-behavior: contain;
+}
+
+/* Phone toast stack: above the TabBar and the bottom safe-area inset. */
+.toast-stack-phone {
+  bottom: calc(var(--tabbar-h) + var(--safe-bottom) + var(--space-3));
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Surfaces. Corners are deliberately uneven (the bottom-left corner is tighter),
+ * like a torn-edge note rather than a template tile. Hover work is CSS-only.
+ */
+.card {
+  position: relative;
+  isolation: isolate;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 22px 22px 22px 10px;
+  box-shadow: var(--shadow-card);
+  transition:
+    border-color 240ms,
+    box-shadow 280ms,
+    background-color 240ms;
+}
+/* Soft inner highlight: a faint light pooled in the top-left, behind the content. */
+.card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(120% 70% at 0% 0%, rgba(255, 255, 255, 0.04), transparent 62%);
+}
+[data-theme="light"] .card::after {
+  background: radial-gradient(120% 70% at 0% 0%, var(--accent-soft), transparent 55%);
+  opacity: 0.35;
+}
+
+/* Organic shape family. Every surface keeps one corner tighter than the rest. */
+.shape-leaf {
+  border-radius: 26px 10px 26px 10px;
+}
+.shape-drop {
+  border-radius: 24px 24px 8px 24px;
+}
+.shape-tab {
+  border-radius: 10px 24px 24px 24px;
+}
+.shape-pebble {
+  border-radius: 46% 54% 52% 48% / 52% 46% 54% 48%;
+}
+/* Layered rim: a faint top light that becomes an accent wash on hover. */
+.card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: linear-gradient(170deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0) 42%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0.8;
+  transition: opacity 280ms;
+}
+.card-interactive:hover {
+  border-color: var(--border-strong);
+  box-shadow:
+    var(--shadow-lift),
+    0 0 0 1px transparent,
+    0 22px 44px -22px var(--accent-soft);
+}
+.card-interactive:hover::before {
+  opacity: 1;
+  background: linear-gradient(170deg, var(--accent-border), transparent 55%);
+}
+
+/*
+ * CSS-only lift for list/grid tiles that are already motion elements (their
+ * transform belongs to the enter animation). Uses `translate`, so it composes.
+ */
+.card-lift {
+  transition:
+    translate 320ms var(--ease-spring),
+    border-color 240ms,
+    box-shadow 280ms,
+    background-color 240ms;
+}
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .card-lift:hover {
+    translate: 0 -3px;
+  }
+}
+
+/* Sticky note: a short tinted callout with one tapered corner. */
+.sticky-note {
+  background: var(--bg-card-tint);
+  color: var(--text-primary);
+  border: 1px solid var(--accent-border);
+  border-radius: 6px 18px 18px 18px;
+  box-shadow: var(--shadow-card);
+  transform: rotate(-0.6deg);
+}
+
+/* Toast countdown bar, paused on hover via animation-play-state. */
+@keyframes toast-timer {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+.card-tint {
+  background: var(--bg-card-tint-strong);
+  color: var(--accent-fg);
+  border-color: transparent;
+}
+.card-tint:hover {
+  border-color: var(--accent-border);
+}
+
+.bento {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  grid-auto-rows: 88px;
+  gap: 16px;
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-inset) 0%, var(--border) 50%, var(--bg-inset) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+  border-radius: var(--radius-sm);
+}
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: spin 0.7s linear infinite;
+}
+
+.scroll-y {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+/* Safe-area hooks (index.html sets viewport-fit=cover, so insets are real on Android). */
+.safe-bottom {
+  padding-bottom: var(--safe-bottom);
+}
+.safe-top {
+  padding-top: var(--safe-top);
+}
+.safe-x {
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+}
+
+/*
+ * Hover icon language. <Icon animated> inside an `.icon-host` (Button, IconButton,
+ * nav items, search fields) plays a motion that says what the action does.
+ * Hover-capable pointers only, so taps on phones never leave an icon stuck mid-pose;
+ * keyboard focus plays the same motion. Off entirely under reduced motion.
+ * Part transforms use the 24px viewBox as their box, so origins are in icon units.
+ */
+.icon-anim path {
+  transform-box: view-box;
+  transform-origin: 12px 12px;
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .icon-anim,
+  .icon-anim path {
+    transition: transform 320ms var(--ease-spring);
+  }
+
+  /* Whole-glyph poses held while hovered. */
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="settings"] {
+    transform: rotate(60deg);
+    transition-duration: 520ms;
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="retry"] {
+    transform: rotate(180deg);
+    transition-duration: 560ms;
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="link"] {
+    transform: rotate(-18deg);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="x"],
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="plus"] {
+    transform: rotate(90deg);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="minus"] {
+    transform: scaleX(1.25);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="sun"] {
+    transform: rotate(45deg);
+    transition-duration: 520ms;
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="chevronLeft"] {
+    transform: translateX(-2px);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="chevronRight"] {
+    transform: translateX(2px);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="chevronDown"] {
+    transform: translateY(2px);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim:is([data-icon="monitor"], [data-icon="database"]) {
+    transform: translateY(-1.5px);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim:is([data-icon="image"], [data-icon="grid"]) {
+    transform: scale(1.1);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="globe"] {
+    transform: rotate(-20deg);
+    transition-duration: 520ms;
+  }
+
+  /* Single-part poses. */
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="home"] .ip-0 {
+    transform: translateY(-1.5px);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="library"] .ip-1 {
+    transform-origin: 11px 19px;
+    transform: rotate(7deg);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="folder"] .ip-0 {
+    transform-origin: 3px 9px;
+    transform: translateY(-1px) rotate(-7deg);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="open"] .ip-0 {
+    transform: translate(1.5px, -1.5px);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="trash"] .ip-0 {
+    transform-origin: 4px 7px;
+    transform: translateY(-1px) rotate(-14deg);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="copy"] .ip-0 {
+    transform: translate(1px, 1px);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="copy"] .ip-1 {
+    transform: translate(-1px, -1px);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="video"] .ip-1 {
+    transform: translateX(1.5px);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="clock"] .ip-1 {
+    transform: rotate(360deg);
+    transition-duration: 760ms;
+  }
+
+  /* One-shot motions: play once on enter, then settle. */
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="download"] .ip-0 {
+    animation: ic-drop 520ms var(--ease-spring);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="search"] {
+    animation: ic-wiggle 520ms ease-in-out;
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim:is([data-icon="clipboard"], [data-icon="audio"]) {
+    animation: ic-bounce 560ms ease-out;
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="moon"] {
+    animation: ic-rock 600ms ease-in-out;
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="alert"] {
+    animation: ic-shake 420ms ease-in-out;
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim:is([data-icon="check"], [data-icon="more"]) {
+    animation: ic-pop 380ms var(--ease-spring);
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="bolt"] {
+    animation: ic-flash 420ms ease-out;
+  }
+  .icon-host:is(:hover, :focus-visible) .icon-anim[data-icon="list"] {
+    animation: ic-nudge 420ms ease-out;
+  }
+}
+
+@keyframes ic-drop {
+  0%,
+  100% {
+    transform: none;
+  }
+  45% {
+    transform: translateY(2.5px);
+  }
+}
+@keyframes ic-wiggle {
+  0%,
+  100% {
+    transform: none;
+  }
+  25% {
+    transform: rotate(-14deg);
+  }
+  55% {
+    transform: rotate(10deg);
+  }
+  80% {
+    transform: rotate(-4deg);
+  }
+}
+@keyframes ic-bounce {
+  0%,
+  100% {
+    transform: none;
+  }
+  30% {
+    transform: translateY(-2.5px);
+  }
+  60% {
+    transform: translateY(0.5px);
+  }
+  80% {
+    transform: translateY(-0.75px);
+  }
+}
+@keyframes ic-rock {
+  0%,
+  100% {
+    transform: none;
+  }
+  35% {
+    transform: rotate(-16deg);
+  }
+  70% {
+    transform: rotate(6deg);
+  }
+}
+@keyframes ic-shake {
+  0%,
+  100% {
+    transform: none;
+  }
+  20%,
+  60% {
+    transform: translateX(-1.5px);
+  }
+  40%,
+  80% {
+    transform: translateX(1.5px);
+  }
+}
+@keyframes ic-pop {
+  0%,
+  100% {
+    transform: none;
+  }
+  50% {
+    transform: scale(1.2);
+  }
+}
+@keyframes ic-flash {
+  0%,
+  100% {
+    transform: none;
+    opacity: 1;
+  }
+  35% {
+    transform: scale(1.15);
+    opacity: 0.55;
+  }
+}
+@keyframes ic-nudge {
+  0%,
+  100% {
+    transform: none;
+  }
+  45% {
+    transform: translateX(2px);
+  }
+}
+
+/* Empty-state badge: a slow breathe so a blank page still feels alive. */
+@media (prefers-reduced-motion: no-preference) {
+  .breathe {
+    animation: breathe 3.2s ease-in-out infinite;
+  }
+}
+@keyframes breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--accent-soft);
+  }
+  50% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/*
+ * Layered glyphs (Glyph.tsx). A relative host holds separate absolute SVG parts:
+ * an organic halo, a dashed orbit, a spark and a dot. On hover each part moves on
+ * its own (halo turns, orbit spins in, spark flies out, dot drifts), while the core
+ * icon keeps its own .icon-anim pose. Hover-capable pointers and keyboard focus only.
+ */
+.glyph > svg {
+  pointer-events: none;
+}
+.glyph-halo {
+  color: var(--accent);
+  opacity: 0.13;
+  transform: scale(0.94);
+}
+.glyph[data-on="true"] .glyph-halo {
+  opacity: 0.22;
+  transform: scale(1);
+}
+.glyph-orbit,
+.glyph-spark,
+.glyph-dot {
+  color: var(--accent);
+  opacity: 0;
+}
+.glyph-orbit {
+  transform: scale(0.82) rotate(-40deg);
+}
+.glyph-spark {
+  transform: translate(-4px, 4px) scale(0.3) rotate(-45deg);
+}
+.glyph-dot {
+  transform: translate(4px, -4px) scale(0.4);
+}
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .glyph > svg,
+  .glyph-core {
+    transition:
+      transform 420ms var(--ease-spring),
+      opacity 260ms ease-out;
+  }
+  .glyph-host:is(:hover, :focus-visible) .glyph-halo {
+    opacity: 0.24;
+    transform: scale(1.06) rotate(-14deg);
+  }
+  .glyph-host:is(:hover, :focus-visible) .glyph-orbit {
+    opacity: 0.55;
+    transform: scale(1) rotate(30deg);
+    transition-duration: 640ms, 260ms;
+  }
+  .glyph-host:is(:hover, :focus-visible) .glyph-spark {
+    opacity: 0.95;
+    transform: translate(0, 0) scale(1) rotate(45deg);
+    transition-delay: 40ms;
+  }
+  .glyph-host:is(:hover, :focus-visible) .glyph-dot {
+    opacity: 0.7;
+    transform: translate(0, 0) scale(1);
+    transition-delay: 90ms;
+  }
+  .glyph-host:is(:hover, :focus-visible) .glyph-core {
+    transform: translateY(-1px);
+  }
+}
+
+/* Pill tab bar: the active thumb has a notch bitten out of its lower edge, with an accent bead seated in it. */
+.notch-thumb {
+  -webkit-mask: radial-gradient(circle 6px at 50% calc(100% + 2px), transparent 5.5px, #000 6px);
+  mask: radial-gradient(circle 6px at 50% calc(100% + 2px), transparent 5.5px, #000 6px);
+}
+
+/* Tag badge: rounded on the left, tapered to a point on the right. */
+.tag-badge {
+  border-radius: 7px 0 0 7px;
+  padding-right: 12px;
+  clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 50%, calc(100% - 7px) 100%, 0 100%);
+}
+
+/* Stat card corner ornament (SVG arc) and chart bars. */
+.stat-ornament {
+  color: var(--accent);
+  opacity: 0.18;
+  transform-origin: 100% 0;
+}
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .stat-ornament {
+    transition:
+      transform 520ms var(--ease-spring),
+      opacity 260ms;
+  }
+  .glyph-host:hover .stat-ornament {
+    opacity: 0.32;
+    transform: rotate(-8deg) scale(1.08);
+  }
+}
+.chart-bar {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+}
+
+/* On the accent-tinted card the glyph parts switch to the on-accent ink. */
+.card-tint :is(.glyph-halo, .glyph-orbit, .glyph-spark, .glyph-dot, .stat-ornament) {
+  color: var(--accent-fg);
+}

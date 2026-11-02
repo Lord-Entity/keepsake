@@ -1,0 +1,47 @@
+{
+  "name": "keepsake",
+  "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "version": "2.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tsc --noEmit && vite build",
+    "tauri": "tauri",
+    "lint": "oxlint src",
+    "typecheck": "tsc --noEmit",
+    "binaries": "powershell -ExecutionPolicy Bypass -File scripts/fetch-binaries.ps1",
+    "dev:web": "vite",
+    "build:windows": "tauri build --bundles nsis",
+    "build:linux": "tauri build --bundles deb,rpm,appimage",
+    "build:desktop": "tauri build",
+    "android:init": "tauri android init",
+    "android:dev": "tauri android dev",
+    "build:android": "tauri android build --apk --target aarch64",
+    "build:android:split": "tauri android build --apk --split-per-abi",
+    "build:android:universal": "tauri android build --apk",
+    "build:android:arm64": "tauri android build --apk --target aarch64"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.12.4",
+    "@tauri-apps/plugin-dialog": "2.8.3",
+    "@tauri-apps/plugin-fs": "2.7.1",
+    "@tauri-apps/plugin-http": "2.8.3",
+    "@tauri-apps/plugin-opener": "2.7.2",
+    "motion": "14.6.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "youtubei.js": "18.3.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@tauri-apps/cli": "2.12.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "oxlint": "1.89.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "8.3.5"
+  }
+}

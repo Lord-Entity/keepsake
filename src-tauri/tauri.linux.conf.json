@@ -1,0 +1,24 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Keepsake",
+        "width": 1200,
+        "height": 780,
+        "minWidth": 960,
+        "minHeight": 640,
+        "visible": false,
+        "decorations": true,
+        "backgroundColor": "#0B0908",
+        "center": true
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["deb", "rpm", "appimage"],
+    "linux": {
+      "appimage": { "bundleMediaFramework": false }
+    }
+  }
+}

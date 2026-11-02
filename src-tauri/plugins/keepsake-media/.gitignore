@@ -1,0 +1,5 @@
+# Written by tauri-plugin's build script / Gradle on every Android build.
+/target
+/android/.tauri
+/android/build
+/android/.gradle

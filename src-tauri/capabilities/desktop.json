@@ -1,0 +1,69 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop",
+  "description": "Main window on Windows and Linux. No shell permissions: yt-dlp runs only through the run_ytdlp app command.",
+  "windows": ["main"],
+  "platforms": ["windows", "linux"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized",
+    "core:window:allow-close",
+    "core:window:allow-theme",
+    "dialog:allow-open",
+    "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        { "path": "$DOWNLOAD" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$VIDEO/**" },
+        { "path": "$AUDIO/**" }
+      ]
+    },
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://youtube.com" },
+        { "url": "https://*.youtube.com" },
+        { "url": "https://youtu.be" },
+        { "url": "https://*.googlevideo.com" },
+        { "url": "https://youtubei.googleapis.com" },
+        { "url": "https://*.ytimg.com" },
+        { "url": "https://*.ggpht.com" },
+        { "url": "https://*.googleusercontent.com" }
+      ]
+    },
+    "fs:default",
+    "fs:allow-open",
+    "fs:allow-write",
+    "fs:allow-write-file",
+    "fs:allow-read-file",
+    "fs:allow-mkdir",
+    "fs:allow-exists",
+    "fs:allow-stat",
+    "fs:allow-rename",
+    "fs:allow-remove",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$DOWNLOAD" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$VIDEO" },
+        { "path": "$VIDEO/**" },
+        { "path": "$AUDIO" },
+        { "path": "$AUDIO/**" },
+        { "path": "$APPDATA" },
+        { "path": "$APPDATA/**" },
+        { "path": "$APPCACHE" },
+        { "path": "$APPCACHE/**" }
+      ]
+    }
+  ]
+}

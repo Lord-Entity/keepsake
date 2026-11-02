@@ -1,0 +1,401 @@
+# Single source of truth for Keepsake cloud builds.
+#
+#   check    typecheck, lint, bun tests (if any), frontend build, cargo test
+#   windows  NSIS installer                      (needs: check)
+#   linux    deb, rpm, AppImage                  (needs: check)
+#   android  arm64-v8a split APK, test-signed    (needs: check)
+#   release  draft GitHub Release, v* tags only  (needs: windows, linux, android)
+#
+# Every build job writes artifact sizes to its job summary.
+# Builds are NOT code-signed (see README.md). No signing secrets are used here.
+# Assumes the repository root is the Keepsake folder. If it is a subfolder, set KEEPSAKE_DIR.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel a run when a newer commit lands on the same branch, PR or tag.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  KEEPSAKE_DIR: .
+  BUN_VERSION: "1.4.4" # same as the local dev machine and docker/android/Dockerfile
+  # Rust is pinned to 1.90.0 (MSRV in src-tauri/Cargo.toml) via dtolnay/rust-toolchain@1.90.0 in every job.
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ env.KEEPSAKE_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # cargo test compiles the Tauri crate, which needs the same system libraries as the Linux build.
+      - name: Linux system packages (Tauri v2 prerequisites)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xz-utils
+
+      - uses: dtolnay/rust-toolchain@1.90.0
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ env.KEEPSAKE_DIR }}/src-tauri -> target
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Lint
+        run: bun run lint
+
+      # bun test exits non-zero when it finds no test files, so only run it when some exist.
+      - name: Unit tests (bun)
+        run: |
+          tests="$(git ls-files '*.test.ts' '*.test.tsx' '*.spec.ts' '*.spec.tsx' '*_test.ts' '*_spec.ts' | grep -v -e '^node_modules/' -e '^src-tauri/' || true)"
+          if [ -z "$tests" ]; then
+            echo "No bun test files found; skipping."
+          else
+            echo "$tests"
+            bun test
+          fi
+
+      # Produces dist/ (frontendDist) so the Rust crate compiles the same way as in a release build.
+      - name: Frontend build
+        run: bun run build
+
+      # tauri-build copies every externalBin sidecar at compile time, so it fails if they are missing.
+      # Unit tests never run them, so empty placeholders named from tauri.conf.json are enough.
+      - name: Placeholder sidecars for cargo test
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p src-tauri/binaries
+          for bin in $(jq -r '.bundle.externalBin[]' src-tauri/tauri.conf.json); do
+            touch "src-tauri/$bin-$triple"
+            chmod +x "src-tauri/$bin-$triple"
+            echo "placeholder: src-tauri/$bin-$triple"
+          done
+
+      - name: cargo test
+        working-directory: ${{ env.KEEPSAKE_DIR }}/src-tauri
+        run: cargo test
+
+  windows:
+    needs: check
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: ${{ env.KEEPSAKE_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # Sidecar names must match the host triple Tauri sees.
+      - name: Check the MSVC host triple
+        run: |
+          $hostTriple = (rustc -vV | Select-String '^host: ').Line.Substring(6).Trim()
+          Write-Host "rustc $(rustc --version), host: $hostTriple"
+          if ($hostTriple -ne 'x86_64-pc-windows-msvc') { throw "expected msvc host, got $hostTriple" }
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ env.KEEPSAKE_DIR }}/src-tauri -> target
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      # Downloads yt-dlp, ffmpeg and qjs into src-tauri/binaries and verifies each sha256.
+      - name: Fetch sidecars (sha256-verified)
+        run: ./scripts/fetch-binaries.ps1 -Triple x86_64-pc-windows-msvc
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build installer (NSIS)
+        run: bun run tauri build --bundles nsis
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keepsake-windows-nsis
+          path: ${{ env.KEEPSAKE_DIR }}/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+      - name: Size report
+        run: |
+          $rows = @()
+          $files = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe) + @(Get-ChildItem src-tauri/binaries -File)
+          foreach ($f in $files) {
+            $rows += "| $($f.Name) | $([math]::Round($f.Length / 1MB, 2)) MB | $($f.Length) |"
+          }
+          $files | Format-Table Name, Length -AutoSize | Out-String | Write-Host
+          $md = @("### Windows sizes", "", "| File | Size | Bytes |", "|---|---|---|") + $rows
+          $md -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+  linux:
+    needs: check
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ env.KEEPSAKE_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux system packages (Tauri v2 prerequisites)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf xz-utils
+
+      - uses: dtolnay/rust-toolchain@1.90.0
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ env.KEEPSAKE_DIR }}/src-tauri -> target
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      # Downloads yt-dlp, ffmpeg and qjs into src-tauri/binaries and verifies each sha256.
+      - name: Fetch sidecars (sha256-verified)
+        run: bash scripts/fetch-binaries.sh x86_64-unknown-linux-gnu
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build packages (deb, rpm, AppImage)
+        run: bun run tauri build --bundles deb,rpm,appimage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keepsake-linux-deb
+          path: ${{ env.KEEPSAKE_DIR }}/src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keepsake-linux-rpm
+          path: ${{ env.KEEPSAKE_DIR }}/src-tauri/target/release/bundle/rpm/*.rpm
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keepsake-linux-appimage
+          path: ${{ env.KEEPSAKE_DIR }}/src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+      - name: Size report
+        run: |
+          B=src-tauri/target/release/bundle
+          ls -l $B/deb/*.deb $B/rpm/*.rpm $B/appimage/*.AppImage src-tauri/binaries
+          {
+            echo "### Linux sizes"
+            echo ""
+            echo "| File | Size | Bytes |"
+            echo "|---|---|---|"
+            for f in $B/deb/*.deb $B/rpm/*.rpm $B/appimage/*.AppImage src-tauri/binaries/*; do
+              [ -f "$f" ] || continue
+              bytes=$(stat -c %s "$f")
+              echo "| $(basename "$f") | $(numfmt --to=iec --suffix=B "$bytes") | $bytes |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # No fetch-binaries here: tauri.android.conf.json sets "externalBin": [] (no sidecars).
+  # Builds a RELEASE arm64-v8a APK (realistic size) and signs it with a throwaway key generated
+  # in this job, the same way docker/android/build.sh does without /keys. TEST ONLY: each run has
+  # a new key, so a newer CI APK will not install over an older one without uninstalling first.
+  android:
+    needs: check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ env.KEEPSAKE_DIR }}
+    env:
+      NDK_VERSION: "27.2.12479018"
+      BUILD_TOOLS: "37.0.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # We do not use android-actions/setup-android: its startup runs `sdkmanager tools`, which
+      # fails on current SDK package indexes ("Failed to find package 'tools'"). The runner image
+      # already ships the Android SDK, so install the packages we need straight into it.
+      - name: Install Android platform, build tools and NDK
+        run: |
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(command -v sdkmanager)"; fi
+          echo "Using $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          # The preinstalled cmdline-tools is too old to see new platforms. Update it first.
+          "$SDKMANAGER" --install "cmdline-tools;latest" || true
+          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          # API 37+ packages use a minor version (android-37.0). Must match the generated Gradle
+          # project: Tauri CLI 2.12 writes compileSdk = 37 / targetSdk = 37.
+          "$SDKMANAGER" --install "platform-tools" "build-tools;$BUILD_TOOLS" "platforms;android-37.0" "ndk;$NDK_VERSION"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$SDK/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$SDK/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      # arm64-only build, so only the aarch64 Rust target is needed.
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          targets: aarch64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ env.KEEPSAKE_DIR }}/src-tauri -> target
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      # src-tauri/gen is git-ignored, so the Android project is generated on every run.
+      - name: tauri android init
+        run: bun run tauri android init --ci
+
+      - name: Build release APK (arm64-v8a, split per ABI)
+        run: bun run tauri android build --apk --split-per-abi --target aarch64 --ci
+
+      # Release APKs come out unsigned. Sign with a key generated here (no secrets involved).
+      - name: Test-sign APK
+        run: |
+          BT="$ANDROID_HOME/build-tools/$BUILD_TOOLS"
+          KS="$RUNNER_TEMP/ci-test.keystore"
+          keytool -genkeypair -keystore "$KS" -storepass android -keypass android -alias ci-test \
+            -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Keepsake CI test key,O=Keepsake,C=US" > /dev/null
+          OUT=apk-out
+          rm -rf "$OUT" && mkdir -p "$OUT"
+          VERSION="$(jq -r .version src-tauri/tauri.conf.json)"
+          found=0
+          while IFS= read -r f; do
+            found=1
+            name="$(basename "$f" .apk)"
+            case "$name" in
+              *universal*) abi=universal ;;
+              *arm64*)     abi=arm64-v8a ;;
+              *)           abi="$name" ;;
+            esac
+            dest="$OUT/keepsake-$VERSION-$abi-testsigned.apk"
+            "$BT/zipalign" -f -p 4 "$f" "$RUNNER_TEMP/aligned.apk"
+            "$BT/apksigner" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android \
+              --ks-key-alias ci-test --out "$dest" "$RUNNER_TEMP/aligned.apk"
+            rm -f "$RUNNER_TEMP/aligned.apk" "$dest.idsig"
+            "$BT/apksigner" verify "$dest"
+            echo "signed $f -> $dest"
+          done < <(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk')
+          [ "$found" = 1 ] || { echo "no APK produced" >&2; exit 1; }
+
+      - name: APK size report
+        run: |
+          ls -l apk-out
+          ls -lR src-tauri/gen/android/app/build/outputs/apk
+          {
+            echo "### Android sizes"
+            echo ""
+            echo "| File | Size | Bytes |"
+            echo "|---|---|---|"
+            for f in apk-out/*.apk; do
+              bytes=$(stat -c %s "$f")
+              echo "| $(basename "$f") | $(numfmt --to=iec --suffix=B "$bytes") | $bytes |"
+            done
+            echo ""
+            echo "Signed with a per-run CI test key. For testing only; not for distribution."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keepsake-android-apk
+          path: ${{ env.KEEPSAKE_DIR }}/apk-out/*.apk
+          if-no-files-found: error
+
+  # Runs only for version tags (git tag v2.1.0 && git push origin v2.1.0). Collects every
+  # platform artifact into a DRAFT GitHub Release, so you review it before publishing.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: keepsake-*
+          path: release-files
+          merge-multiple: true
+
+      - name: List release files
+        run: |
+          ls -la release-files
+          {
+            echo "### Release files"
+            echo ""
+            echo "| File | Bytes |"
+            echo "|---|---|"
+            for f in release-files/*; do echo "| $(basename "$f") | $(stat -c %s "$f") |"; done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          # Tags with a suffix (v2.1.0-rc.1) are marked pre-release; plain tags (v2.1.0) are production.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: release-files/*
