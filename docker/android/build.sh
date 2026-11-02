@@ -45,6 +45,11 @@ else
   mkdir -p "$GEN_CACHE" && cp -a src-tauri/gen/android "$GEN_CACHE/android"
 fi
 GEN=src-tauri/gen/android
+# Keepsake's launcher icon: copy our mipmap/colour resources over the template's and verify them.
+log "Copying and verifying Keepsake launcher icons"
+RES="$GEN/app/src/main/res"; SRC=src-tauri/icons/android
+mkdir -p "$RES/values" && cp -r "$SRC"/mipmap-* "$RES/" && cp "$SRC/values/ic_launcher_background.xml" "$RES/values/"
+ROOT="$PWD"; ( cd "$SRC" && for f in $(find . -type f); do cmp -s "$f" "$ROOT/$RES/$f" || { echo "launcher icon mismatch: $f" >&2; exit 1; }; done )
 
 SIGNED_BY_GRADLE=0
 cleanup() { rm -f "$WORK/$GEN/keystore.properties"; }

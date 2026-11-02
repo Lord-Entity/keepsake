@@ -1,4 +1,4 @@
-const COMMANDS: &[&str] = &["transcode"];
+const COMMANDS: &[&str] = &["transcode", "open_file"];
 
 fn main() {
     tauri_plugin::Builder::new(COMMANDS)

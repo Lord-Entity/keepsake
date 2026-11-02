@@ -1,5 +1,5 @@
 "$schema" = "schemas/schema.json"
 
 [default]
-description = "Allows the transcode command (Android audio conversion to M4A or WAV)."
-permissions = ["allow-transcode"]
+description = "Allows the transcode command (Android audio conversion to M4A or WAV) and open_file (open a download in another app)."
+permissions = ["allow-transcode", "allow-open-file"]

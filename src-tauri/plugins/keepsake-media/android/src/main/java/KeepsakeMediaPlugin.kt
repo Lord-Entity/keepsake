@@ -1,6 +1,8 @@
 package app.keepsake.media
 
 import android.app.Activity
+import android.content.Intent
+import androidx.core.content.FileProvider
 import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
@@ -32,6 +34,12 @@ class TranscodeArgs {
   lateinit var format: String
   // Accepted for contract stability; neither M4A (stream copy) nor WAV (PCM) uses a bitrate.
   var kbps: Int? = null
+}
+
+/** Arguments of the `openFile` command: {path} (an absolute file path). */
+@InvokeArg
+class OpenArgs {
+  lateinit var path: String
 }
 
 private class MediaError(message: String) : Exception(message)
@@ -93,6 +101,52 @@ class KeepsakeMediaPlugin(private val activity: Activity) : Plugin(activity) {
       }
     }
   }
+
+  /**
+   * Opens a finished download in another app. Other apps can't read a raw file path on
+   * Android 7+, so the file is shared as a content:// URI through FileProvider. The path
+   * must sit inside the same allowed roots as transcode.
+   */
+  @Command
+  fun openFile(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(OpenArgs::class.java)
+    } catch (e: Exception) {
+      invoke.reject("Invalid open arguments: ${e.message}")
+      return
+    }
+    try {
+      val file = checkedPath(args.path, "file")
+      if (!file.isFile) throw MediaError("File not found: ${file.path}")
+      val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.keepsake.fileprovider", file)
+      val intent = Intent(Intent.ACTION_VIEW)
+        .setDataAndType(uri, mimeFor(file.name))
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+      if (intent.resolveActivity(activity.packageManager) == null) {
+        throw MediaError("No app on this device can open ${file.name}.")
+      }
+      activity.startActivity(intent)
+      invoke.resolve(JSObject())
+    } catch (e: Throwable) {
+      invoke.reject(e.message ?: e.toString())
+    }
+  }
+
+  private fun mimeFor(name: String): String =
+    when (name.substringAfterLast('.', "").lowercase(Locale.ROOT)) {
+      "mp4" -> "video/mp4"
+      "webm" -> "video/webm"
+      "mkv" -> "video/x-matroska"
+      "m4a" -> "audio/mp4"
+      "mp3" -> "audio/mpeg"
+      "wav" -> "audio/wav"
+      "opus", "ogg" -> "audio/ogg"
+      "flac" -> "audio/flac"
+      "jpg", "jpeg" -> "image/jpeg"
+      "png" -> "image/png"
+      "webp" -> "image/webp"
+      else -> "*/*"
+    }
 
   // ---------------- path checks ----------------
 

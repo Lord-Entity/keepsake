@@ -33,6 +33,7 @@
       ]
     },
     "keepsake-media:allow-transcode",
+    "keepsake-media:allow-open-file",
     "fs:default",
     "fs:allow-open",
     "fs:allow-write",

@@ -109,11 +109,43 @@ async fn run_native<R: Runtime>(
     Err("Native transcoding (keepsake-media) is only available on Android.".into())
 }
 
+#[derive(Debug, Serialize)]
+struct OpenArgs {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenResponse {}
+
+/// Opens a downloaded file in another app (Android shares it through FileProvider).
+/// Kotlin re-checks that the path is inside the app cache or a download folder.
+#[tauri::command]
+async fn open_file<R: Runtime>(app: AppHandle<R>, path: String) -> Result<(), String> {
+    if !path.starts_with('/') || Path::new(&path).components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(format!("The file path must be absolute and must not contain \"..\": {path:?}"));
+    }
+    run_open(app, OpenArgs { path }).await.map(|_| ())
+}
+
+#[cfg(target_os = "android")]
+async fn run_open<R: Runtime>(app: AppHandle<R>, args: OpenArgs) -> Result<OpenResponse, String> {
+    let handle = app.state::<MediaHandle<R>>().0.clone();
+    handle
+        .run_mobile_plugin_async::<OpenResponse>("openFile", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "android"))]
+async fn run_open<R: Runtime>(_app: AppHandle<R>, _args: OpenArgs) -> Result<OpenResponse, String> {
+    Err("Opening files through keepsake-media is only available on Android.".into())
+}
+
 /// Initializes the plugin. Register it on mobile only:
 /// `#[cfg(mobile)] builder.plugin(tauri_plugin_keepsake_media::init())`.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("keepsake-media")
-        .invoke_handler(tauri::generate_handler![transcode])
+        .invoke_handler(tauri::generate_handler![transcode, open_file])
         .setup(|app, api| {
             #[cfg(target_os = "android")]
             {

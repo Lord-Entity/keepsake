@@ -311,16 +311,44 @@ jobs:
       - name: tauri android init
         run: bun run tauri android init --ci
 
+      # Put Keepsake's launcher icon into the generated project and verify it, so the APK never
+      # ships the template's default icon.
+      - name: Copy and verify Android launcher icons
+        run: |
+          RES=src-tauri/gen/android/app/src/main/res
+          SRC=src-tauri/icons/android
+          mkdir -p "$RES/values"
+          cp -r "$SRC"/mipmap-* "$RES/"
+          cp "$SRC/values/ic_launcher_background.xml" "$RES/values/"
+          ROOT="$PWD"
+          cd "$SRC"
+          for f in $(find . -type f); do
+            cmp -s "$f" "$ROOT/$RES/$f" || { echo "launcher icon mismatch: $f" >&2; exit 1; }
+          done
+          echo "launcher icons copied and verified"
+
       - name: Build release APK (arm64-v8a, split per ABI)
         run: bun run tauri android build --apk --split-per-abi --target aarch64 --ci
 
-      # Release APKs come out unsigned. Sign with a key generated here (no secrets involved).
+      # Release APKs come out unsigned. Sign with ONE stable test key from the repo secrets, so each
+      # build can be installed over the previous one. Without the secrets a throwaway key is
+      # generated and installs over earlier CI builds will fail (uninstall first).
       - name: Test-sign APK
+        env:
+          KS_B64: ${{ secrets.ANDROID_TEST_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_TEST_KEYSTORE_PASSWORD }}
         run: |
           BT="$ANDROID_HOME/build-tools/$BUILD_TOOLS"
           KS="$RUNNER_TEMP/ci-test.keystore"
-          keytool -genkeypair -keystore "$KS" -storepass android -keypass android -alias ci-test \
-            -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Keepsake CI test key,O=Keepsake,C=US" > /dev/null
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ]; then
+            printf '%s' "$KS_B64" | base64 -d > "$KS"
+            PASS="$KS_PASS"; ALIAS=keepsake-test
+          else
+            echo "::warning::ANDROID_TEST_KEYSTORE_B64 / _PASSWORD not set: using a throwaway key. Installing over earlier CI builds will fail."
+            keytool -genkeypair -keystore "$KS" -storepass android -keypass android -alias ci-test \
+              -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Keepsake CI test key,O=Keepsake,C=US" > /dev/null
+            PASS=android; ALIAS=ci-test
+          fi
           OUT=apk-out
           rm -rf "$OUT" && mkdir -p "$OUT"
           VERSION="$(jq -r .version src-tauri/tauri.conf.json)"
@@ -335,8 +363,8 @@ jobs:
             esac
             dest="$OUT/keepsake-$VERSION-$abi-testsigned.apk"
             "$BT/zipalign" -f -p 4 "$f" "$RUNNER_TEMP/aligned.apk"
-            "$BT/apksigner" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android \
-              --ks-key-alias ci-test --out "$dest" "$RUNNER_TEMP/aligned.apk"
+            "$BT/apksigner" sign --ks "$KS" --ks-pass "pass:$PASS" --key-pass "pass:$PASS" \
+              --ks-key-alias "$ALIAS" --out "$dest" "$RUNNER_TEMP/aligned.apk"
             rm -f "$RUNNER_TEMP/aligned.apk" "$dest.idsig"
             "$BT/apksigner" verify "$dest"
             echo "signed $f -> $dest"

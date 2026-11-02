@@ -6,6 +6,8 @@
  * dialog:allow-open, opener:allow-open-path, opener:allow-reveal-item-in-dir.
  */
 import { isTauri } from "@tauri-apps/api/core";
+import { platform } from "../engine/platform";
+import { notify } from "./toast";
 
 export const inTauri = (() => {
   try {
@@ -65,13 +67,50 @@ export async function pickFolder(current?: string): Promise<string | null> {
   }
 }
 
+export interface AndroidFolder {
+  key: "downloads" | "music" | "movies";
+  label: string;
+  path: string;
+}
+
+/**
+ * Folders Keepsake may save to on Android. The system folder picker returns a content://
+ * tree URI that the file APIs cannot write to, so Android users choose from these instead.
+ * Each path sits inside the fs scope in capabilities/mobile.json.
+ */
+export async function androidFolders(): Promise<AndroidFolder[]> {
+  if (!inTauri) return [];
+  try {
+    const { downloadDir, audioDir, videoDir } = await import("@tauri-apps/api/path");
+    const [dl, music, movies] = await Promise.all([downloadDir(), audioDir(), videoDir()]);
+    return [
+      { key: "downloads", label: "Downloads", path: dl },
+      { key: "music", label: "Music", path: music },
+      { key: "movies", label: "Movies", path: movies },
+    ];
+  } catch {
+    return [];
+  }
+}
+
 export async function openFile(path: string): Promise<boolean> {
   if (!inTauri) return false;
   try {
-    const { openPath } = await import("@tauri-apps/plugin-opener");
-    await openPath(path);
+    if (platform() === "android") {
+      // Android needs a content:// URI; the keepsake-media plugin shares the file through FileProvider.
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("plugin:keepsake-media|open_file", { path });
+    } else {
+      const { openPath } = await import("@tauri-apps/plugin-opener");
+      await openPath(path);
+    }
     return true;
-  } catch {
+  } catch (e) {
+    notify({
+      tone: "error",
+      title: "Couldn't open the file",
+      body: e instanceof Error ? e.message : typeof e === "string" ? e : undefined,
+    });
     return false;
   }
 }

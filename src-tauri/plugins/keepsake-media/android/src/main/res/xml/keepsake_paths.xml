@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Folders Keepsake may share with other apps through FileProvider (see openFile). -->
+<paths>
+    <external-path name="downloads" path="Download/" />
+    <external-path name="music" path="Music/" />
+    <external-path name="movies" path="Movies/" />
+    <external-files-path name="app_files" path="." />
+    <external-cache-path name="external_cache" path="." />
+    <cache-path name="cache" path="." />
+</paths>

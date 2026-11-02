@@ -1,5 +1,5 @@
 import { useReducedMotion } from "motion/react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Badge, Dot } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Card, type Span } from "../components/ui/Card";
@@ -13,7 +13,7 @@ import { Switch } from "../components/ui/Switch";
 import { getPlatform, healthOf, refreshBinaries, useBinaries, versionsLine } from "../state/engine";
 import { useWidth } from "../state/hooks";
 import { PAGE_BOTTOM } from "../components/layout/page";
-import { openFile, pickFolder } from "../state/native";
+import { androidFolders, type AndroidFolder, openFile, pickFolder } from "../state/native";
 import {
   clampParallel,
   COOKIE_BROWSERS,
@@ -37,6 +37,10 @@ export function SettingsPage({ phone, onSupportedSites }: { phone: boolean; onSu
   const platform = getPlatform();
   const desktop = platform === "windows" || platform === "linux";
   const [confirmReset, setConfirmReset] = useState(false);
+  const [androidDirs, setAndroidDirs] = useState<AndroidFolder[]>([]);
+  useEffect(() => {
+    if (platform === "android") void androidFolders().then(setAndroidDirs);
+  }, [platform]);
   const reduced = useReducedMotion();
   const ref = useRef<HTMLDivElement>(null);
   const width = useWidth(ref);
@@ -45,24 +49,42 @@ export function SettingsPage({ phone, onSupportedSites }: { phone: boolean; onSu
 
   const downloads = (
     <>
-      <FieldRow label="Save folder" hint={platform === "android" ? "Files are saved to the app's files folder." : undefined}>
+      <FieldRow
+        label="Save folder"
+        hint={platform === "android" ? "Choose where finished downloads are saved." : undefined}
+      >
         <span
           className="selectable max-w-[min(220px,36vw)] min-w-0 truncate font-mono text-[11px] text-fg-2"
           title={s.saveDir || "System Downloads folder"}
         >
           {s.saveDir || "System Downloads"}
         </span>
-        <Button
-          size="sm"
-          icon="folder"
-          className={phone ? "h-11 shrink-0" : "shrink-0"}
-          onClick={async () => {
-            const dir = await pickFolder(s.saveDir);
-            if (dir) updateSettings({ saveDir: dir });
-          }}
-        >
-          Change...
-        </Button>
+        {platform === "android" ? (
+          androidDirs.map((f) => (
+            <Button
+              key={f.key}
+              size="sm"
+              variant={s.saveDir === f.path ? "primary" : "ghost"}
+              className={phone ? "h-11 shrink-0" : "shrink-0"}
+              aria-pressed={s.saveDir === f.path}
+              onClick={() => updateSettings({ saveDir: f.path })}
+            >
+              {f.label}
+            </Button>
+          ))
+        ) : (
+          <Button
+            size="sm"
+            icon="folder"
+            className={phone ? "h-11 shrink-0" : "shrink-0"}
+            onClick={async () => {
+              const dir = await pickFolder(s.saveDir);
+              if (dir) updateSettings({ saveDir: dir });
+            }}
+          >
+            Change...
+          </Button>
+        )}
         {desktop && s.saveDir && (
           <Button size="sm" variant="ghost" icon="open" onClick={() => void openFile(s.saveDir)}>
             Open
