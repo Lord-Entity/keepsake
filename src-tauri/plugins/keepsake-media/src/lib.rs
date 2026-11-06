@@ -167,6 +167,7 @@ pub const YTDLP_YOUTUBE_HOSTS: &[&str] = &[
     "youtube.com",
     "www.youtube.com",
     "m.youtube.com",
+    "music.youtube.com",
     "youtu.be",
 ];
 
@@ -908,14 +909,19 @@ mod tests {
             "https://youtube.com/watch?v=x",
             "https://www.youtube.com/watch?v=x",
             "https://m.youtube.com/watch?v=x",
+            "https://music.youtube.com/watch?v=x",
             "https://youtu.be/x",
+            "https://www.youtube.com/shorts/x",
+            "https://www.youtube.com/live/x",
+            "https://www.youtube.com/embed/x",
             "https://WWW.YouTube.com./shorts/x",
         ] {
             assert!(validate_ytdlp_url(u).is_ok(), "{u}");
         }
         for u in [
             "http://www.youtube.com/watch?v=x",
-            "https://music.youtube.com/watch?v=x",
+            "https://gaming.youtube.com/watch?v=x",
+            "https://music.youtube.com.evil.com/x",
             "https://youtube.com.evil.com/x",
             "https://notyoutube.com/x",
             "https://youtube.com@evil.com/x",

@@ -11,7 +11,7 @@
  *   or convert it in the browser).
  */
 import type { AudioFormat, FormatOption, Platform, ThumbnailFormat, VideoInfo } from "../lib/types";
-import { pickYtdlpFormat } from "./android-ytdlp";
+import { pickYtdlpFormat, rawMaxHeight } from "./android-ytdlp";
 import { platform } from "./platform";
 
 /** Heights offered when the link gives none (playlists): 2160 down to 360 per spec. */
@@ -165,19 +165,37 @@ function thumbOptions(): FormatOption[] {
   }));
 }
 
+const YT_HOSTS = new Set(["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"]);
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
+
+/** AVC (H.264) video that the phone can mux as MP4. */
+const isAvc = (s: { vcodec?: string; ext?: string }) => /^(avc|h264)/i.test(s.vcodec ?? "") && (!s.ext || s.ext === "mp4");
+
 /**
  * Android, TikTok/Instagram (yt-dlp via Chaquopy): single-file http(s) streams only, no height cap, M4A as the only
- * audio option, no thumbnails.
+ * audio option, no thumbnails. YouTube links: AVC MP4 heights <= 1080 only, plus a "desktop app" note row.
  */
 function androidYtdlpOptions(info: VideoInfo): FormatOption[] {
   const out: FormatOption[] = [];
   const progressive = new Set(info.streams.filter((s) => s.kind === "progressive" && s.height).map((s) => s.height!));
   const hasAudioOnly = info.streams.some((s) => s.kind === "audio-only");
   // Video-only heights are usable only when a separate audio stream exists to merge with.
-  const videoOnly = hasAudioOnly
-    ? info.streams.filter((s) => s.kind === "video-only" && s.height).map((s) => s.height!)
-    : [];
-  const heights = [...new Set([...progressive, ...videoOnly])].toSorted((a, b) => b - a);
+  // YouTube: the phone muxes MP4 with AVC only, so keep AVC heights <= 1080 (VP9/AV1 above that is desktop-only).
+  const yt = YT_HOSTS.has(hostOf(info.url).toLowerCase());
+  const videoOnlyStreams = hasAudioOnly ? info.streams.filter((s) => s.kind === "video-only" && s.height) : [];
+  const videoOnly = videoOnlyStreams.filter((s) => !yt || (isAvc(s) && s.height! <= 1080)).map((s) => s.height!);
+  const heights = [...new Set([...progressive, ...videoOnly])]
+    .filter((h) => !yt || h <= 1080)
+    .toSorted((a, b) => b - a);
+  // VP9/AV1 streams above 1080 were filtered out before this info reached here, so read the raw height.
+  const hiddenHigh = yt && (rawMaxHeight.get(info) ?? 0) > 1080;
   if (heights.length > 0) {
     // Default: highest <= 1080, else the lowest available (closest to 1080).
     const found = heights.findIndex((h) => h <= 1080);
@@ -195,6 +213,19 @@ function androidYtdlpOptions(info: VideoInfo): FormatOption[] {
         needsConversion: false,
       }),
     );
+    if (hiddenHigh) {
+      const reason = "1440p and 4K need the desktop app";
+      out.push({
+        id: "video:desktop-only",
+        mode: "video",
+        label: reason,
+        ext: "mp4",
+        isDefault: false,
+        needsMerge: false,
+        needsConversion: false,
+        disabledReason: reason,
+      });
+    }
   } else {
     let path = "";
     try {

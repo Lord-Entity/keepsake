@@ -18,6 +18,12 @@ import urllib.parse
 
 import yt_dlp
 
+try:
+    from keepsake_urls import canonical_youtube_url
+except Exception:  # module missing or broken: keep the original URL rather than fail to load the bridge
+    def canonical_youtube_url(url):
+        return None
+
 MAX_FILESIZE = 500 * 1024 * 1024
 
 BASE = {
@@ -34,10 +40,45 @@ BASE = {
     "noprogress": True,
 }
 
-# EXPERIMENT (YouTube, flagged off on the TS side): these clients need no JS runtime. A PO token may
-# still be required for some videos; there is no guarantee this works. TikTok/Instagram never get these.
+# YouTube only: these clients need no JS runtime. yt-dlp merges the formats of every client in the list.
+# Order: android_vr first (most reliable without a PO token, though it often tops out at 360p), then ios
+# (MP4 AVC/AAC up to 1080p when it works), then mweb (last resort; may need a PO token). A PO token may
+# still be required for some videos; the TS side reports the best height actually returned.
+# TikTok/Instagram never get these options.
 _YT_HOSTS = ("youtube.com", "youtu.be", "youtube-nocookie.com")
-_YT_ARGS = {"youtube": {"player_client": ["visionos", "android_vr"]}}
+_YT_ARGS = {"youtube": {"player_client": ["android_vr", "ios", "mweb"]}}
+
+
+def _host(url):
+    try:
+        return (urllib.parse.urlsplit(str(url)).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return ""
+
+
+def _is_youtube(url):
+    host = _host(url)
+    return any(host == h or host.endswith("." + h) for h in _YT_HOSTS)
+
+
+def _prepare_url(url):
+    """YouTube links become https://www.youtube.com/watch?v=ID; everything else is returned unchanged.
+    A YouTube playlist-only link (list= without a video id) is rejected before yt-dlp walks the list."""
+    if not _is_youtube(url):
+        return url
+    try:
+        canon = canonical_youtube_url(url)
+    except Exception:
+        canon = None
+    if canon:
+        return canon
+    try:
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(str(url)).query)
+    except ValueError:
+        query = {}
+    if query.get("list") or "/playlist" in str(url).lower():
+        raise _Fail("unsupported_url", "Playlists are not supported on Android yet. Open a single video link.")
+    return url
 
 
 def _is_best_video(format_id):
@@ -49,13 +90,11 @@ def _opts_for(url, format_id=None):
     """BASE copy; YouTube hosts additionally get extractor_args and a 10 MiB chunk size
     (and, for a best-video selector, resolution-first format_sort)."""
     o = dict(BASE)
-    try:
-        host = (urllib.parse.urlsplit(str(url)).hostname or "").lower().rstrip(".")
-    except ValueError:
-        host = ""
-    if any(host == h or host.endswith("." + h) for h in _YT_HOSTS):
-        o["extractor_args"] = {"youtube": dict(_YT_ARGS["youtube"])}
+    if _is_youtube(url):
+        o["extractor_args"] = {"youtube": {"player_client": list(_YT_ARGS["youtube"]["player_client"])}}
         o["http_chunk_size"] = 10 * 1024 * 1024
+        # The Android TS side sends concrete format IDs (e.g. "137+140"), so this sort only
+        # applies when a best-style selector ("best", "bestvideo...", "best[...") reaches us.
         if _is_best_video(format_id):
             # Approach adapted from the client's MIT-licensed yt-delp app (Copyright (c) 2026 Abdullah Masood, MIT):
             # sort resolution first, codec second, so 1080p+ is not capped by a codec preference.
@@ -172,6 +211,8 @@ def _reduce_format(f):
         "acodec": _str_or_none(f.get("acodec")),
         "height": _int(f.get("height")),
         "fps": _float(f.get("fps")),
+        "tbr": _float(f.get("tbr")),
+        "abr": _float(f.get("abr")),
         "filesize": _int(f.get("filesize") if f.get("filesize") else f.get("filesize_approx")),
         "protocol": f.get("protocol") or "",
         "format_note": _str_or_none(f.get("format_note")),
@@ -198,6 +239,8 @@ def _reject_playlist(raw):
 
 def info(url):
     try:
+        url = _prepare_url(url)
+        # Every format is returned (reduced); the TS side picks the phone-muxable one.
         with yt_dlp.YoutubeDL(_opts_for(url)) as ydl:
             raw = ydl.sanitize_info(ydl.extract_info(url, download=False))
         _reject_playlist(raw)
@@ -251,6 +294,7 @@ def download(url, format_id, out_dir, file_name, job_id):
     try:
         if job and _is_cancelled(job):
             raise CancelledError("Cancelled by user.")
+        url = _prepare_url(url)
 
         def hook(d):
             for k in ("tmpfilename", "filename"):

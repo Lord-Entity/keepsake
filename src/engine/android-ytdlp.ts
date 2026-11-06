@@ -58,6 +58,9 @@ export interface YtdlpFormat {
   filesize: number | null;
   protocol: string;
   format_note: string | null;
+  /** Optional total / audio bitrate (kbit/s) when the Python side sends it; used only as a YouTube tie-break. */
+  tbr?: number | null;
+  abr?: number | null;
 }
 
 export interface YtdlpInfo {
@@ -146,6 +149,7 @@ export function ytdlpInfoToVideoInfo(info: YtdlpInfo, requestedUrl: string): Vid
       vcodec: f.vcodec && f.vcodec !== "none" ? f.vcodec : undefined,
       acodec: f.acodec && f.acodec !== "none" ? f.acodec : undefined,
       sizeBytes: f.filesize ?? undefined,
+      ...(typeof (f.tbr ?? f.abr) === "number" ? { bitrate: (f.tbr ?? f.abr) as number } : {}),
     });
   }
   const fpsByHeight: Record<number, number> = {};
@@ -186,9 +190,104 @@ export interface YtdlpPick {
   audioFormatId?: string;
   /** Best single-file (muxed) format of the same info, used when formatId is unavailable. */
   fallback?: { formatId: string; ext: string };
+  /** YouTube only: user-facing note, e.g. when higher (VP9/AV1-only) heights were skipped. download.ts ignores it. */
+  note?: string;
 }
 
 const isH264 = (s: StreamInfo) => /^(avc|h264)/i.test(s.vcodec ?? "");
+
+/** Highest video height yt-dlp reported for a YouTube info before filterYouTubeMp4Formats dropped VP9/AV1. */
+/** Highest video height YouTube reported before VP9/AV1 streams were filtered out (read by formats.ts). */
+export const rawMaxHeight = new WeakMap<VideoInfo, number>();
+
+/** YouTube cap: the phone muxes AVC + AAC into MP4 only, and AVC on YouTube stops at 1080. */
+const YOUTUBE_MAX_HEIGHT = 1080;
+export const YOUTUBE_HIGH_RES_NOTE = "1440p and 4K need the desktop app";
+
+const isYouTubeInfo = (info: VideoInfo) => info.site === "youtube" || isAndroidYouTubeYtdlpHost(info.url);
+const isAvc1 = (s: StreamInfo) => /^avc1/i.test(s.vcodec ?? "");
+
+/** Today's TikTok / Instagram video pick (unchanged), over `streams` (defaults to all of info.streams). */
+function pickVideoGeneric(info: VideoInfo, limit: number, streams: StreamInfo[] = info.streams): YtdlpPick | null {
+  const marked = watermarked.get(info) ?? new Set<string>();
+  const isMarked = (s: StreamInfo) => marked.has(s.id) || /^download/i.test(s.id);
+  const cmp = (a: StreamInfo, b: StreamInfo) =>
+    (b.height ?? 0) - (a.height ?? 0) ||
+    Number(isMarked(a)) - Number(isMarked(b)) ||
+    Number(a.kind === "video-only") - Number(b.kind === "video-only") ||
+    Number(isH264(b)) - Number(isH264(a)) ||
+    (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0);
+  const prog = streams.filter((s) => s.kind === "progressive" && (s.height ?? 0) <= limit).toSorted(cmp);
+  const audio = streams.filter((s) => s.kind === "audio-only");
+  const bestAudio = audio.filter((s) => s.ext === "m4a").toSorted((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0))[0];
+  const vids = streams
+    .filter((s) => (s.kind === "progressive" || (s.kind === "video-only" && bestAudio)) && (s.height ?? 0) <= limit)
+    .toSorted(cmp);
+  const s = vids[0];
+  if (!s) return null;
+  const fb = prog[0];
+  const fallback = fb && fb.id !== s.id ? { formatId: fb.id, ext: fb.ext } : undefined;
+  if (s.kind === "video-only") {
+    return {
+      formatId: s.id,
+      ext: "mp4",
+      needsRemux: false,
+      height: s.height,
+      sizeBytes: s.sizeBytes,
+      audioFormatId: bestAudio!.id,
+      fallback,
+    };
+  }
+  return { formatId: s.id, ext: s.ext, needsRemux: false, height: s.height, sizeBytes: s.sizeBytes, fallback };
+}
+
+/**
+ * YouTube video pick (spec "Quality rule"). Hard filter: only avc1 video in mp4 is eligible (VP9/AV1/HEVC never,
+ * MediaMuxer path is AVC + AAC). Highest height <= min(limit, 1080), then fps, then bitrate (tbr), then size.
+ * Video-only is paired with the best AAC m4a audio (abr, then size) and muxed on the phone. If no AVC candidate is
+ * above 360p, today's pick runs over the AVC-only streams (the 360p progressive). Skipped >1080 heights add a note.
+ */
+/** Ranking for YouTube video candidates: height, fps, bitrate, then prefer progressive, then size. */
+const byQuality = (a: StreamInfo, b: StreamInfo) =>
+  (b.height ?? 0) - (a.height ?? 0) ||
+  (b.fps ?? 0) - (a.fps ?? 0) ||
+  (b.bitrate ?? 0) - (a.bitrate ?? 0) ||
+  Number(a.kind === "video-only") - Number(b.kind === "video-only") ||
+  (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0);
+
+function pickVideoYouTube(info: VideoInfo, limit: number): YtdlpPick | null {
+  const cap = Math.min(limit, YOUTUBE_MAX_HEIGHT);
+  const rawMax = Math.max(rawMaxHeight.get(info) ?? 0, ...info.streams.map((s) => (s.kind === "audio-only" ? 0 : s.height ?? 0)));
+  const note = rawMax > YOUTUBE_MAX_HEIGHT && limit > YOUTUBE_MAX_HEIGHT ? YOUTUBE_HIGH_RES_NOTE : undefined;
+  const withNote = (p: YtdlpPick | null): YtdlpPick | null => (p && note ? { ...p, note } : p);
+
+  // Keep audio, and only AVC mp4 video; anything else cannot go through ytdlp_mux.
+  const safe = info.streams.filter((s) => s.kind === "audio-only" || (isAvc1(s) && s.ext === "mp4"));
+  const audio = safe
+    .filter((s) => s.kind === "audio-only" && s.ext === "m4a" && /^mp4a/i.test(s.acodec ?? ""))
+    .toSorted((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0) || (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0))[0];
+  const best = safe
+    .filter((s) => (s.kind === "progressive" || (s.kind === "video-only" && audio)) && (s.height ?? 0) <= cap)
+    .toSorted(byQuality)[0];
+
+  // Fallback rule 6: no AVC candidate above 360p -> today's pick, restricted to MP4-muxable streams.
+  if (!best || (best.height ?? 0) <= 360) return withNote(pickVideoGeneric(info, limit, safe));
+
+  const prog = safe.filter((s) => s.kind === "progressive" && (s.height ?? 0) <= cap).toSorted(byQuality)[0];
+  const fallback = prog && prog.id !== best.id ? { formatId: prog.id, ext: prog.ext } : undefined;
+  if (best.kind === "video-only") {
+    return withNote({
+      formatId: best.id,
+      ext: "mp4",
+      needsRemux: true,
+      height: best.height,
+      sizeBytes: best.sizeBytes,
+      audioFormatId: audio!.id,
+      fallback,
+    });
+  }
+  return withNote({ formatId: best.id, ext: "mp4", needsRemux: false, height: best.height, sizeBytes: best.sizeBytes, fallback });
+}
 
 /** Pure: UI formatId ("video:<h>" | "video:best" | "audio:m4a") -> concrete yt-dlp format, or null when nothing fits. */
 export function pickYtdlpFormat(info: VideoInfo, uiFormatId: string): YtdlpPick | null {
@@ -197,36 +296,7 @@ export function pickYtdlpFormat(info: VideoInfo, uiFormatId: string): YtdlpPick 
   if (kind === "video") {
     const limit = arg === "best" ? 100000 : /^\d+$/.test(arg ?? "") ? Number(arg) : 0;
     if (limit <= 0) return null;
-    const marked = watermarked.get(info) ?? new Set<string>();
-    const isMarked = (s: StreamInfo) => marked.has(s.id) || /^download/i.test(s.id);
-    const cmp = (a: StreamInfo, b: StreamInfo) =>
-      (b.height ?? 0) - (a.height ?? 0) ||
-      Number(isMarked(a)) - Number(isMarked(b)) ||
-      Number(a.kind === "video-only") - Number(b.kind === "video-only") ||
-      Number(isH264(b)) - Number(isH264(a)) ||
-      (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0);
-    const prog = info.streams.filter((s) => s.kind === "progressive" && (s.height ?? 0) <= limit).toSorted(cmp);
-    const audio = info.streams.filter((s) => s.kind === "audio-only");
-    const bestAudio = audio.filter((s) => s.ext === "m4a").toSorted((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0))[0];
-    const vids = info.streams
-      .filter((s) => (s.kind === "progressive" || (s.kind === "video-only" && bestAudio)) && (s.height ?? 0) <= limit)
-      .toSorted(cmp);
-    const s = vids[0];
-    if (!s) return null;
-    const fb = prog[0];
-    const fallback = fb && fb.id !== s.id ? { formatId: fb.id, ext: fb.ext } : undefined;
-    if (s.kind === "video-only") {
-      return {
-        formatId: s.id,
-        ext: "mp4",
-        needsRemux: false,
-        height: s.height,
-        sizeBytes: s.sizeBytes,
-        audioFormatId: bestAudio!.id,
-        fallback,
-      };
-    }
-    return { formatId: s.id, ext: s.ext, needsRemux: false, height: s.height, sizeBytes: s.sizeBytes, fallback };
+    return isYouTubeInfo(info) ? pickVideoYouTube(info, limit) : pickVideoGeneric(info, limit);
   }
   if (uiFormatId === "audio:m4a") {
     const audio = info.streams.filter((s) => s.kind === "audio-only" && s.ext === "m4a");
@@ -404,6 +474,7 @@ export const ANDROID_YTDLP_YOUTUBE_HOSTS: readonly string[] = [
   "youtube.com",
   "www.youtube.com",
   "m.youtube.com",
+  "music.youtube.com",
   "youtu.be",
 ] as const;
 
@@ -465,5 +536,9 @@ export async function fetchAndroidYouTubeInfo(url: string, signal?: AbortSignal)
   if (!r || typeof r !== "object" || r.ok !== true || !r.info || typeof r.info.id !== "string" || !Array.isArray(r.info.formats)) {
     throw badInfo();
   }
-  return ytdlpInfoToVideoInfo(filterYouTubeMp4Formats(r.info as YtdlpInfo), url);
+  const raw = r.info as YtdlpInfo;
+  const out = ytdlpInfoToVideoInfo(filterYouTubeMp4Formats(raw), url);
+  // Remember the best raw height so the pick can say "1440p and 4K need the desktop app" after VP9/AV1 were dropped.
+  rawMaxHeight.set(out, Math.max(0, ...raw.formats.map((f) => (f.vcodec && f.vcodec !== "none" ? f.height ?? 0 : 0))));
+  return out;
 }

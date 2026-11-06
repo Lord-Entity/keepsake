@@ -6,18 +6,14 @@
  * 360p comes back.
  */
 import type { VideoInfo } from "../lib/types";
-import { fetchAndroidYouTubeInfo, isAndroidYouTubeYtdlpHost, pickYtdlpFormat } from "./android-ytdlp";
+import { fetchAndroidYouTubeInfo, pickYtdlpFormat } from "./android-ytdlp";
+import { canonicalYoutubeUrl } from "./youtube-urls";
 
 export const YOUTUBE_VIA_YTDLP = true;
 
-/** https + exact host in ANDROID_YTDLP_YOUTUBE_HOSTS (youtube.com, www.youtube.com, m.youtube.com, youtu.be). */
-function isYouTubeHost(url: string): boolean {
-  return isAndroidYouTubeYtdlpHost(url);
-}
-
 /** "ytdlp" only when the flag is on and the host is YouTube; otherwise "innertube" (today's path). */
 export function youtubeRoute(url: string, flag: boolean = YOUTUBE_VIA_YTDLP): "ytdlp" | "innertube" {
-  return flag && isYouTubeHost(url) ? "ytdlp" : "innertube";
+  return flag && canonicalYoutubeUrl(url) !== null ? "ytdlp" : "innertube";
 }
 
 /**
@@ -26,7 +22,9 @@ export function youtubeRoute(url: string, flag: boolean = YOUTUBE_VIA_YTDLP): "y
  */
 export async function tryYouTubeViaYtdlp(url: string, signal?: AbortSignal): Promise<VideoInfo | null> {
   try {
-    const info = await fetchAndroidYouTubeInfo(url, signal);
+    const canon = canonicalYoutubeUrl(url);
+    if (!canon) return null;
+    const info = await fetchAndroidYouTubeInfo(canon, signal);
     const best = pickYtdlpFormat(info, "video:best");
     return best && (best.height ?? 0) > 360 ? info : null;
   } catch {

@@ -403,6 +403,43 @@ describe("YouTube via yt-dlp info", () => {
     expect(pickYtdlpFormat(v, "video:best")).toMatchObject({ formatId: "137", audioFormatId: "140", ext: "mp4", height: 1080 });
   });
 
+  test("AVC 1080 is preferred over VP9 1440 and AAC audio is chosen", () => {
+    const v = ytdlpInfoToVideoInfo(
+      youtubeInfo({
+        formats: [
+          fmt({ format_id: "18", vcodec: "avc1.42001E", acodec: "mp4a.40.2", height: 360 }),
+          fmt({ format_id: "137", vcodec: "avc1.640028", acodec: "none", height: 1080, filesize: 50000000 }),
+          fmt({ format_id: "271", ext: "webm", vcodec: "vp9", acodec: "none", height: 1440, filesize: 90000000 }),
+          fmt({ format_id: "251", ext: "webm", vcodec: "none", acodec: "opus", height: null, fps: null, filesize: 9000000 }),
+          fmt({ format_id: "140", ext: "m4a", vcodec: "none", acodec: "mp4a.40.2", height: null, fps: null, filesize: 1000000 }),
+        ],
+      }),
+      "https://www.youtube.com/watch?v=abc",
+    );
+    expect(pickYtdlpFormat(v, "video:best")).toMatchObject({ formatId: "137", audioFormatId: "140", ext: "mp4", height: 1080 });
+  });
+
+  test("with no AVC above 360 the pick falls back to the 360p progressive stream", () => {
+    const v = ytdlpInfoToVideoInfo(
+      youtubeInfo({
+        formats: [
+          fmt({ format_id: "18", vcodec: "avc1.42001E", acodec: "mp4a.40.2", height: 360 }),
+          fmt({ format_id: "271", ext: "webm", vcodec: "vp9", acodec: "none", height: 1440 }),
+          fmt({ format_id: "251", ext: "webm", vcodec: "none", acodec: "opus", height: null, fps: null }),
+        ],
+      }),
+      "https://www.youtube.com/watch?v=abc",
+    );
+    expect(pickYtdlpFormat(v, "video:best")).toMatchObject({ formatId: "18", height: 360 });
+  });
+
+  test("TikTok and Instagram picks are unchanged", () => {
+    const t = ytdlpInfoToVideoInfo(tiktokInfo(), "u");
+    expect(pickYtdlpFormat(t, "video:best").formatId).toBe("h264_1080p_1-0");
+    const i = ytdlpInfoToVideoInfo(instagramInfo(), "u");
+    expect(pickYtdlpFormat(i, "video:best")).toMatchObject({ formatId: "dash-v", audioFormatId: "dash-a", height: 1080 });
+  });
+
   test("fetchAndroidYouTubeInfo rejects off Android and for TikTok without invoking", async () => {
     current = "windows";
     await expect(fetchAndroidYouTubeInfo("https://www.youtube.com/watch?v=abc")).rejects.toMatchObject({ code: "unsupported_url" });

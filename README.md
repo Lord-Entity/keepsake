@@ -93,14 +93,14 @@ The sizes are estimates from the component sizes, not measurements of a release 
 
 | | Desktop (Windows, Linux) | Android |
 |---|---|---|
-| YouTube | Yes, all qualities | Yes, video up to 360p (see below) |
+| YouTube | Yes, all qualities | Yes, video up to 1080p when the phone can mux it, otherwise 360p (see below; not verified on a device yet) |
 | Audio formats | MP3, M4A, OPUS, WAV, FLAC | M4A (default) and WAV |
 | TikTok, Instagram | Yes | Yes, through the bundled yt-dlp (public posts, single videos; separate video and audio streams are combined on the phone without re-encoding; M4A audio only) |
 | Other sites | 1,000+ sites supported by [yt-dlp](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) | No |
 | Playlists | Yes | No |
 | DRM-protected content | No | No |
 
-On Android, TikTok and Instagram links download through the yt-dlp that is bundled in the app (arm64 only). They offer the heights the site serves. When video and audio come as separate streams, both are downloaded and combined on the phone without re-encoding. Audio is M4A only; there is no MP3, and login-only posts fail. YouTube stays at 360p on Android. For YouTube, video is limited to the one stream that downloads reliably without extra tokens: a 360p MP4 with audio inside. Higher resolutions need separate video and audio streams merged together, which only the desktop app does today. Audio on Android comes from that same stream (AAC, roughly 96 kbps), saved as M4A without conversion or decoded to WAV on the phone. MP3, FLAC and OPUS are not offered on Android yet, because Android has no built-in MP3 encoder and the FLAC and Opus encoders are not available on every supported Android version.
+On Android, TikTok and Instagram links download through the yt-dlp that is bundled in the app (arm64 only). They offer the heights the site serves. When video and audio come as separate streams, both are downloaded and combined on the phone without re-encoding. Audio is M4A only; there is no MP3, and login-only posts fail. YouTube on Android (not verified on a device yet): links accepted are `youtube.com`, `www.`, `m.` and `music.youtube.com` `/watch?v=`, `youtu.be/ID`, and `/shorts/`, `/live/` and `/embed/` paths (https only). Only the 11-character video ID is used; playlist-only links are rejected, single videos only. The bundled yt-dlp asks the player clients `android_vr`, `ios` and `mweb`, in that order, and picks the highest AVC (H.264) MP4 video up to 1080p plus AAC (M4A) audio. The two streams are combined on the phone without re-encoding. 1440p and 4K are VP9/AV1 only, which the phone cannot mux, so they need the desktop app. If yt-dlp fails, or no AVC stream above 360p is offered, Keepsake falls back to the old 360p MP4 through youtubei.js. Caveat: YouTube may demand a PO token for some videos, and `android_vr` often returns only 360p, so the height you get can be lower than 1080p. Audio is saved as M4A without conversion or decoded to WAV on the phone. MP3, FLAC and OPUS are not offered on Android yet, because Android has no built-in MP3 encoder and the FLAC and Opus encoders are not available on every supported Android version.
 
 DRM-protected streams (most paid streaming services) cannot be downloaded on any platform.
 

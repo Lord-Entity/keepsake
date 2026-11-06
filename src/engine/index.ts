@@ -10,6 +10,7 @@ import { EngineError, fail, toAppError } from "./errors";
 import { isDesktop, platform } from "./platform";
 import { fetchYouTubeInfo, isYouTubeUrl } from "./youtube";
 import { tryYouTubeViaYtdlp, youtubeRoute } from "./youtube-ytdlp";
+import { canonicalYoutubeUrl } from "./youtube-urls";
 import { binaryVersions, fetchInfoYtdlp } from "./ytdlp";
 
 export { listFormats, qualityLabel } from "./formats";
@@ -52,6 +53,10 @@ async function fetchInfoInner(url: string, opts: FetchInfoOptions): Promise<Vide
   }
   if (p === "android") {
     if (yt) {
+      // A playlist-only link has no video ID: say so instead of sending it down the single-video path.
+      if (!canonicalYoutubeUrl(url) && /[?&]list=|\/playlist/i.test(url)) {
+        fail("unsupported_url", "Playlists can be downloaded in the desktop app only.");
+      }
       // yt-dlp first for >360p (flagged); any error or nothing above 360p -> youtubei.js exactly as before.
       if (youtubeRoute(url) === "ytdlp") {
         const info = await tryYouTubeViaYtdlp(url, opts.signal);
