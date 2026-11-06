@@ -13,7 +13,8 @@ export const YOUTUBE_VIA_YTDLP = true;
 
 /** "ytdlp" only when the flag is on and the host is YouTube; otherwise "innertube" (today's path). */
 export function youtubeRoute(url: string, flag: boolean = YOUTUBE_VIA_YTDLP): "ytdlp" | "innertube" {
-  return flag && canonicalYoutubeUrl(url) !== null ? "ytdlp" : "innertube";
+  // https only, like the Rust gate: a plain http link keeps today's path.
+  return flag && /^https:\/\//i.test(url.trim()) && canonicalYoutubeUrl(url) !== null ? "ytdlp" : "innertube";
 }
 
 /**
