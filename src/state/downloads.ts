@@ -84,8 +84,9 @@ function pump() {
   const jobs = downloadsStore.get();
   let running = jobs.filter((j) => handles.has(j.id)).length;
   // Retried jobs first, then oldest queued first.
-  const order = jobs.slice().reverse();
-  order.sort((a, b) => Number(retried.has(b.id)) - Number(retried.has(a.id)));
+  const order = jobs
+    .toReversed()
+    .toSorted((a, b) => Number(retried.has(b.id)) - Number(retried.has(a.id)));
   for (const job of order) {
     if (running >= limit) break;
     if (job.status !== "queued" || handles.has(job.id)) continue;

@@ -70,7 +70,7 @@ function placeholderRow(h: number, needsMerge: boolean, disabledReason: string):
 
 /** Desktop: every height plus "Best available"; yt-dlp merges video-only streams with audio. */
 function desktopVideoOptions(info: VideoInfo): FormatOption[] {
-  const heights = [...new Set(info.heights.length ? info.heights : info.kind === "playlist" ? PLAYLIST_HEIGHTS : [])].sort(
+  const heights = [...new Set(info.heights.length ? info.heights : info.kind === "playlist" ? PLAYLIST_HEIGHTS : [])].toSorted(
     (a, b) => b - a,
   );
   const progressive = new Set(info.streams.filter((s) => s.kind === "progressive" && s.height).map((s) => s.height!));
@@ -109,7 +109,7 @@ function singleFileVideoOptions(info: VideoInfo): FormatOption[] {
         .filter((s) => s.kind === "progressive" && s.height && s.height <= SINGLE_FILE_MAX_HEIGHT)
         .map((s) => s.height!),
     ),
-  ].sort((a, b) => b - a);
+  ].toSorted((a, b) => b - a);
   if (heights.length === 0) {
     return [placeholderRow(SINGLE_FILE_MAX_HEIGHT, false, "No single-file video for this link")];
   }
@@ -177,7 +177,7 @@ function androidYtdlpOptions(info: VideoInfo): FormatOption[] {
   const videoOnly = hasAudioOnly
     ? info.streams.filter((s) => s.kind === "video-only" && s.height).map((s) => s.height!)
     : [];
-  const heights = [...new Set([...progressive, ...videoOnly])].sort((a, b) => b - a);
+  const heights = [...new Set([...progressive, ...videoOnly])].toSorted((a, b) => b - a);
   if (heights.length > 0) {
     // Default: highest <= 1080, else the lowest available (closest to 1080).
     const found = heights.findIndex((h) => h <= 1080);
@@ -202,7 +202,7 @@ function androidYtdlpOptions(info: VideoInfo): FormatOption[] {
     } catch {
       /* ignore */
     }
-    const photo = !info.hasVideo && (info.thumbnails.length > 0 || /^\/p\//.test(path));
+    const photo = !info.hasVideo && (info.thumbnails.length > 0 || path.startsWith("/p/"));
     const reason = photo
       ? "This post has photos, not a video. Save images with the desktop app."
       : "No video we can save on Android for this link. Try Audio, or use the desktop app.";

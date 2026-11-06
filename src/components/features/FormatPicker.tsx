@@ -89,11 +89,11 @@ export function FormatPicker({
     ) : null;
 
   // Short pulse on the Download button once a new link's info has loaded.
-  const [pulse, setPulse] = useState(false);
+  const [pulsedOut, setPulsedOut] = useState<object | null>(null);
+  const pulse = !!info && pulsedOut !== info;
   useEffect(() => {
     if (!info) return;
-    setPulse(true);
-    const id = window.setTimeout(() => setPulse(false), 1500);
+    const id = window.setTimeout(() => setPulsedOut(info), 1500);
     return () => window.clearTimeout(id);
   }, [info]);
 

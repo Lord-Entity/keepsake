@@ -106,20 +106,21 @@ function statusError(status: number): never {
   fail("unknown", `HTTP Error ${status}`);
 }
 
+const bad = (detail: string): never => {
+  throw new EngineError({
+    code: "unknown",
+    message: "The video server sent the wrong part of the file, so the download was stopped. Try again later.",
+    detail,
+    cookiesHint: false,
+  });
+};
+
 /**
  * The server must answer a Range request with 206 starting at `start`. A 200 carries the body from byte 0, so
  * writing it at `start` would corrupt the file: fail instead. A 200 is accepted only when the range asked for
  * was the whole file. Not retryable (error code "unknown").
  */
 function checkRange(res: Response, start: number, end: number, size: number) {
-  const bad = (detail: string): never => {
-    throw new EngineError({
-      code: "unknown",
-      message: "The video server sent the wrong part of the file, so the download was stopped. Try again later.",
-      detail,
-      cookiesHint: false,
-    });
-  };
   if (res.status === 206) {
     const cr = res.headers.get("content-range");
     const m = cr ? /^bytes\s+(\d+)-/i.exec(cr) : null;
@@ -151,6 +152,7 @@ async function fetchStream(
     meter.update(got, total, true);
     return got;
   }
+  // oxlint-disable-next-line eslint/no-unmodified-loop-condition -- got is advanced by the readBody callback in the loop body
   while (got < size) {
     const start = got;
     const end = Math.min(size, start + CHUNK) - 1;
@@ -321,8 +323,8 @@ async function convertImage(blob: Blob, to: "png" | "jpg"): Promise<Uint8Array> 
 async function downloadThumbnail(req: DownloadRequest, info: VideoInfo, emit: Emit, signal: AbortSignal) {
   const value = req.formatId.split(":")[1] ?? "original";
   // Try up to 8 candidates (jpg/png before webp), 15 s each, 10 MB cap (PLAN_v2 section B).
-  const cands = [...info.thumbnails]
-    .sort((a, b) => Number(/\.webp/i.test(a.url)) - Number(/\.webp/i.test(b.url)))
+  const cands = info.thumbnails
+    .toSorted((a, b) => Number(/\.webp/i.test(a.url)) - Number(/\.webp/i.test(b.url)))
     .slice(0, 8);
   let blob: Blob | undefined;
   let lastErr: unknown;
@@ -478,7 +480,7 @@ function permissionError(detail: string): EngineError {
 /** Output folder for yt-dlp downloads: the Settings folder, or a permission error when the platform rejects it. */
 async function ytdlpOutDir(req: DownloadRequest): Promise<string> {
   const dir = req.outputDir?.trim() || (await downloadDir());
-  if (!/^\//.test(dir)) throw permissionError(`not an absolute path: ${dir}`);
+  if (!dir.startsWith("/")) throw permissionError(`not an absolute path: ${dir}`);
   try {
     await mkdir(dir, { recursive: true });
   } catch (e) {
@@ -486,6 +488,9 @@ async function ytdlpOutDir(req: DownloadRequest): Promise<string> {
   }
   return dir.replace(/[\\/]+$/, "");
 }
+
+const codeOf = (e: unknown) => toAppError(e).code as string;
+const nameFor = (target: string, ext: string) => target.slice(target.lastIndexOf("/") + 1, target.length - (ext.length + 1));
 
 async function runAndroidYtdlpJob(
   req: DownloadRequest,
@@ -500,7 +505,6 @@ async function runAndroidYtdlpJob(
       () => downloadAndroid({ url: info.url, formatId, outDir, fileName, jobId: `${req.id}${suffix}` }),
       { signal, retries: 2, delays: [2000, 6000] },
     );
-  const codeOf = (e: unknown) => toAppError(e).code as string;
   // Fail early on a bad folder, before any download starts.
   const dir = await ytdlpOutDir(req);
   // No byte progress from the native side: indeterminate bar. `stage` is read by the UI when DownloadProgress has it.
@@ -522,7 +526,6 @@ async function runAndroidYtdlpJob(
     percent: 100,
     filePath: path,
   });
-  const nameFor = (target: string, ext: string) => target.slice(target.lastIndexOf("/") + 1, target.length - (ext.length + 1));
 
   // Audio that needs the native transcode (WAV, or M4A out of a muxed MP4): download to the app cache first.
   const needsConvert = audioFmt === "wav" || (audioFmt === "m4a" && pick.needsRemux);

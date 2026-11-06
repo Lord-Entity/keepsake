@@ -40,6 +40,7 @@ export async function runYtdlp(
     if (isCancelled?.()) void cancelYtdlp(jobId).catch(() => undefined);
   };
   const ch = new Channel<YtdlpEvent>();
+  // oxlint-disable-next-line unicorn/prefer-add-event-listener -- Tauri Channel only exposes onmessage
   ch.onmessage = (m) => {
     if (!resentOnLine && isCancelled?.()) {
       resentOnLine = true;
@@ -192,11 +193,11 @@ function mapYdlInfo(j: YdlInfo, url: string): VideoInfo {
   }
   const heights = Object.keys(fpsByHeight)
     .map(Number)
-    .sort((a, b) => b - a);
-  const isPlaylist = j._type === "playlist";
+    .toSorted((a, b) => b - a);
+  const isPlaylist = j["_type"] === "playlist";
   const hasVideo = isPlaylist || streams.length === 0 || streams.some((s) => s.kind !== "audio-only");
-  const thumbs: Thumbnail[] = [...(j.thumbnails ?? [])]
-    .sort((a, b) => (b.preference ?? 0) - (a.preference ?? 0) || (b.width ?? 0) - (a.width ?? 0))
+  const thumbs: Thumbnail[] = (j.thumbnails ?? [])
+    .toSorted((a, b) => (b.preference ?? 0) - (a.preference ?? 0) || (b.width ?? 0) - (a.width ?? 0))
     .map((t) => ({ url: t.url, width: t.width, height: t.height }));
   if (thumbs.length === 0 && j.thumbnail) thumbs.push({ url: j.thumbnail });
   const d = j.upload_date;

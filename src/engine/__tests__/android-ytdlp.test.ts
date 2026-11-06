@@ -291,7 +291,7 @@ describe("downloadAndroid", () => {
     invokeImpl = async () => ({ path: "/p", bytes: 1 });
     await downloadAndroid({ url: "u", formatId: "f", outDir: "/d" });
     const sent = invokeMock.mock.calls[0][1];
-    expect(Object.keys(sent).sort()).toEqual(["formatId", "jobId", "outDir", "url"]);
+    expect(Object.keys(sent).toSorted()).toEqual(["formatId", "jobId", "outDir", "url"]);
   });
 
   test("bad response -> unknown; native rejection is mapped", async () => {

@@ -154,7 +154,7 @@ export function ytdlpInfoToVideoInfo(info: YtdlpInfo, requestedUrl: string): Vid
   }
   const heights = Object.keys(fpsByHeight)
     .map(Number)
-    .sort((a, b) => b - a);
+    .toSorted((a, b) => b - a);
   const hasVideo = streams.some((s) => s.kind !== "audio-only");
   const out: VideoInfo = {
     id: info.id,
@@ -188,6 +188,8 @@ export interface YtdlpPick {
   fallback?: { formatId: string; ext: string };
 }
 
+const isH264 = (s: StreamInfo) => /^(avc|h264)/i.test(s.vcodec ?? "");
+
 /** Pure: UI formatId ("video:<h>" | "video:best" | "audio:m4a") -> concrete yt-dlp format, or null when nothing fits. */
 export function pickYtdlpFormat(info: VideoInfo, uiFormatId: string): YtdlpPick | null {
   if (info.source !== "ytdlp") return null;
@@ -197,19 +199,18 @@ export function pickYtdlpFormat(info: VideoInfo, uiFormatId: string): YtdlpPick 
     if (limit <= 0) return null;
     const marked = watermarked.get(info) ?? new Set<string>();
     const isMarked = (s: StreamInfo) => marked.has(s.id) || /^download/i.test(s.id);
-    const isH264 = (s: StreamInfo) => /^(avc|h264)/i.test(s.vcodec ?? "");
     const cmp = (a: StreamInfo, b: StreamInfo) =>
       (b.height ?? 0) - (a.height ?? 0) ||
       Number(isMarked(a)) - Number(isMarked(b)) ||
       Number(a.kind === "video-only") - Number(b.kind === "video-only") ||
       Number(isH264(b)) - Number(isH264(a)) ||
       (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0);
-    const prog = info.streams.filter((s) => s.kind === "progressive" && (s.height ?? 0) <= limit).sort(cmp);
+    const prog = info.streams.filter((s) => s.kind === "progressive" && (s.height ?? 0) <= limit).toSorted(cmp);
     const audio = info.streams.filter((s) => s.kind === "audio-only");
-    const bestAudio = audio.filter((s) => s.ext === "m4a").sort((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0))[0];
+    const bestAudio = audio.filter((s) => s.ext === "m4a").toSorted((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0))[0];
     const vids = info.streams
       .filter((s) => (s.kind === "progressive" || (s.kind === "video-only" && bestAudio)) && (s.height ?? 0) <= limit)
-      .sort(cmp);
+      .toSorted(cmp);
     const s = vids[0];
     if (!s) return null;
     const fb = prog[0];
@@ -235,7 +236,7 @@ export function pickYtdlpFormat(info: VideoInfo, uiFormatId: string): YtdlpPick 
     }
     const prog = info.streams
       .filter((s) => s.kind === "progressive" && s.ext === "mp4" && (!s.acodec || /^(mp4a|aac)/i.test(s.acodec)))
-      .sort((a, b) => (a.sizeBytes ?? Infinity) - (b.sizeBytes ?? Infinity));
+      .toSorted((a, b) => (a.sizeBytes ?? Infinity) - (b.sizeBytes ?? Infinity));
     const s = prog[0];
     return s ? { formatId: s.id, ext: "mp4", needsRemux: true, height: s.height, sizeBytes: s.sizeBytes } : null;
   }

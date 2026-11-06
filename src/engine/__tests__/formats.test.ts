@@ -60,7 +60,7 @@ describe("listFormats on desktop", () => {
 
   test("offers all five audio formats, MP3 default, M4A needs no conversion", () => {
     const audio = byMode(listFormats(info()), "audio");
-    expect(ids(enabled(audio)).sort()).toEqual(["audio:flac", "audio:m4a", "audio:mp3", "audio:opus", "audio:wav"]);
+    expect(ids(enabled(audio)).toSorted()).toEqual(["audio:flac", "audio:m4a", "audio:mp3", "audio:opus", "audio:wav"]);
     expect(audio.filter((o) => o.isDefault).map((o) => o.id)).toEqual(["audio:mp3"]);
     const m4a = audio.find((o) => o.id === "audio:m4a");
     expect(m4a.needsConversion).toBe(false);
@@ -106,7 +106,7 @@ describe("listFormats on Android", () => {
 
   test("only M4A and WAV are usable; MP3, FLAC and Opus are hidden or disabled", () => {
     const audio = byMode(listFormats(info()), "audio");
-    expect(ids(enabled(audio)).sort()).toEqual(["audio:m4a", "audio:wav"]);
+    expect(ids(enabled(audio)).toSorted()).toEqual(["audio:m4a", "audio:wav"]);
   });
 
   test("M4A is the default audio format and needs no conversion; WAV does", () => {

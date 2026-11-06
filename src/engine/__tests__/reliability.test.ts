@@ -3,7 +3,7 @@
  * Download-reliability tests (plan-docs/08): runWithRetry, mapYtdlpError for the new Android codes, and the
  * friendlyError rate-limit rule order. runWithRetry lives in ../android-ytdlp: runWithRetry(fn, { signal?, retries?, delays? }).
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 
 mock.module("../platform", () => ({
   platform: () => "android",

@@ -158,7 +158,7 @@ async function getBasicInfoAnyClient(yt: Innertube, videoId: string): Promise<YT
 
 function thumbs(list: { url: string; width?: number; height?: number }[] | undefined): Thumbnail[] {
   return [...(list ?? [])]
-    .sort((a, b) => (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0))
+    .toSorted((a, b) => (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0))
     .map((t) => ({ url: t.url, width: t.width, height: t.height }));
 }
 
@@ -198,7 +198,7 @@ export async function fetchYouTubeInfo(url: string): Promise<VideoInfo> {
   }
   const heights = Object.keys(fpsByHeight)
     .map(Number)
-    .sort((a, b2) => b2 - a);
+    .toSorted((a, b2) => b2 - a);
   const hasVideo = streams.some((s) => s.kind !== "audio-only");
   return {
     id: videoId,
@@ -255,7 +255,7 @@ export async function resolveSingleFile(
   if (want.kind === "progressive") {
     const prog = formats
       .filter((f) => f.has_video && f.has_audio && (!want.maxHeight || (f.height ?? 0) <= want.maxHeight))
-      .sort(
+      .toSorted(
         (a, b) =>
           (b.height ?? 0) - (a.height ?? 0) ||
           Number(b.mime_type.startsWith("video/mp4")) - Number(a.mime_type.startsWith("video/mp4")) ||
@@ -270,11 +270,11 @@ export async function resolveSingleFile(
         const c = codecs(f.mime_type).container;
         return want.container === "m4a" ? c === "mp4" : c === "webm";
       })
-      .sort((a, b) => b.bitrate - a.bitrate);
+      .toSorted((a, b) => b.bitrate - a.bitrate);
     // ANDROID serves no audio-only stream (see header): take the audio from the best progressive instead.
     pick =
       audio[0] ??
-      formats.filter((f) => f.has_video && f.has_audio).sort((a, b) => (b.height ?? 0) - (a.height ?? 0) || b.bitrate - a.bitrate)[0];
+      formats.filter((f) => f.has_video && f.has_audio).toSorted((a, b) => (b.height ?? 0) - (a.height ?? 0) || b.bitrate - a.bitrate)[0];
   }
   if (!pick) fail("format_unavailable");
   const yt = await getClient();
