@@ -10,7 +10,8 @@ mock.module("../platform", () => ({
   inTauri: () => true,
   isDesktop: () => false,
 }));
-mock.module("@tauri-apps/api/core", () => ({ invoke: async () => ({}), isTauri: () => true }));
+// No "@tauri-apps/api/core" mock: nothing here calls invoke, and a partial mock ({ invoke, isTauri } only) replaces the
+// module process-wide, breaking any already-linked importer of its other exports (ytdlp.ts imports Channel).
 
 const { mapYtdlpError, runWithRetry } = await import("../android-ytdlp");
 const { friendlyError, EngineError, appError } = await import("../errors");

@@ -305,12 +305,12 @@ describe("downloadAndroid", () => {
 });
 
 describe("listFormats for android + ytdlp info", () => {
-  test("video rows have no 360 cap, audio is M4A only, no thumbnail rows", () => {
+  test("video rows have no 360 cap, audio is M4A or WAV, no thumbnail rows", () => {
     const v = ytdlpInfoToVideoInfo(tiktokInfo(), "u");
     const opts = listFormats(v);
     const video = opts.filter((o) => o.mode === "video" && !o.disabledReason);
     expect(video.map((o) => o.height)).toEqual([1080, 720]);
-    expect(opts.filter((o) => o.mode === "audio" && !o.disabledReason).map((o) => o.id)).toEqual(["audio:m4a"]);
+    expect(opts.filter((o) => o.mode === "audio" && !o.disabledReason).map((o) => o.id)).toEqual(["audio:m4a", "audio:wav"]);
     expect(opts.filter((o) => o.mode === "thumbnail")).toEqual([]);
   });
 });
