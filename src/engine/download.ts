@@ -19,6 +19,8 @@
 import { appCacheDir, downloadDir, join } from "@tauri-apps/api/path";
 import { exists, mkdir, open, remove, writeFile, type FileHandle } from "@tauri-apps/plugin-fs";
 import type { AudioFormat, DownloadHandle, DownloadProgress, DownloadRequest, VideoInfo } from "../lib/types";
+import { androidSaveMode, GalleryError, publishToGallery } from "./android-gallery";
+import { FolderError, saveToFolder } from "./android-folder";
 import { transcodeAudio } from "./android-media";
 import {
   cancelAndroid,
@@ -284,6 +286,7 @@ function webTarget(base: string, ext: string, mime: string): Target {
 const MIME: Record<string, string> = {
   mp4: "video/mp4",
   webm: "video/webm",
+  mkv: "video/x-matroska",
   m4a: "audio/mp4",
   mp3: "audio/mpeg",
   opus: "audio/ogg",
@@ -606,6 +609,110 @@ async function runAndroidYtdlpJob(
   }
 }
 
+// ---------------- Android gallery / folder staging ----------------
+
+const EXT_KIND: Record<string, "video" | "audio" | "image"> = {
+  mp4: "video",
+  webm: "video",
+  mkv: "video",
+  m4a: "audio",
+  mp3: "audio",
+  opus: "audio",
+  wav: "audio",
+  flac: "audio",
+  jpg: "image",
+  png: "image",
+  webp: "image",
+};
+
+/** True when `p` is `dir` or a path under it (either separator). */
+const normPath = (s: string) => s.replace(/[\\/]+/g, "/").replace(/\/+$/, "");
+const isInside = (p: string, dir: string) => {
+  const a = normPath(p);
+  const b = normPath(dir);
+  return a === b || a.startsWith(`${b}/`);
+};
+
+/** Routes a request on Android (yt-dlp or direct); desktop never reaches here. */
+const routeRequest = (r: DownloadRequest, em: Emit, signal: AbortSignal): Promise<DownloadProgress> => {
+  if (platform() === "android" && isAndroidYtdlpSupported(r.url)) return runAndroidYtdlp(r, em, signal);
+  if (platform() === "android" && r.info?.source === "ytdlp") {
+    // YouTube quality via yt-dlp failed (PO token, 403, throttling): fall back to the 360p path, as before.
+    return runAndroidYtdlp(r, em, signal).catch((e: unknown) => {
+      if (signal.aborted || !isYouTubeUrl(r.url)) throw e;
+      return runDirect({ ...r, info: undefined }, em, signal);
+    });
+  }
+  return runDirect(r, em, signal);
+};
+
+
+/**
+ * Android gallery/folder modes: every step writes into $APPCACHE/gallery-<id>, then the final file is published
+ * (MediaStore or SAF tree) and the content URI becomes filePath. The staging dir is removed after success.
+ */
+async function runStaged(
+  req: DownloadRequest,
+  mode: "gallery" | "folder",
+  emit: Emit,
+  route: (r: DownloadRequest, em: Emit) => Promise<DownloadProgress>,
+): Promise<DownloadProgress> {
+  // Unique per attempt: retry reuses the job id, and an earlier failed attempt may have left its file in its own stage.
+  const attempt = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const stage = await join(await appCacheDir(), `gallery-${safeName(req.id, 60)}-${attempt}`);
+  await mkdir(stage, { recursive: true });
+  // The thumbnail path emits its own "done" with the staged path; the real final progress is emitted by startDownload.
+  const stagedEmit: Emit = (p) => {
+    if (p.status !== "done") emit(p);
+  };
+  let keepStage = false;
+  try {
+    const res = await route({ ...req, outputDir: stage }, stagedEmit);
+    const src = res.filePath;
+    if (!src || res.status !== "done") return res;
+    const fileName = src.slice(Math.max(src.lastIndexOf("/"), src.lastIndexOf("\\")) + 1);
+    const ext = fileName.slice(fileName.lastIndexOf(".") + 1).toLowerCase();
+    const mime = MIME[ext] ?? "application/octet-stream";
+    const kind = EXT_KIND[ext] ?? "video";
+    try {
+      const out =
+        mode === "folder"
+          ? await saveToFolder({ src, treeUri: req.outputTreeUri ?? "", fileName, mime })
+          : await publishToGallery({ src, kind, fileName, mime });
+      return { ...res, filePath: out.uri };
+    } catch (e) {
+      // Folder mode: the plugin deletes src only on success, so on any failure the file is still in staging.
+      if (e instanceof FolderError) {
+        keepStage = true;
+        throw e;
+      }
+      if (!(e instanceof GalleryError)) {
+        keepStage = true;
+        throw e;
+      }
+      // The file is safe only when the plugin moved it to an absolute path outside the staging dir.
+      // Anything else ("staging (could not move the file)", a path inside staging, none) leaves it in staging.
+      const kept = e.keptPath?.trim();
+      const keptSafe = kept !== undefined && kept.startsWith("/") && !isInside(kept, stage);
+      if (!keptSafe) keepStage = true;
+      if (keptSafe && kept !== undefined && e.galleryCode === "permission") {
+        // Storage permission denied: the file is in the kept folder; report it as done with a notice.
+        const notice = `Storage permission was denied, so the file was saved to ${kept} instead of the Gallery.`;
+        return { ...res, filePath: kept, notice };
+      }
+      const where = keptSafe ? `file kept at ${kept}` : `file left at ${src}`;
+      throw new EngineError({
+        code: e.galleryCode === "no_space" ? "no_space" : e.galleryCode === "permission" ? "gallery_permission" : "gallery_failed",
+        message: e.message || "The download finished but could not be saved to your Gallery.",
+        detail: e.detail ? `${e.detail} (${where})` : `(${where})`,
+        cookiesHint: false,
+      });
+    }
+  } finally {
+    if (!keepStage) await remove(stage, { recursive: true }).catch(() => undefined);
+  }
+}
+
 // ---------------- public ----------------
 
 async function resolveOutDir(req: DownloadRequest): Promise<string> {
@@ -637,10 +744,13 @@ export function startDownload(req: DownloadRequest, onProgress: (p: DownloadProg
       return downloadYtdlp(req, outDir, emit, () => cancelled);
     }
     if (platform() === "web" && !isYouTubeUrl(req.url)) fail("web_cors");
-    if (platform() === "android" && (isAndroidYtdlpSupported(req.url) || req.info?.source === "ytdlp")) {
-      return runAndroidYtdlp(req, emit, ctrl.signal);
+    if (platform() === "android") {
+      const mode = androidSaveMode({ saveDir: req.outputDir ?? "", saveTreeUri: req.outputTreeUri ?? "" });
+      if (mode === "gallery" || mode === "folder") {
+        return runStaged(req, mode, emit, (r: DownloadRequest, em: Emit) => routeRequest(r, em, ctrl.signal));
+      }
     }
-    return runDirect(req, emit, ctrl.signal);
+    return routeRequest(req, emit, ctrl.signal);
   };
 
   const done = run()

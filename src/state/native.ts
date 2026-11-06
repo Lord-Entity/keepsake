@@ -68,7 +68,7 @@ export async function pickFolder(current?: string): Promise<string | null> {
 }
 
 export interface AndroidFolder {
-  key: "downloads" | "music" | "movies";
+  key: "gallery" | "downloads" | "music" | "movies";
   label: string;
   path: string;
 }
@@ -80,24 +80,28 @@ export interface AndroidFolder {
  */
 export async function androidFolders(): Promise<AndroidFolder[]> {
   if (!inTauri) return [];
+  // Empty path = Gallery (saveDir "" with no tree URI). Listed even if the path API fails.
+  const gallery: AndroidFolder = { key: "gallery", label: "Gallery", path: "" };
   try {
     const { downloadDir, audioDir, videoDir } = await import("@tauri-apps/api/path");
     const [dl, music, movies] = await Promise.all([downloadDir(), audioDir(), videoDir()]);
     return [
+      ...(platform() === "android" ? [gallery] : []),
       { key: "downloads", label: "Downloads", path: dl },
       { key: "music", label: "Music", path: music },
       { key: "movies", label: "Movies", path: movies },
     ];
   } catch {
-    return [];
+    return platform() === "android" ? [gallery] : [];
   }
 }
 
 export async function openFile(path: string): Promise<boolean> {
   if (!inTauri) return false;
   try {
-    if (platform() === "android") {
-      // Android needs a content:// URI; the keepsake-media plugin shares the file through FileProvider.
+    if (platform() === "android" || path.startsWith("content://")) {
+      // Android needs a content:// URI; the keepsake-media plugin shares file paths through FileProvider
+      // and opens content:// URIs (Gallery items, chosen folder) directly. Never the opener.
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("plugin:keepsake-media|open_file", { path });
     } else {
@@ -116,7 +120,7 @@ export async function openFile(path: string): Promise<boolean> {
 }
 
 export async function revealFile(path: string): Promise<boolean> {
-  if (!inTauri) return false;
+  if (!inTauri || path.startsWith("content://")) return false;
   try {
     const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
     await revealItemInDir(path);

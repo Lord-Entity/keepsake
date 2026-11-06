@@ -1,5 +1,5 @@
 "$schema" = "schemas/schema.json"
 
 [default]
-description = "Allows the transcode command (Android audio conversion to M4A or WAV) and open_file (open a download in another app), and ytdlp_info / ytdlp_download / ytdlp_cancel / ytdlp_mux (yt-dlp for TikTok and Instagram on Android)."
-permissions = ["allow-transcode", "allow-open-file", "allow-ytdlp-info", "allow-ytdlp-download", "allow-ytdlp-cancel", "allow-ytdlp-mux"]
+description = "Allows the transcode command (Android audio conversion to M4A or WAV) and open_file (open a download in another app), and ytdlp_info / ytdlp_download / ytdlp_cancel / ytdlp_mux (yt-dlp for TikTok and Instagram on Android), gallery_publish (save a finished download to the Android Gallery via MediaStore), and folder_pick / folder_status / folder_save (save into a user-chosen folder through the Storage Access Framework)."
+permissions = ["allow-transcode", "allow-open-file", "allow-ytdlp-info", "allow-ytdlp-download", "allow-ytdlp-cancel", "allow-ytdlp-mux", "allow-gallery-publish", "allow-folder-pick", "allow-folder-status", "allow-folder-save"]

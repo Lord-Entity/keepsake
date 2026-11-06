@@ -1,7 +1,11 @@
 package app.keepsake.media
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import androidx.activity.result.ActivityResult
 import androidx.core.content.FileProvider
 import android.media.AudioFormat
 import android.media.MediaCodec
@@ -9,8 +13,13 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.os.Environment
+import android.provider.MediaStore
 import app.tauri.annotation.Command
+import app.tauri.PermissionState
+import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.InvokeArg
+import app.tauri.annotation.Permission
+import app.tauri.annotation.PermissionCallback
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
@@ -21,6 +30,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.OutputStream
 import java.io.RandomAccessFile
+import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
@@ -73,6 +83,36 @@ class YtdlpMuxArgs {
   lateinit var fileName: String
 }
 
+/** Arguments of `galleryPublish`: {src, kind: "video"|"audio"|"image", fileName, mime}. */
+@InvokeArg
+class GalleryPublishArgs {
+  lateinit var src: String
+  lateinit var kind: String
+  lateinit var fileName: String
+  lateinit var mime: String
+}
+
+/** Arguments of `folderPick`: {initialUri?}. */
+@InvokeArg
+class FolderPickArgs {
+  var initialUri: String? = null
+}
+
+/** Arguments of `folderStatus`: {treeUri}. */
+@InvokeArg
+class FolderStatusArgs {
+  lateinit var treeUri: String
+}
+
+/** Arguments of `folderSave`: {src, treeUri, fileName, mime}. */
+@InvokeArg
+class FolderSaveArgs {
+  lateinit var src: String
+  lateinit var treeUri: String
+  lateinit var fileName: String
+  lateinit var mime: String
+}
+
 internal class MediaError(message: String, val code: String = "unknown") : Exception(message)
 
 /**
@@ -82,7 +122,9 @@ internal class MediaError(message: String, val code: String = "unknown") : Excep
  * - wav: decode the first audio track with MediaCodec to 16-bit PCM and write RIFF/WAVE.
  * Everything streams buffer by buffer; the file is never held in memory.
  */
-@TauriPlugin
+@TauriPlugin(
+  permissions = [Permission(strings = [Manifest.permission.WRITE_EXTERNAL_STORAGE], alias = "storage")]
+)
 class KeepsakeMediaPlugin(private val activity: Activity) : Plugin(activity) {
   // Commands arrive on the main thread; conversions run here. Two workers keep
   // parallel downloads moving without starving the device's codec instances.
@@ -147,20 +189,80 @@ class KeepsakeMediaPlugin(private val activity: Activity) : Plugin(activity) {
       return
     }
     try {
-      val file = checkedPath(args.path, "file")
-      if (!file.isFile) throw MediaError("File not found: ${file.path}")
-      val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.keepsake.fileprovider", file)
+      val isContent = args.path.startsWith("content://")
+      val uri: Uri
+      val name: String
+      if (isContent) {
+        val parsed = try { Uri.parse(args.path) } catch (e: Exception) { throw MediaError("Invalid file address.", "bad_uri") }
+        when (parsed.authority) {
+          // Gallery downloads (galleryPublish): read-only MediaStore links, no tree check.
+          MediaStore.AUTHORITY -> {
+            uri = parsed
+            name = checkedMediaName(parsed)
+          }
+          // Our own FileProvider (API 24-28 Gallery fallback). It only exposes keepsake_paths roots.
+          fileProviderAuthority() -> {
+            uri = parsed
+            name = parsed.lastPathSegment ?: "file"
+          }
+          // Folder-mode downloads: SAF document inside the persisted tree grant.
+          else -> {
+            uri = KeepsakeSaf.checkedDocUri(activity, args.path)
+            name = uri.lastPathSegment ?: "file"
+          }
+        }
+      } else {
+        val file = checkedPath(args.path, "file")
+        if (!file.isFile) throw MediaError("File not found: ${file.path}")
+        uri = FileProvider.getUriForFile(activity, fileProviderAuthority(), file)
+        name = file.name
+      }
+      val type = if (isContent) activity.contentResolver.getType(uri) ?: mimeFor(name) else mimeFor(name)
       val intent = Intent(Intent.ACTION_VIEW)
-        .setDataAndType(uri, mimeFor(file.name))
+        .setDataAndType(uri, type)
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
       if (intent.resolveActivity(activity.packageManager) == null) {
-        throw MediaError("No app on this device can open ${file.name}.")
+        throw MediaError("No app on this device can open $name.")
       }
       activity.startActivity(intent)
       invoke.resolve(JSObject())
     } catch (e: Throwable) {
       invoke.reject(e.message ?: e.toString())
     }
+  }
+
+  private fun fileProviderAuthority(): String = "${activity.packageName}.keepsake.fileprovider"
+
+  /**
+   * Checks that a content://media/... row still exists and is readable by this app
+   * (on API 29+ the query only returns rows the app owns or may read). Returns its display name.
+   */
+  private fun checkedMediaName(uri: Uri): String {
+    if (uri.scheme != "content") throw MediaError("Invalid file address.", "bad_uri")
+    val cursor = try {
+      activity.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)
+    } catch (e: SecurityException) {
+      throw MediaError("Keepsake has no access to that Gallery item.", "permission")
+    } catch (e: IllegalArgumentException) {
+      throw MediaError("Invalid Gallery address.", "bad_uri")
+    }
+    cursor?.use { c ->
+      if (c.moveToFirst()) return c.getString(0) ?: (uri.lastPathSegment ?: "file")
+    }
+    throw MediaError("That Gallery item no longer exists.", "not_found")
+  }
+
+  /**
+   * Source of galleryPublish / folderSave. These commands delete (or move) their source, so it must
+   * be a staging file under cacheDir/gallery-<id>/; anything else is refused before any delete.
+   */
+  private fun stagedSource(raw: String): File {
+    val f = checkedPath(raw, "source")
+    val cache = activity.cacheDir.canonicalFile
+    val rel = f.path.removePrefix(cache.path + File.separator)
+    val ok = rel != f.path && rel.startsWith("gallery-") && rel.contains(File.separator)
+    if (!ok) throw MediaError("The source must be a staged download in the app cache: $raw")
+    return f
   }
 
   /** TikTok/Instagram metadata through yt-dlp (Python). Resolves {ok, info}; rejects "ytdlp:<code>: <message>". */
@@ -261,6 +363,184 @@ class KeepsakeMediaPlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
+  // ---------------- gallery + folder ----------------
+
+  private fun galleryReject(invoke: Invoke, code: String, msg: String, kept: String? = null) {
+    invoke.reject("gallery:$code: $msg" + (if (kept != null) " kept=$kept" else ""))
+  }
+
+  /** Publishes src into the Gallery. On API 24-28 asks for WRITE_EXTERNAL_STORAGE first. */
+  @Command
+  fun galleryPublish(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(GalleryPublishArgs::class.java)
+    } catch (e: Exception) {
+      galleryReject(invoke, "unknown", "Invalid gallery_publish arguments: ${e.message}")
+      return
+    }
+    if (Build.VERSION.SDK_INT <= 28 && getPermissionState("storage") != PermissionState.GRANTED) {
+      requestPermissionForAlias("storage", invoke, "galleryPermissionResult")
+      return
+    }
+    runGalleryPublish(invoke, args)
+  }
+
+  @PermissionCallback
+  fun galleryPermissionResult(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(GalleryPublishArgs::class.java)
+    } catch (e: Exception) {
+      galleryReject(invoke, "unknown", "Invalid gallery_publish arguments: ${e.message}")
+      return
+    }
+    if (getPermissionState("storage") == PermissionState.GRANTED) {
+      runGalleryPublish(invoke, args)
+      return
+    }
+    worker.execute {
+      val kept = try {
+        KeepsakeGallery.keepForRecovery(activity, stagedSource(args.src))
+      } catch (e: Throwable) {
+        null
+      }
+      // kept= only when the file really moved; otherwise it stays in staging and TS must keep that dir.
+      if (kept != null) {
+        galleryReject(invoke, "permission", "Storage permission was denied.", kept.absolutePath)
+      } else {
+        galleryReject(invoke, "permission", "Storage permission was denied. The file was left in staging.")
+      }
+    }
+  }
+
+  private fun runGalleryPublish(invoke: Invoke, args: GalleryPublishArgs) {
+    worker.execute {
+      var src: File? = null
+      try {
+        src = stagedSource(args.src)
+        if (!src.isFile) throw MediaError("Source file is missing: ${src.path}", "unknown")
+        val r = KeepsakeGallery.publish(activity, src, args.kind, args.fileName, args.mime)
+        invoke.resolve(JSObject(r.toString()))
+      } catch (e: Throwable) {
+        // Codes are limited to no_space, permission, unknown (TS parses them).
+        val code = (e as? MediaError)?.code?.takeIf { it == "no_space" || it == "permission" } ?: "unknown"
+        val msg = e.message ?: e.toString()
+        // src is only set once stagedSource accepted it, so a non-staged file is never moved.
+        val staged = src?.takeIf { it.isFile }
+        val kept = staged?.let { KeepsakeGallery.keepForRecovery(activity, it) }
+        when {
+          kept != null -> galleryReject(invoke, code, msg, kept.absolutePath)
+          staged != null -> galleryReject(invoke, code, "$msg (the file was left in staging)")
+          else -> galleryReject(invoke, code, msg)
+        }
+      }
+    }
+  }
+
+  private fun folderReject(invoke: Invoke, e: Throwable) {
+    val code = when (e) {
+      // Only the documented folder codes reach TS; anything else (e.g. "unknown") becomes io.
+      is MediaError -> e.code.takeIf { it in FOLDER_CODES } ?: "io"
+      is SecurityException -> "permission"
+      else -> "io"
+    }
+    invoke.reject("folder:$code: ${e.message ?: e.toString()}")
+  }
+
+  /** Opens the system folder picker. Resolves {uri, name}; both null on cancel. */
+  @Command
+  fun folderPick(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(FolderPickArgs::class.java)
+    } catch (e: Exception) {
+      invoke.reject("folder:bad_uri: Invalid folder_pick arguments: ${e.message}")
+      return
+    }
+    try {
+      val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
+        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+          Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION,
+      )
+      val initial = args.initialUri
+      if (!initial.isNullOrEmpty() && initial.startsWith("content://") && Build.VERSION.SDK_INT >= 26) {
+        intent.putExtra("android.provider.extra.INITIAL_URI", Uri.parse(initial))
+      }
+      startActivityForResult(invoke, intent, "folderPickResult")
+    } catch (e: Throwable) {
+      folderReject(invoke, e)
+    }
+  }
+
+  @ActivityCallback
+  fun folderPickResult(invoke: Invoke, result: ActivityResult) {
+    val uri = if (result.resultCode == Activity.RESULT_OK) result.data?.data else null
+    if (uri == null) {
+      val ret = JSObject()
+      ret.put("uri", JSONObject.NULL)
+      ret.put("name", JSONObject.NULL)
+      invoke.resolve(ret)
+      return
+    }
+    try {
+      KeepsakeSaf.persistTree(activity, uri)
+      val ret = JSObject()
+      ret.put("uri", uri.toString())
+      ret.put("name", KeepsakeSaf.treeName(activity, uri))
+      invoke.resolve(ret)
+    } catch (e: Throwable) {
+      folderReject(invoke, e)
+    }
+  }
+
+  /** Resolves {ok, name}: whether the persisted write grant for treeUri still exists. */
+  @Command
+  fun folderStatus(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(FolderStatusArgs::class.java)
+    } catch (e: Exception) {
+      invoke.reject("folder:bad_uri: Invalid folder_status arguments: ${e.message}")
+      return
+    }
+    worker.execute {
+      try {
+        val uri = KeepsakeSaf.checkedTreeUri(activity, args.treeUri)
+        val ok = KeepsakeSaf.hasWriteGrant(activity, uri)
+        val ret = JSObject()
+        ret.put("ok", ok)
+        ret.put("name", if (ok) KeepsakeSaf.treeName(activity, uri) else "")
+        invoke.resolve(ret)
+      } catch (e: Throwable) {
+        folderReject(invoke, e)
+      }
+    }
+  }
+
+  /** Copies src into the chosen tree, then deletes src. Resolves {uri, name, bytes}. */
+  @Command
+  fun folderSave(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(FolderSaveArgs::class.java)
+    } catch (e: Exception) {
+      invoke.reject("folder:bad_uri: Invalid folder_save arguments: ${e.message}")
+      return
+    }
+    worker.execute {
+      try {
+        val src = try {
+          stagedSource(args.src)
+        } catch (e: MediaError) {
+          throw MediaError(e.message ?: "Invalid source.", "source_missing")
+        }
+        if (!src.isFile) throw MediaError("Source file is missing: ${src.path}", "source_missing")
+        val tree = KeepsakeSaf.checkedTreeUri(activity, args.treeUri)
+        val r = KeepsakeSaf.copyToTree(activity, src, tree, args.fileName, args.mime)
+        src.delete()
+        invoke.resolve(JSObject(r.toString()))
+      } catch (e: Throwable) {
+        folderReject(invoke, e)
+      }
+    }
+  }
+
   private fun mimeFor(name: String): String =
     when (name.substringAfterLast('.', "").lowercase(Locale.ROOT)) {
       "mp4" -> "video/mp4"
@@ -289,7 +569,7 @@ class KeepsakeMediaPlugin(private val activity: Activity) : Plugin(activity) {
       // Parent of Tauri's $DOWNLOAD, $AUDIO and $VIDEO on Android.
       activity.getExternalFilesDir(null),
     )
-    for (type in arrayOf(Environment.DIRECTORY_DOWNLOADS, Environment.DIRECTORY_MUSIC, Environment.DIRECTORY_MOVIES)) {
+    for (type in arrayOf(Environment.DIRECTORY_DOWNLOADS, Environment.DIRECTORY_MUSIC, Environment.DIRECTORY_MOVIES, Environment.DIRECTORY_PICTURES)) {
       roots.add(Environment.getExternalStoragePublicDirectory(type))
     }
     return roots.filterNotNull().map { it.canonicalFile }
@@ -535,5 +815,6 @@ class KeepsakeMediaPlugin(private val activity: Activity) : Plugin(activity) {
     const val TIMEOUT_US = 10_000L
     const val MAX_IDLE_POLLS = 500 // x 10 ms = 5 s without output after end of input
     const val MAX_WAV_DATA = 0xFFFFFFFFL - 36L
+    val FOLDER_CODES = setOf("permission", "not_found", "no_space", "source_missing", "bad_uri", "io")
   }
 }

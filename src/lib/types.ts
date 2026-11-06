@@ -105,6 +105,8 @@ export interface DownloadRequest {
   embedVideoMeta?: boolean;
   /** Absolute folder. Empty/undefined = system Downloads folder. */
   outputDir?: string;
+  /** Android: persisted SAF tree URI (content://) to save into. Empty/undefined = not used. */
+  outputTreeUri?: string;
   /** Settings > Cookies value ("off" or a browser name). Desktop only. */
   cookiesBrowser?: string;
 }
@@ -137,6 +139,8 @@ export interface DownloadProgress {
   error?: AppError;
   /** Short status note on a final result, e.g. "Retried with cookies from Edge". */
   note?: string;
+  /** Set on a successful result when the file was kept somewhere other than requested (e.g. Gallery copy failed). */
+  notice?: string;
 }
 
 export interface DownloadHandle {
@@ -196,6 +200,12 @@ export type AppErrorCode =
   | "empty_url"
   | "web_cors"
   | "cancelled"
+  | "gallery_failed"
+  | "gallery_permission"
+  | "folder_grant_lost"
+  | "folder_source_missing"
+  | "folder_bad_uri"
+  | "folder_failed"
   | "unknown";
 
 export interface AppError {
@@ -254,5 +264,12 @@ export const ERROR_TEXT: Record<AppErrorCode, string> = {
   web_cors:
     "The browser preview can't read video links (the browser blocks cross-site requests). Use the Keepsake desktop or Android app.",
   cancelled: "Cancelled",
+  gallery_failed: "Couldn't add the file to your Gallery. The download was kept in Keepsake's own folder.",
+  gallery_permission:
+    "Keepsake needs storage permission to save to your Gallery. The download was kept in Keepsake's own folder.",
+  folder_grant_lost: "Keepsake lost access to your chosen folder. Pick the folder again in Settings.",
+  folder_source_missing: "The downloaded file went missing before it could be saved. Try again.",
+  folder_bad_uri: "The chosen folder isn't valid. Pick the folder again in Settings.",
+  folder_failed: "Couldn't save to your chosen folder. Pick another folder in Settings.",
   unknown: "Something went wrong. Try again.",
 };

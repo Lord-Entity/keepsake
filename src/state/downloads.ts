@@ -114,6 +114,7 @@ function run(job: Job) {
         embedThumbnail: s.embedThumbnail,
         embedVideoMeta: s.embedVideoMeta,
         outputDir: s.saveDir || undefined,
+        outputTreeUri: s.saveTreeUri || undefined,
         cookiesBrowser: s.cookiesBrowser,
       },
       (p) => onProgress(job.id, p),
@@ -180,7 +181,15 @@ function finish(id: string, last: DownloadProgress) {
     finishedAt: Date.now(),
   };
   patch(id, done);
-  if (status === "done") {
+  if (status === "done" && last.notice) {
+    notify({
+      tone: "info",
+      title: "Saved, with a note",
+      body: `${done.title} · ${last.notice}`,
+      action: { label: "Open downloads", run: () => navigate("downloads") },
+      duration: 6000,
+    });
+  } else if (status === "done") {
     notify({
       tone: "success",
       title: "Saved to your library",

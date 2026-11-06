@@ -18,6 +18,7 @@ import { formatBytes, hostOf, isHttpUrl, MOD, relativeTime } from "../state/form
 import { useWidth } from "../state/hooks";
 import { computeStats, useLibrary } from "../state/library";
 import { isActive } from "../state/models";
+import { pickAndroidFolder } from "../engine/android-folder";
 import { pickFolder, readClipboard } from "../state/native";
 import { toggleFavorite, useIsFavorite } from "../state/favorites";
 import { navigate, openAddLink, useCommand, type Command } from "../state/nav";
@@ -124,6 +125,8 @@ export function HomePage({ phone }: { phone: boolean }) {
   const jobs = useDownloads();
   const library = useLibrary();
   const saveDir = useSettings((s) => s.saveDir);
+  const saveTreeUri = useSettings((s) => s.saveTreeUri);
+  const saveTreeName = useSettings((s) => s.saveTreeName);
   const clipboardDetect = useSettings((s) => s.clipboardDetect);
   const reduced = useReducedMotion();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -425,7 +428,7 @@ export function HomePage({ phone }: { phone: boolean }) {
           <CategoryBars items={stats.byCategory} />
         </Card>
         <RecentCard recent={recent} reduced={reduced} className="!p-4" />
-        <SaveFolderCard saveDir={saveDir} platform={platform} phone />
+        <SaveFolderCard saveDir={saveDir} treeUri={saveTreeUri} treeName={saveTreeName} platform={platform} phone />
         <Sheet open={sheet} onClose={() => setSheet(false)} title="Format">
           <div className="flex min-h-[300px] min-w-0 flex-1 flex-col">
             <FormatPicker info={info} formats={formats} disabled={loading} onDownload={onDownload} fill />
@@ -508,7 +511,7 @@ export function HomePage({ phone }: { phone: boolean }) {
 
         <RecentCard recent={recent} reduced={reduced} span={SPANS.recent} narrow={narrow} />
         <SourcesCard span={SPANS.sources} narrow={narrow} />
-        <SaveFolderCard saveDir={saveDir} platform={platform} span={SPANS.folder} narrow={narrow} />
+        <SaveFolderCard saveDir={saveDir} treeUri={saveTreeUri} treeName={saveTreeName} platform={platform} span={SPANS.folder} narrow={narrow} />
       </div>
       {fetchModal}
     </div>
@@ -724,18 +727,28 @@ function RecentCard({
 
 function SaveFolderCard({
   saveDir,
+  treeUri,
+  treeName,
   platform,
   span,
   narrow,
   phone,
 }: {
   saveDir: string;
+  treeUri: string;
+  treeName: string;
   platform: string;
   span?: Span;
   narrow?: boolean;
   phone?: boolean;
 }) {
   const oneRow = narrow && !!span;
+  const android = platform === "android";
+  const label = android
+    ? treeUri
+      ? treeName || "Chosen folder"
+      : saveDir || "Gallery"
+    : saveDir || "System Downloads folder";
   return (
     <Card
       span={span}
@@ -748,13 +761,26 @@ function SaveFolderCard({
         <span className="grid size-9 shrink-0 place-items-center rounded-[12px_12px_12px_4px] bg-accent-soft text-accent">
           <Icon name="folder" size={18} />
         </span>
-        <span className="selectable min-w-0 flex-1 truncate font-mono text-[12px] text-fg-2" title={saveDir || "System Downloads folder"}>
-          {saveDir || (platform === "android" ? "App files folder" : "System Downloads folder")}
+        <span className="selectable min-w-0 flex-1 truncate font-mono text-[12px] text-fg-2" title={label}>
+          {label}
         </span>
         <Button
           size={phone ? "lg" : "sm"}
           className={phone ? "!px-4" : ""}
           onClick={async () => {
+            if (android) {
+              try {
+                const r = await pickAndroidFolder(treeUri || undefined);
+                if (r?.uri) updateSettings({ saveTreeUri: r.uri, saveTreeName: r.name ?? "" });
+              } catch (e) {
+                notify({
+                  tone: "error",
+                  title: "Couldn't change folder",
+                  body: e instanceof Error ? e.message : String(e),
+                });
+              }
+              return;
+            }
             const dir = await pickFolder(saveDir);
             if (dir) updateSettings({ saveDir: dir });
           }}

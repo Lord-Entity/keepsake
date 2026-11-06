@@ -393,3 +393,77 @@ export async function runWithRetry<T>(
     }
   }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// YouTube through yt-dlp (flagged, see youtube-ytdlp.ts). Separate from ANDROID_YTDLP_HOSTS on purpose: the
+// TikTok / Instagram list, isAndroidYtdlpHost and fetchAndroidInfo are unchanged and still reject YouTube.
+// ---------------------------------------------------------------------------------------------------------------
+
+/** Hosts the YouTube yt-dlp path accepts. Exact host match, https only. Keep identical to YOUTUBE_YTDLP_HOSTS in lib.rs. */
+export const ANDROID_YTDLP_YOUTUBE_HOSTS: readonly string[] = [
+  "youtube.com",
+  "www.youtube.com",
+  "m.youtube.com",
+  "youtu.be",
+] as const;
+
+/** Pure host check for the YouTube path: https + exact host in ANDROID_YTDLP_YOUTUBE_HOSTS. */
+export function isAndroidYouTubeYtdlpHost(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:") return false;
+    const h = u.hostname.toLowerCase().replace(/\.$/, "");
+    return ANDROID_YTDLP_YOUTUBE_HOSTS.includes(h);
+  } catch {
+    return false;
+  }
+}
+
+const isAvc = (c: string | null) => /^(avc|h264)/i.test(c ?? "");
+const isAac = (c: string | null) => /^(mp4a|aac)/i.test(c ?? "");
+
+/**
+ * Pure: keep only YouTube formats the phone can save as MP4 without ffmpeg: AVC (avc1) video in mp4, AAC audio in
+ * m4a/mp4, progressive AVC+AAC mp4. VP9 / AV1 / Opus / webm are dropped because ytdlp_mux (MediaMuxer) writes MP4.
+ * pickYtdlpFormat then takes the highest height (res first, AVC/AAC guaranteed by this filter).
+ */
+export function filterYouTubeMp4Formats(info: YtdlpInfo): YtdlpInfo {
+  const formats = info.formats.filter((f) => {
+    const v = f.vcodec && f.vcodec !== "none" ? f.vcodec : null;
+    const a = f.acodec && f.acodec !== "none" ? f.acodec : null;
+    if (v && !(isAvc(v) && f.ext === "mp4")) return false;
+    if (a && !isAac(a)) return false;
+    if (!v && a && f.ext !== "m4a" && f.ext !== "mp4") return false;
+    return Boolean(v || a);
+  });
+  return { ...info, formats };
+}
+
+/**
+ * Invokes ytdlp_info for a YouTube link (Android only) and returns MP4-safe formats (source "ytdlp").
+ * Rejects with EngineError. Callers fall back to youtubei.js on any rejection.
+ */
+export async function fetchAndroidYouTubeInfo(url: string, signal?: AbortSignal): Promise<VideoInfo> {
+  if (platform() !== "android" || !isAndroidYouTubeYtdlpHost(url)) throw new EngineError(appError("unsupported_url", url));
+  if (signal?.aborted) fail("cancelled");
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(new EngineError(appError("cancelled")));
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  let res: unknown;
+  try {
+    res = await Promise.race([invoke<unknown>("plugin:keepsake-media|ytdlp_info", { url }), aborted]);
+  } catch (e) {
+    if (e instanceof EngineError) throw e;
+    throw new EngineError(mapYtdlpError(rawText(e)));
+  } finally {
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+    aborted.catch(() => undefined);
+  }
+  const r = res as { ok?: unknown; info?: Partial<YtdlpInfo> } | null;
+  if (!r || typeof r !== "object" || r.ok !== true || !r.info || typeof r.info.id !== "string" || !Array.isArray(r.info.formats)) {
+    throw badInfo();
+  }
+  return ytdlpInfoToVideoInfo(filterYouTubeMp4Formats(r.info as YtdlpInfo), url);
+}

@@ -11,7 +11,9 @@ import { Collapsible } from "../components/ui/Collapsible";
 import { RadioGroup } from "../components/ui/RadioGroup";
 import { Switch } from "../components/ui/Switch";
 import { getPlatform, healthOf, refreshBinaries, useBinaries, versionsLine } from "../state/engine";
+import { pickAndroidFolder } from "../engine/android-folder";
 import { useWidth } from "../state/hooks";
+import { notify } from "../state/toast";
 import { PAGE_BOTTOM } from "../components/layout/page";
 import { androidFolders, type AndroidFolder, openFile, pickFolder } from "../state/native";
 import {
@@ -39,7 +41,7 @@ export function SettingsPage({ phone, onSupportedSites }: { phone: boolean; onSu
   const [confirmReset, setConfirmReset] = useState(false);
   const [androidDirs, setAndroidDirs] = useState<AndroidFolder[]>([]);
   useEffect(() => {
-    if (platform === "android") void androidFolders().then(setAndroidDirs);
+    if (platform === "android") void androidFolders().then((l) => setAndroidDirs(l.filter((f) => f.key !== "gallery")));
   }, [platform]);
   const reduced = useReducedMotion();
   const ref = useRef<HTMLDivElement>(null);
@@ -47,31 +49,67 @@ export function SettingsPage({ phone, onSupportedSites }: { phone: boolean; onSu
   const narrow = phone || (width > 0 && width < 760);
   const cardPad = phone ? "!p-4" : "";
 
+  const gallerySel = !s.saveTreeUri && !s.saveDir;
+  const saveLabel =
+    platform === "android"
+      ? s.saveTreeUri
+        ? s.saveTreeName || "Chosen folder"
+        : s.saveDir || "Gallery"
+      : s.saveDir || "System Downloads";
+
   const downloads = (
     <>
       <FieldRow
         label="Save folder"
-        hint={platform === "android" ? "Choose where finished downloads are saved." : undefined}
+        hint={platform === "android" ? "Save to your Gallery, or choose a folder." : undefined}
       >
         <span
           className="selectable max-w-[min(220px,36vw)] min-w-0 truncate font-mono text-[11px] text-fg-2"
-          title={s.saveDir || "System Downloads folder"}
+          title={saveLabel}
         >
-          {s.saveDir || "System Downloads"}
+          {saveLabel}
         </span>
         {platform === "android" ? (
-          androidDirs.map((f) => (
+          <>
             <Button
-              key={f.key}
               size="sm"
-              variant={s.saveDir === f.path ? "primary" : "ghost"}
+              variant={gallerySel ? "primary" : "ghost"}
               className={phone ? "h-11 shrink-0" : "shrink-0"}
-              aria-pressed={s.saveDir === f.path}
-              onClick={() => updateSettings({ saveDir: f.path })}
+              aria-pressed={gallerySel}
+              onClick={() => updateSettings({ saveTreeUri: "", saveTreeName: "", saveDir: "" })}
             >
-              {f.label}
+              Gallery
             </Button>
-          ))
+            <Button
+              size="sm"
+              icon="folder"
+              variant={s.saveTreeUri ? "primary" : "ghost"}
+              className={phone ? "h-11 shrink-0" : "shrink-0"}
+              aria-pressed={!!s.saveTreeUri}
+              onClick={async () => {
+                try {
+                  const r = (await pickAndroidFolder(s.saveTreeUri || undefined)) as { uri?: string | null; name?: string | null } | null;
+                  if (r?.uri) updateSettings({ saveTreeUri: r.uri, saveTreeName: r.name ?? "", saveDir: "" });
+                } catch (e) {
+                  notify({ tone: "error", title: "Couldn't choose folder", body: e instanceof Error ? e.message : String(e) });
+                }
+              }}
+            >
+              Choose a folder
+            </Button>
+            {androidDirs.map((f) => (
+              <Button
+                key={f.key}
+                size="sm"
+                variant={!s.saveTreeUri && s.saveDir === f.path ? "primary" : "ghost"}
+                className={phone ? "h-11 shrink-0" : "shrink-0"}
+                aria-pressed={!s.saveTreeUri && s.saveDir === f.path}
+                onClick={() => updateSettings({ saveDir: f.path, saveTreeUri: "", saveTreeName: "" })}
+              >
+                {f.label}
+              </Button>
+            ))}
+          </>
         ) : (
           <Button
             size="sm"

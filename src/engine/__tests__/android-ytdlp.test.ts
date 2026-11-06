@@ -314,3 +314,114 @@ describe("listFormats for android + ytdlp info", () => {
     expect(opts.filter((o) => o.mode === "thumbnail")).toEqual([]);
   });
 });
+
+const { ANDROID_YTDLP_YOUTUBE_HOSTS, isAndroidYouTubeYtdlpHost, filterYouTubeMp4Formats, fetchAndroidYouTubeInfo } =
+  await import("../android-ytdlp");
+const { YOUTUBE_VIA_YTDLP, youtubeRoute, tryYouTubeViaYtdlp } = await import("../youtube-ytdlp");
+
+function youtubeInfo(over = {}) {
+  return {
+    id: "abc",
+    title: "A video",
+    uploader: "chan",
+    duration: 60,
+    thumbnail: null,
+    extractor: "youtube",
+    webpage_url: "https://www.youtube.com/watch?v=abc",
+    formats: [
+      fmt({ format_id: "18", vcodec: "avc1.42001E", acodec: "mp4a.40.2", height: 360 }),
+      fmt({ format_id: "137", vcodec: "avc1.640028", acodec: "none", height: 1080, filesize: 50000000 }),
+      fmt({ format_id: "136", vcodec: "avc1.4d401f", acodec: "none", height: 720, filesize: 20000000 }),
+      fmt({ format_id: "248", ext: "webm", vcodec: "vp9", acodec: "none", height: 1080 }),
+      fmt({ format_id: "313", ext: "webm", vcodec: "vp9", acodec: "none", height: 2160 }),
+      fmt({ format_id: "399", vcodec: "av01.0.08M.08", acodec: "none", height: 1080 }),
+      fmt({ format_id: "140", ext: "m4a", vcodec: "none", acodec: "mp4a.40.2", height: null, fps: null, filesize: 1000000 }),
+      fmt({ format_id: "251", ext: "webm", vcodec: "none", acodec: "opus", height: null, fps: null, filesize: 2000000 }),
+    ],
+    ...over,
+  };
+}
+
+describe("YouTube yt-dlp host list (separate from TikTok/Instagram)", () => {
+  test("exports the four YouTube hosts; the TikTok/Instagram list is unchanged", () => {
+    expect([...ANDROID_YTDLP_YOUTUBE_HOSTS]).toEqual(["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"]);
+    expect(ANDROID_YTDLP_HOSTS.some((h) => h.includes("youtu"))).toBe(false);
+    expect(isAndroidYtdlpHost("https://www.youtube.com/watch?v=x")).toBe(false);
+  });
+
+  test("accepts https YouTube hosts, rejects others", () => {
+    for (const u of [
+      "https://youtube.com/watch?v=x",
+      "https://www.youtube.com/watch?v=x",
+      "https://m.youtube.com/watch?v=x",
+      "https://youtu.be/x",
+      "https://WWW.YouTube.com./watch?v=x",
+    ]) {
+      expect(isAndroidYouTubeYtdlpHost(u)).toBe(true);
+    }
+    for (const u of [
+      "http://www.youtube.com/watch?v=x",
+      "https://youtube.com.evil.com/x",
+      "https://evilyoutube.com/x",
+      "https://youtube.com@evil.com/x",
+      "https://www.tiktok.com/@a/video/1",
+      "not a url",
+      "",
+    ]) {
+      expect(isAndroidYouTubeYtdlpHost(u)).toBe(false);
+    }
+  });
+});
+
+describe("youtubeRoute", () => {
+  test("flag is on by default", () => {
+    expect(YOUTUBE_VIA_YTDLP).toBe(true);
+    expect(youtubeRoute("https://www.youtube.com/watch?v=x")).toBe("ytdlp");
+  });
+
+  test("ytdlp only for https YouTube hosts with the flag on", () => {
+    for (const u of ["https://youtube.com/watch?v=x", "https://m.youtube.com/watch?v=x", "https://youtu.be/x"]) {
+      expect(youtubeRoute(u, true)).toBe("ytdlp");
+      expect(youtubeRoute(u, false)).toBe("innertube");
+    }
+    for (const u of ["http://youtube.com/watch?v=x", "https://www.tiktok.com/@a/video/1", "https://evil.com/x", "junk"]) {
+      expect(youtubeRoute(u, true)).toBe("innertube");
+    }
+  });
+});
+
+describe("YouTube via yt-dlp info", () => {
+  test("keeps only AVC/AAC MP4-safe formats and picks 1080p avc1 + m4a", async () => {
+    const f = filterYouTubeMp4Formats(youtubeInfo()).formats.map((x) => x.format_id);
+    expect(f).toEqual(["18", "137", "136", "140"]);
+    invokeImpl = async () => ({ ok: true, info: youtubeInfo() });
+    const url = "https://www.youtube.com/watch?v=abc";
+    const v = await fetchAndroidYouTubeInfo(url);
+    expect(invokeMock).toHaveBeenCalledWith("plugin:keepsake-media|ytdlp_info", { url });
+    expect(v.source).toBe("ytdlp");
+    expect(v.heights).toEqual([1080, 720, 360]);
+    expect(pickYtdlpFormat(v, "video:best")).toMatchObject({ formatId: "137", audioFormatId: "140", ext: "mp4", height: 1080 });
+  });
+
+  test("fetchAndroidYouTubeInfo rejects off Android and for TikTok without invoking", async () => {
+    current = "windows";
+    await expect(fetchAndroidYouTubeInfo("https://www.youtube.com/watch?v=abc")).rejects.toMatchObject({ code: "unsupported_url" });
+    current = "android";
+    await expect(fetchAndroidYouTubeInfo("https://www.tiktok.com/@a/video/1")).rejects.toMatchObject({ code: "unsupported_url" });
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  test("tryYouTubeViaYtdlp returns info above 360p, null on error or 360p only", async () => {
+    const url = "https://www.youtube.com/watch?v=abc";
+    invokeImpl = async () => ({ ok: true, info: youtubeInfo() });
+    expect((await tryYouTubeViaYtdlp(url))?.source).toBe("ytdlp");
+    invokeImpl = async () => ({ ok: true, info: youtubeInfo({ formats: [youtubeInfo().formats[0], youtubeInfo().formats[3]] }) });
+    expect(await tryYouTubeViaYtdlp(url)).toBeNull();
+    invokeImpl = async () => {
+      throw "ytdlp:unsupported_url: Only https TikTok and Instagram links are supported on Android";
+    };
+    expect(await tryYouTubeViaYtdlp(url)).toBeNull();
+    invokeImpl = async () => ({ ok: true });
+    expect(await tryYouTubeViaYtdlp(url)).toBeNull();
+  });
+});

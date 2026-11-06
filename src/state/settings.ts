@@ -18,6 +18,10 @@ export interface Settings {
   parallelDownloads: number;
   /** Empty string means "system Downloads folder" (resolved by the engine). */
   saveDir: string;
+  /** Android: persisted SAF tree URI (content://) chosen by the user. Empty = not set. */
+  saveTreeUri: string;
+  /** Android: display name of the chosen tree folder. */
+  saveTreeName: string;
   cookiesBrowser: CookiesBrowser;
   /** Audio: embed cover art (MP3/M4A). Default on. */
   embedThumbnail: boolean;
@@ -33,6 +37,8 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: "system",
   parallelDownloads: 3,
   saveDir: "",
+  saveTreeUri: "",
+  saveTreeName: "",
   cookiesBrowser: "off",
   embedThumbnail: true,
   embedVideoMeta: false,
@@ -65,6 +71,9 @@ export function sanitizeSettings(raw: Partial<Settings> | null): Settings {
     theme: ["system", "dark", "light"].includes(s.theme) ? s.theme : "system",
     parallelDownloads: clampParallel(Number(s.parallelDownloads)),
     saveDir: typeof s.saveDir === "string" ? s.saveDir : "",
+    // Old stored settings lack these keys; the defaults spread above yields "" for them.
+    saveTreeUri: typeof s.saveTreeUri === "string" ? s.saveTreeUri : "",
+    saveTreeName: typeof s.saveTreeName === "string" ? s.saveTreeName : "",
     cookiesBrowser: COOKIE_BROWSERS.some((b) => b.value === s.cookiesBrowser)
       ? s.cookiesBrowser
       : "off",

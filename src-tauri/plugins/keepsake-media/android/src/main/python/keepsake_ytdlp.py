@@ -14,6 +14,7 @@ import os
 import re
 import threading
 import time
+import urllib.parse
 
 import yt_dlp
 
@@ -32,6 +33,35 @@ BASE = {
     "cachedir": False,
     "noprogress": True,
 }
+
+# EXPERIMENT (YouTube, flagged off on the TS side): these clients need no JS runtime. A PO token may
+# still be required for some videos; there is no guarantee this works. TikTok/Instagram never get these.
+_YT_HOSTS = ("youtube.com", "youtu.be", "youtube-nocookie.com")
+_YT_ARGS = {"youtube": {"player_client": ["visionos", "android_vr"]}}
+
+
+def _is_best_video(format_id):
+    f = str(format_id or "").strip()
+    return f == "best" or f.startswith("bestvideo") or f.startswith("best[")
+
+
+def _opts_for(url, format_id=None):
+    """BASE copy; YouTube hosts additionally get extractor_args and a 10 MiB chunk size
+    (and, for a best-video selector, resolution-first format_sort)."""
+    o = dict(BASE)
+    try:
+        host = (urllib.parse.urlsplit(str(url)).hostname or "").lower().rstrip(".")
+    except ValueError:
+        host = ""
+    if any(host == h or host.endswith("." + h) for h in _YT_HOSTS):
+        o["extractor_args"] = {"youtube": dict(_YT_ARGS["youtube"])}
+        o["http_chunk_size"] = 10 * 1024 * 1024
+        if _is_best_video(format_id):
+            # Approach adapted from the client's MIT-licensed yt-delp app (Copyright (c) 2026 Abdullah Masood, MIT):
+            # sort resolution first, codec second, so 1080p+ is not capped by a codec preference.
+            o["format_sort"] = ["res", "fps", "vcodec:h264", "acodec:aac"]
+    return o
+
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -168,7 +198,7 @@ def _reject_playlist(raw):
 
 def info(url):
     try:
-        with yt_dlp.YoutubeDL(dict(BASE)) as ydl:
+        with yt_dlp.YoutubeDL(_opts_for(url)) as ydl:
             raw = ydl.sanitize_info(ydl.extract_info(url, download=False))
         _reject_playlist(raw)
         return json.dumps({"ok": True, "info": _reduce(raw, url)}, ensure_ascii=False)
@@ -237,7 +267,7 @@ def download(url, format_id, out_dir, file_name, job_id):
             name_tmpl = file_name.replace("%", "%%") + ".%(ext)s"
         else:
             name_tmpl = "%(title).80B [%(id)s].%(ext)s"
-        opts = dict(BASE)
+        opts = _opts_for(url, format_id)
         opts.update({
             "format": format_id,
             "paths": {"home": out_dir, "temp": out_dir},

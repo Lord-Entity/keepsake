@@ -5,8 +5,8 @@
 //! registers that class and exposes these commands:
 //!
 //!   transcode { input, output, format: "wav" | "m4a", kbps? } -> { path }
-//!   open_file { path }
-//!   ytdlp_info { url } -> { ok, info }                        (TikTok/Instagram, yt-dlp via Chaquopy)
+//!   open_file { path }                                        (absolute file path or content:// URI)
+//!   ytdlp_info { url } -> { ok, info }                        (TikTok/Instagram/YouTube, yt-dlp via Chaquopy)
 //!   ytdlp_download { url, formatId, outDir, fileName?, jobId } -> { path, bytes }
 //!   ytdlp_cancel { jobId } -> {}
 //!   ytdlp_mux { videoPath, audioPath, outDir, fileName } -> { path, bytes }
@@ -126,6 +126,10 @@ struct OpenResponse {}
 /// Kotlin re-checks that the path is inside the app cache or a download folder.
 #[tauri::command]
 async fn open_file<R: Runtime>(app: AppHandle<R>, path: String) -> Result<(), String> {
+    if path.starts_with("content://") {
+        validate_content_uri("open", &path)?;
+        return run_open(app, OpenArgs { path }).await.map(|_| ());
+    }
     if !path.starts_with('/') || Path::new(&path).components().any(|c| matches!(c, Component::ParentDir)) {
         return Err(format!("The file path must be absolute and must not contain \"..\": {path:?}"));
     }
@@ -154,6 +158,16 @@ pub const YTDLP_HOSTS: &[&str] = &[
     "vt.tiktok.com",
     "instagram.com",
     "instagr.am",
+];
+
+/// YouTube hosts yt-dlp may serve on Android (exact host match only, no other
+/// subdomains). Kept separate from `YTDLP_HOSTS` so the TikTok/Instagram list stays
+/// identical to `ANDROID_YTDLP_HOSTS`. The TS side gates use behind YOUTUBE_VIA_YTDLP.
+pub const YTDLP_YOUTUBE_HOSTS: &[&str] = &[
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "youtu.be",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,10 +276,11 @@ fn validate_mux(video: &str, audio: &str, out_dir: &str, file_name: &str) -> Res
     validate_file_name(file_name)
 }
 
-/// https only, host must be an allow-listed domain or a subdomain of one.
+/// https only. Host must be a `YTDLP_HOSTS` domain or a subdomain of one, or exactly
+/// one of `YTDLP_YOUTUBE_HOSTS`.
 fn validate_ytdlp_url(raw: &str) -> Result<(), String> {
     let err = || {
-        format!("ytdlp:unsupported_url: Only https TikTok and Instagram links are supported on Android: {raw}")
+        format!("ytdlp:unsupported_url: Only https TikTok, Instagram and YouTube links are supported on Android: {raw}")
     };
     let url = tauri::Url::parse(raw).map_err(|_| err())?;
     if url.scheme() != "https" {
@@ -275,7 +290,8 @@ fn validate_ytdlp_url(raw: &str) -> Result<(), String> {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     let ok = YTDLP_HOSTS
         .iter()
-        .any(|d| host == *d || host.ends_with(&format!(".{d}")));
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")))
+        || YTDLP_YOUTUBE_HOSTS.contains(&host.as_str());
     if ok {
         Ok(())
     } else {
@@ -312,7 +328,7 @@ fn validate_file_name(s: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Extracts media info for a TikTok or Instagram link with yt-dlp (Android only).
+/// Extracts media info for a TikTok, Instagram or YouTube link with yt-dlp (Android only).
 #[tauri::command]
 async fn ytdlp_info<R: Runtime>(app: AppHandle<R>, url: String) -> Result<YtdlpInfoResponse, String> {
     validate_ytdlp_url(&url)?;
@@ -458,6 +474,282 @@ async fn run_ytdlp_download<R: Runtime>(
     Err("ytdlp:unknown: yt-dlp through keepsake-media is only available on Android.".into())
 }
 
+// ---- Gallery and folder (SAF) saving -------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GalleryPublishResponse {
+    pub uri: String,
+    pub display_path: Option<String>,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FolderPickResponse {
+    pub uri: Option<String>,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FolderStatusResponse {
+    pub ok: bool,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FolderSaveResponse {
+    pub uri: String,
+    pub name: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GalleryPublishArgs {
+    src: String,
+    kind: String,
+    file_name: String,
+    mime: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FolderPickArgs {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    initial_uri: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FolderStatusArgs {
+    tree_uri: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FolderSaveArgs {
+    src: String,
+    tree_uri: String,
+    file_name: String,
+    mime: String,
+}
+
+/// `content://` only, at most 2048 chars, no NUL or whitespace. `prefix` is the error prefix.
+fn validate_content_uri(prefix: &str, s: &str) -> Result<(), String> {
+    let ok = s.starts_with("content://")
+        && s.len() > "content://".len()
+        && s.chars().count() <= 2048
+        && !s.chars().any(|c| c == '\0' || c.is_whitespace());
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("{prefix}:bad_uri: Invalid content URI: {s:?}"))
+    }
+}
+
+/// A SAF tree URI: content:// with a `/tree/` segment.
+fn validate_tree_uri(prefix: &str, s: &str) -> Result<(), String> {
+    validate_content_uri(prefix, s)?;
+    if !s.contains("/tree/") {
+        return Err(format!("{prefix}:bad_uri: Not a folder (tree) URI: {s:?}"));
+    }
+    Ok(())
+}
+
+fn validate_media_kind(s: &str) -> Result<(), String> {
+    if matches!(s, "video" | "audio" | "image") {
+        Ok(())
+    } else {
+        Err(format!("gallery:unknown: Invalid media kind: {s:?}"))
+    }
+}
+
+/// Same rules as `validate_file_name`, with a `prefix:` error instead of `ytdlp:`.
+fn validate_save_file_name(prefix: &str, s: &str) -> Result<(), String> {
+    validate_file_name(s).map_err(|_| format!("{prefix}:unknown: Invalid file name: {s:?}"))
+}
+
+fn validate_save_src(prefix: &str, s: &str) -> Result<(), String> {
+    if !s.starts_with('/') || Path::new(s).components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(format!(
+            "{prefix}:unknown: The source path must be absolute and must not contain \"..\": {s:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_mime(prefix: &str, s: &str) -> Result<(), String> {
+    let ok = !s.is_empty()
+        && s.len() <= 100
+        && s.contains('/')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || "/+-._".contains(c));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("{prefix}:unknown: Invalid MIME type: {s:?}"))
+    }
+}
+
+fn validate_gallery_publish(src: &str, kind: &str, file_name: &str, mime: &str) -> Result<(), String> {
+    validate_save_src("gallery", src)?;
+    validate_media_kind(kind)?;
+    validate_save_file_name("gallery", file_name)?;
+    validate_mime("gallery", mime)
+}
+
+fn validate_folder_save(src: &str, tree_uri: &str, file_name: &str, mime: &str) -> Result<(), String> {
+    validate_save_src("folder", src)?;
+    validate_tree_uri("folder", tree_uri)?;
+    validate_save_file_name("folder", file_name)?;
+    validate_mime("folder", mime)
+}
+
+/// Publishes a finished file into the public Gallery (MediaStore) folder (Android only).
+#[tauri::command]
+async fn gallery_publish<R: Runtime>(
+    app: AppHandle<R>,
+    src: String,
+    kind: String,
+    file_name: String,
+    mime: String,
+) -> Result<GalleryPublishResponse, String> {
+    validate_gallery_publish(&src, &kind, &file_name, &mime)?;
+    run_gallery_publish(
+        app,
+        GalleryPublishArgs {
+            src,
+            kind,
+            file_name,
+            mime,
+        },
+    )
+    .await
+}
+
+/// Lets the user pick a save folder (SAF tree) (Android only).
+#[tauri::command]
+async fn folder_pick<R: Runtime>(
+    app: AppHandle<R>,
+    initial_uri: Option<String>,
+) -> Result<FolderPickResponse, String> {
+    if let Some(u) = initial_uri.as_deref() {
+        validate_content_uri("folder", u)?;
+    }
+    run_folder_pick(app, FolderPickArgs { initial_uri }).await
+}
+
+/// Checks that the persisted grant for a picked folder still exists (Android only).
+#[tauri::command]
+async fn folder_status<R: Runtime>(
+    app: AppHandle<R>,
+    tree_uri: String,
+) -> Result<FolderStatusResponse, String> {
+    validate_tree_uri("folder", &tree_uri)?;
+    run_folder_status(app, FolderStatusArgs { tree_uri }).await
+}
+
+/// Copies a finished file into the picked folder and removes the source (Android only).
+#[tauri::command]
+async fn folder_save<R: Runtime>(
+    app: AppHandle<R>,
+    src: String,
+    tree_uri: String,
+    file_name: String,
+    mime: String,
+) -> Result<FolderSaveResponse, String> {
+    validate_folder_save(&src, &tree_uri, &file_name, &mime)?;
+    run_folder_save(
+        app,
+        FolderSaveArgs {
+            src,
+            tree_uri,
+            file_name,
+            mime,
+        },
+    )
+    .await
+}
+
+#[cfg(target_os = "android")]
+async fn run_gallery_publish<R: Runtime>(
+    app: AppHandle<R>,
+    args: GalleryPublishArgs,
+) -> Result<GalleryPublishResponse, String> {
+    let handle = app.state::<MediaHandle<R>>().0.clone();
+    handle
+        .run_mobile_plugin_async::<GalleryPublishResponse>("galleryPublish", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "android"))]
+async fn run_gallery_publish<R: Runtime>(
+    _app: AppHandle<R>,
+    _args: GalleryPublishArgs,
+) -> Result<GalleryPublishResponse, String> {
+    Err("gallery:unknown: only available on Android.".into())
+}
+
+#[cfg(target_os = "android")]
+async fn run_folder_pick<R: Runtime>(
+    app: AppHandle<R>,
+    args: FolderPickArgs,
+) -> Result<FolderPickResponse, String> {
+    let handle = app.state::<MediaHandle<R>>().0.clone();
+    handle
+        .run_mobile_plugin_async::<FolderPickResponse>("folderPick", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "android"))]
+async fn run_folder_pick<R: Runtime>(
+    _app: AppHandle<R>,
+    _args: FolderPickArgs,
+) -> Result<FolderPickResponse, String> {
+    Err("folder:unknown: only available on Android.".into())
+}
+
+#[cfg(target_os = "android")]
+async fn run_folder_status<R: Runtime>(
+    app: AppHandle<R>,
+    args: FolderStatusArgs,
+) -> Result<FolderStatusResponse, String> {
+    let handle = app.state::<MediaHandle<R>>().0.clone();
+    handle
+        .run_mobile_plugin_async::<FolderStatusResponse>("folderStatus", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "android"))]
+async fn run_folder_status<R: Runtime>(
+    _app: AppHandle<R>,
+    _args: FolderStatusArgs,
+) -> Result<FolderStatusResponse, String> {
+    Err("folder:unknown: only available on Android.".into())
+}
+
+#[cfg(target_os = "android")]
+async fn run_folder_save<R: Runtime>(
+    app: AppHandle<R>,
+    args: FolderSaveArgs,
+) -> Result<FolderSaveResponse, String> {
+    let handle = app.state::<MediaHandle<R>>().0.clone();
+    handle
+        .run_mobile_plugin_async::<FolderSaveResponse>("folderSave", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "android"))]
+async fn run_folder_save<R: Runtime>(
+    _app: AppHandle<R>,
+    _args: FolderSaveArgs,
+) -> Result<FolderSaveResponse, String> {
+    Err("folder:unknown: only available on Android.".into())
+}
+
 /// Initializes the plugin. Register it on mobile only:
 /// `#[cfg(mobile)] builder.plugin(tauri_plugin_keepsake_media::init())`.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
@@ -468,7 +760,11 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             ytdlp_info,
             ytdlp_download,
             ytdlp_cancel,
-            ytdlp_mux
+            ytdlp_mux,
+            gallery_publish,
+            folder_pick,
+            folder_status,
+            folder_save
         ])
         .setup(|app, api| {
             #[cfg(target_os = "android")]
@@ -489,6 +785,69 @@ mod tests {
         validate, validate_file_name, validate_format_id, validate_job_id, validate_mux,
         validate_out_dir, validate_ytdlp_url,
     };
+    use super::{
+        validate_content_uri, validate_folder_save, validate_gallery_publish, validate_media_kind,
+        validate_tree_uri,
+    };
+
+    const TREE: &str = "content://com.android.externalstorage.documents/tree/primary%3AMovies";
+
+    #[test]
+    fn content_uri_rules() {
+        assert!(validate_content_uri("folder", TREE).is_ok());
+        assert!(validate_content_uri("open", "content://media/external/video/media/12").is_ok());
+        assert!(validate_content_uri("folder", "file:///sdcard/x").is_err());
+        assert!(validate_content_uri("folder", "/sdcard/x").is_err());
+        assert!(validate_content_uri("folder", "content://").is_err());
+        assert!(validate_content_uri("folder", "content://a/tree/b c").is_err());
+        assert!(validate_content_uri("folder", "content://a/tree/b\0").is_err());
+        assert!(validate_content_uri("folder", "content://a/tree/b\n").is_err());
+        let long = format!("content://a/tree/{}", "x".repeat(2048));
+        assert!(validate_content_uri("folder", &long).is_err());
+        let max = format!("content://a/tree/{}", "x".repeat(2048 - "content://a/tree/".len()));
+        assert!(validate_content_uri("folder", &max).is_ok());
+        let e = validate_content_uri("folder", "http://x").unwrap_err();
+        assert!(e.starts_with("folder:"));
+    }
+
+    #[test]
+    fn tree_uri_rules() {
+        assert!(validate_tree_uri("folder", TREE).is_ok());
+        assert!(validate_tree_uri("folder", "content://media/external/video/media/12").is_err());
+    }
+
+    #[test]
+    fn media_kind_rules() {
+        for k in ["video", "audio", "image"] {
+            assert!(validate_media_kind(k).is_ok());
+        }
+        assert!(validate_media_kind("Video").is_err());
+        assert!(validate_media_kind("").is_err());
+        assert!(validate_media_kind("document").is_err());
+    }
+
+    #[test]
+    fn gallery_publish_rules() {
+        assert!(validate_gallery_publish("/c/g-1/a.mp4", "video", "a.mp4", "video/mp4").is_ok());
+        assert!(validate_gallery_publish("c/a.mp4", "video", "a.mp4", "video/mp4").is_err());
+        assert!(validate_gallery_publish("/c/../a.mp4", "video", "a.mp4", "video/mp4").is_err());
+        assert!(validate_gallery_publish("/c/a.mp4", "file", "a.mp4", "video/mp4").is_err());
+        assert!(validate_gallery_publish("/c/a.mp4", "video", "a/b.mp4", "video/mp4").is_err());
+        assert!(validate_gallery_publish("/c/a.mp4", "video", ".a", "video/mp4").is_err());
+        assert!(validate_gallery_publish("/c/a.mp4", "video", "a.mp4", "mp4").is_err());
+        let e = validate_gallery_publish("/c/a.mp4", "video", "", "video/mp4").unwrap_err();
+        assert!(e.starts_with("gallery:"));
+    }
+
+    #[test]
+    fn folder_save_rules() {
+        assert!(validate_folder_save("/c/a.m4a", TREE, "a.m4a", "audio/mp4").is_ok());
+        assert!(validate_folder_save("/c/a.m4a", "/sdcard", "a.m4a", "audio/mp4").is_err());
+        assert!(validate_folder_save("/c/a.m4a", TREE, "a\\b", "audio/mp4").is_err());
+        assert!(validate_folder_save("a.m4a", TREE, "a.m4a", "audio/mp4").is_err());
+        let e = validate_folder_save("/c/a.m4a", TREE, "", "audio/mp4").unwrap_err();
+        assert!(e.starts_with("folder:"));
+    }
 
     #[test]
     fn ytdlp_job_id_rules() {
@@ -534,9 +893,33 @@ mod tests {
             "https://tiktok.com.evil.com/x",
             "https://nottiktok.com/x",
             "https://instagram.com@evil.com/x",
-            "https://youtube.com/watch?v=x",
+            // youtube.com is now accepted (YTDLP_YOUTUBE_HOSTS); see ytdlp_url_youtube_hosts.
             "not a url",
             "",
+        ] {
+            let e = validate_ytdlp_url(u).unwrap_err();
+            assert!(e.starts_with("ytdlp:unsupported_url:"), "{u}");
+        }
+    }
+
+    #[test]
+    fn ytdlp_url_youtube_hosts() {
+        for u in [
+            "https://youtube.com/watch?v=x",
+            "https://www.youtube.com/watch?v=x",
+            "https://m.youtube.com/watch?v=x",
+            "https://youtu.be/x",
+            "https://WWW.YouTube.com./shorts/x",
+        ] {
+            assert!(validate_ytdlp_url(u).is_ok(), "{u}");
+        }
+        for u in [
+            "http://www.youtube.com/watch?v=x",
+            "https://music.youtube.com/watch?v=x",
+            "https://youtube.com.evil.com/x",
+            "https://notyoutube.com/x",
+            "https://youtube.com@evil.com/x",
+            "https://x.youtu.be/x",
         ] {
             let e = validate_ytdlp_url(u).unwrap_err();
             assert!(e.starts_with("ytdlp:unsupported_url:"), "{u}");

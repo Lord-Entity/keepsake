@@ -9,6 +9,7 @@ import { fetchAndroidInfo, isAndroidYtdlpSupported } from "./android-ytdlp";
 import { EngineError, fail, toAppError } from "./errors";
 import { isDesktop, platform } from "./platform";
 import { fetchYouTubeInfo, isYouTubeUrl } from "./youtube";
+import { tryYouTubeViaYtdlp, youtubeRoute } from "./youtube-ytdlp";
 import { binaryVersions, fetchInfoYtdlp } from "./ytdlp";
 
 export { listFormats, qualityLabel } from "./formats";
@@ -50,7 +51,15 @@ async function fetchInfoInner(url: string, opts: FetchInfoOptions): Promise<Vide
     }
   }
   if (p === "android") {
-    if (yt) return fetchYouTubeInfo(url);
+    if (yt) {
+      // yt-dlp first for >360p (flagged); any error or nothing above 360p -> youtubei.js exactly as before.
+      if (youtubeRoute(url) === "ytdlp") {
+        const info = await tryYouTubeViaYtdlp(url, opts.signal);
+        if (info) return info;
+        if (opts.signal?.aborted) fail("cancelled");
+      }
+      return fetchYouTubeInfo(url);
+    }
     if (isAndroidYtdlpSupported(url)) return fetchAndroidInfo(url, opts.signal);
     fail("unsupported_url", "Only YouTube, TikTok and Instagram links work in the Android app. Other sites need the desktop app.");
   }

@@ -162,3 +162,36 @@ Never sent: `--remux-video`, `--recode-video`, `--postprocessor-args`, anything 
 - `@tauri-apps/plugin-fs` + `tauri-plugin-fs`, Android capability: `fs:allow-open`, `fs:allow-write`, `fs:allow-write-file`, `fs:allow-mkdir`, `fs:allow-exists`, `fs:allow-remove`, scope `$DOWNLOAD/**`, the app cache folder (transcode temp files), plus any user-picked folder.
 - `keepsake-media:allow-transcode` in the Android capability (section 3).
 - CSP `script-src 'self' 'unsafe-eval'`: youtubei.js's decipher uses `new Function`. `'wasm-unsafe-eval'` is no longer needed (ffmpeg.wasm is gone).
+
+## 6. Android save modes and publish commands (Gallery, folder)
+
+Android only; desktop ignores all of this. `androidSaveMode(settings)` in `src/engine/android-gallery.ts` resolves the mode:
+
+| Order | Condition | Mode | Behaviour |
+|---|---|---|---|
+| 1 | `saveTreeUri` non-empty | `folder` | Saved into the user-picked SAF tree |
+| 2 | else `saveDir` empty | `gallery` | MediaStore: Movies/Keepsake, Music/Keepsake or Pictures/Keepsake (collection chosen by MIME). **Default on Android.** |
+| 3 | else | `legacy` | Existing app/preset folder flow, unchanged |
+
+The tree wins over a legacy `saveDir`. Settings fields: `saveTreeUri`, `saveTreeName` (both default `""`).
+
+Gallery and folder modes stage output in `$APPCACHE/gallery-<jobId>/`; the single-file, mux and transcode steps run unchanged there, then publish runs. The staging file is deleted only after a successful publish. The result `filePath` becomes the `content://` URI when published; open it through the plugin (`openFile` accepts `content://` via `checkedDocUri`), not the opener.
+
+```ts
+invoke<{ uri: string; displayPath: string; bytes: number }>("plugin:keepsake-media|gallery_publish",
+  { src, kind: "video" | "audio" | "image", fileName, mime })
+invoke<{ uri: string | null; name: string | null }>("plugin:keepsake-media|folder_pick", { initialUri? })
+invoke<{ ok: boolean; name: string | null }>("plugin:keepsake-media|folder_status", { treeUri })
+invoke<{ uri: string; name: string; bytes: number }>("plugin:keepsake-media|folder_save",
+  { src, treeUri, fileName, mime })
+```
+- `gallery_publish`: API 29+ inserts with `IS_PENDING=1`, copies, clears the flag, reads back `DISPLAY_NAME` (MediaStore may rename); on error the row is deleted. API 24-28 needs `WRITE_EXTERNAL_STORAGE` (runtime, asked on the first gallery save only, never at launch), copies to a `.part`, renames, then scans. A free-space check runs first.
+- `folder_pick`: `ACTION_OPEN_DOCUMENT_TREE`, takes a persistable READ|WRITE grant and releases older tree grants. `folder_status` checks the grant still exists. `folder_save` creates the document, copies in 64 KiB chunks, deletes only the half-written document on error and deletes `src` on success.
+- Capabilities: `keepsake-media:allow-gallery-publish`, `allow-folder-pick`, `allow-folder-status`, `allow-folder-save`.
+- Manifest: `WRITE_EXTERNAL_STORAGE` with `maxSdkVersion="28"` only. No `READ_MEDIA_*`, `MANAGE_EXTERNAL_STORAGE` or `POST_NOTIFICATIONS`.
+
+### Errors
+- Gallery: `gallery:<code>: <msg> kept=<path>`, codes `no_space`, `permission`, `unknown`. On failure the file is moved to `getExternalFilesDir(DOWNLOADS)` and `kept=` is that path (if the move also fails, the staging file is kept and the message says so). A publish failure with a kept file does **not** mark the download failed; the kept path is shown in the error detail and a toast is shown. Denied permission sends the file to the kept folder; permanently denied offers "Open settings" once.
+- Folder: `folder:<code>: <msg>`, codes `permission`, `not_found`, `no_space`, `source_missing`, `bad_uri`, `io`.
+- TS searches for the markers because Tauri may wrap the text. Rust validators: `content://` only, at most 2048 chars, no NUL or whitespace in tree URIs.
+- Tests: `src/engine/__tests__/android-gallery.test.ts`, `android-folder.test.ts`.
