@@ -85,7 +85,7 @@ Keepsake is a [Tauri 2](https://v2.tauri.app) app. The interface is React 19 wit
 |---|---|---|---|
 | Windows 10 / 11 (x64) | NSIS `.exe` installer only | about 25-35 MB | Bundled yt-dlp, a minimal LGPL ffmpeg for merging and conversion, and QuickJS for YouTube |
 | Linux (x64) | `.deb`, `.rpm`, `.AppImage` | `.deb` / `.rpm` about 20-40 MB; `.AppImage` likely 100 MB or more (it bundles WebKitGTK) | Same bundled standalone yt-dlp, ffmpeg and QuickJS in every package; no system Python needed |
-| Android 7.0+ (API 24) | arm64 `.apk` (default build) | about 30-45 MB (includes Python and yt-dlp) | youtubei.js in the app for YouTube (360p video, M4A and WAV audio); TikTok and Instagram through the bundled yt-dlp (Chaquopy, arm64 only, M4A audio only, no MP3 or merge); audio conversion through the native `keepsake-media` plugin |
+| Android 7.0+ (API 24) | arm64 `.apk` (default build) | about 30-45 MB (includes Python and yt-dlp) | youtubei.js in the app for YouTube (360p video, M4A and WAV audio); TikTok and Instagram through the bundled yt-dlp (Chaquopy, arm64 only, separate video and audio streams are downloaded and combined on the phone without re-encoding, M4A audio only, no MP3); audio conversion through the native `keepsake-media` plugin |
 
 The sizes are estimates from the component sizes, not measurements of a release build. They will be replaced with measured numbers once CI publishes the artifacts. Each CI job writes its artifact sizes to the job summary.
 
@@ -95,12 +95,12 @@ The sizes are estimates from the component sizes, not measurements of a release 
 |---|---|---|
 | YouTube | Yes, all qualities | Yes, video up to 360p (see below) |
 | Audio formats | MP3, M4A, OPUS, WAV, FLAC | M4A (default) and WAV |
-| TikTok, Instagram | Yes | Yes, through the bundled yt-dlp (public posts, single videos, M4A audio only) |
+| TikTok, Instagram | Yes | Yes, through the bundled yt-dlp (public posts, single videos; separate video and audio streams are combined on the phone without re-encoding; M4A audio only) |
 | Other sites | 1,000+ sites supported by [yt-dlp](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) | No |
 | Playlists | Yes | No |
 | DRM-protected content | No | No |
 
-On Android, TikTok and Instagram links download through the yt-dlp that is bundled in the app (arm64 only). They offer single-file video at the heights the site serves and M4A audio only; there is no MP3 and no merging, and login-only posts fail. YouTube stays at 360p on Android. For YouTube, video is limited to the one stream that downloads reliably without extra tokens: a 360p MP4 with audio inside. Higher resolutions need separate video and audio streams merged together, which only the desktop app does today. Audio on Android comes from that same stream (AAC, roughly 96 kbps), saved as M4A without conversion or decoded to WAV on the phone. MP3, FLAC and OPUS are not offered on Android yet, because Android has no built-in MP3 encoder and the FLAC and Opus encoders are not available on every supported Android version.
+On Android, TikTok and Instagram links download through the yt-dlp that is bundled in the app (arm64 only). They offer the heights the site serves. When video and audio come as separate streams, both are downloaded and combined on the phone without re-encoding. Audio is M4A only; there is no MP3, and login-only posts fail. YouTube stays at 360p on Android. For YouTube, video is limited to the one stream that downloads reliably without extra tokens: a 360p MP4 with audio inside. Higher resolutions need separate video and audio streams merged together, which only the desktop app does today. Audio on Android comes from that same stream (AAC, roughly 96 kbps), saved as M4A without conversion or decoded to WAV on the phone. MP3, FLAC and OPUS are not offered on Android yet, because Android has no built-in MP3 encoder and the FLAC and Opus encoders are not available on every supported Android version.
 
 DRM-protected streams (most paid streaming services) cannot be downloaded on any platform.
 
@@ -365,7 +365,7 @@ The engine API and the yt-dlp argument contract are documented in [`src/engine/C
 │   │   ├── features/             Format picker, preview card, download rows, library list
 │   │   └── ui/                   Buttons, dialogs, fields, toasts and other primitives
 │   ├── engine/                   Extraction, download and conversion logic (contract: CONTRACT.md)
-│   │   └── __tests__/            bun unit tests (formats, yt-dlp arguments, error mapping)
+│   │   └── __tests__/            bun unit tests (formats, yt-dlp arguments, error mapping, android-ytdlp, reliability)
 │   ├── state/                    Stores for settings, downloads, library, theme
 │   ├── lib/types.ts              Shared engine types
 │   └── styles/                   Theme CSS
@@ -433,6 +433,22 @@ Expected. Other sites and playlists need the Windows or Linux app.
 </details>
 
 <details>
+<summary><b>Android: other TikTok and Instagram messages</b></summary>
+
+- **Rate limit (HTTP 429):** the site is limiting requests. Wait a few minutes and try again.
+- **Refused (HTTP 403):** the post may be private or restricted.
+- **Not found (HTTP 404):** the link is wrong or the video was removed.
+- **Needs a login:** the Android app cannot log in yet. Try a public post or use the desktop app.
+- **Not enough space:** free some storage on the phone and retry.
+- **Can't write to the folder:** pick the save folder again in Settings.
+- **File too large:** files over 500 MB are refused.
+- **Couldn't combine video and audio:** retry; if it keeps failing, pick another quality.
+- **Nothing was downloaded (empty file):** retry later; the site may have changed.
+- **Cancelled:** you stopped the download.
+
+</details>
+
+<details>
 <summary><b>Android: "Can't save to ..."</b></summary>
 
 Folder access from the picker lasts for one session. Pick the folder again in Settings, or clear it to use the default.
@@ -442,7 +458,9 @@ Folder access from the picker lasts for one session. Pick the folder again in Se
 <details>
 <summary><b>Android: where are MP3, FLAC and OPUS? Why only 360p?</b></summary>
 
-Android offers M4A and WAV only for now. M4A is the original audio with no conversion; WAV is decoded on the phone by Android's own media codecs. MP3 needs an encoder Android does not include, and FLAC and Opus encoders are missing on some supported Android versions. Video is limited to 360p because that is the only YouTube stream that downloads reliably on Android without extra tokens. Use the desktop app for other formats and higher resolutions.
+On Android, TikTok and Instagram downloads run on the phone through the bundled yt-dlp. When a post serves video and audio as separate streams, Keepsake combines them on the phone without re-encoding. Audio from TikTok and Instagram is M4A only; there is no MP3 on Android. The app is about 30-45 MB per install because it carries Python and yt-dlp.
+
+For YouTube, Android offers M4A and WAV only for now. M4A is the original audio with no conversion; WAV is decoded on the phone by Android's own media codecs. MP3 needs an encoder Android does not include, and FLAC and Opus encoders are missing on some supported Android versions. Video is limited to 360p because that is the only YouTube stream that downloads reliably on Android without extra tokens. Use the desktop app for other formats and higher resolutions.
 
 </details>
 

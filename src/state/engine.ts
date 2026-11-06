@@ -138,8 +138,9 @@ export function versionsLine(s: BinaryStatus): string {
   const parts: string[] = [];
   if (s.ytdlpVersion) parts.push(`yt-dlp ${s.ytdlpVersion}`);
   if (s.ffmpegVersion) parts.push(`ffmpeg ${s.ffmpegVersion}`);
-  if (s.nodeVersion) parts.push(`Node.js ${s.nodeVersion}`);
-  else if (s.node === "missing") parts.push("Node.js missing (YouTube needs it)");
+  if (s.nodeVersion) parts.push(`JS runtime: ${s.nodeVersion}`);
+  else if (s.node === "ok") parts.push("JS runtime: bundled");
+  else if (s.node === "missing") parts.push("Node.js missing");
   if (parts.length === 0) {
     return s.ytdlp === "unsupported" ? "Built-in engine" : "Versions unavailable";
   }

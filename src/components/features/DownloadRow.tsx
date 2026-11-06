@@ -1,29 +1,40 @@
 import { useState } from "react";
+import type { AppErrorCode } from "../../lib/types";
 import { cancelJob, removeJob, retryJob } from "../../state/downloads";
 import { formatBytes, formatEta, formatPct, formatSpeed } from "../../state/format";
 import type { Job } from "../../state/models";
 import { copyText, openFile, revealFile } from "../../state/native";
+import { navigate } from "../../state/nav";
 import { IconButton } from "../ui/Button";
 import type { IconName } from "../ui/Icon";
 import { Progress, type ProgressTone } from "../ui/Progress";
 import { ActionSheet, type SheetAction } from "../ui/Sheet";
 import { Thumb } from "./PreviewCard";
 
+/** Friendly message only: the raw "(Details: ...)" tail stays behind "Copy error". */
+function friendly(j: Job): string {
+  return (j.error?.message ?? "Unknown error").split(" (Details:")[0];
+}
+
+const FOLDER_CODES: ReadonlySet<AppErrorCode> = new Set<AppErrorCode>(["no_space", "permission"]);
+const needsFolder = (j: Job) => (j.error ? FOLDER_CODES.has(j.error.code) : false);
+
 function statusText(j: Job): string {
+  const stage = j.stage || undefined;
   switch (j.status) {
     case "queued":
       return "Queued";
     case "downloading":
-      return `Downloading · ${j.formatLabel}`;
+      return `${stage ?? "Downloading"} · ${j.formatLabel}`;
     case "merging":
-      return "Merging";
+      return stage ?? "Merging";
     case "converting":
-      return "Converting";
+      return stage ?? "Converting";
     case "done":
       if (j.summary) return `Completed · ${j.summary}`;
       return `Completed · ${j.ext.toUpperCase()}${j.totalBytes ? ` · ${formatBytes(j.totalBytes)}` : ""}`;
     case "failed":
-      return `Failed: ${j.error?.message ?? "Unknown error"}`;
+      return `Failed: ${friendly(j)}`;
     case "cancelled":
       return "Cancelled";
   }
@@ -86,6 +97,9 @@ function actionsFor(j: Job, canReveal: boolean): Action[] {
     case "failed":
       return [
         { icon: "retry", label: "Retry", run: () => retryJob(j.id) },
+        ...(needsFolder(j)
+          ? [{ icon: "folder" as IconName, label: "Choose another folder", run: () => navigate("settings") }]
+          : []),
         {
           icon: "copy",
           label: "Copy error",
@@ -145,12 +159,51 @@ export function DownloadRow({
           )}
         </div>
         <Progress pct={pct} tone={tone(job)} label={job.title} />
-        <span
-          className={`truncate text-[11px] leading-[14px] ${job.status === "failed" ? "text-danger" : "text-fg-2"}`}
-          title={job.status === "failed" ? (job.error?.detail ?? job.error?.message) : undefined}
-        >
-          {statusText(job)}
-        </span>
+        <div className="flex min-w-0 items-center gap-2 text-[11px] leading-[14px]">
+          <span
+            role={job.status === "done" ? "status" : undefined}
+            className={`min-w-0 truncate ${job.status === "failed" ? "text-danger" : job.status === "done" ? "text-success" : "text-fg-2"}`}
+            title={job.status === "failed" ? friendly(job) : undefined}
+          >
+            {statusText(job)}
+          </span>
+          {!phone && !compact && job.status === "failed" && (
+            <>
+              <button type="button" className="shrink-0 font-medium text-accent hover:underline" onClick={() => retryJob(job.id)}>
+                Retry
+              </button>
+              {needsFolder(job) && (
+                <button
+                  type="button"
+                  className="shrink-0 font-medium text-accent hover:underline"
+                  onClick={() => navigate("settings")}
+                >
+                  Choose another folder
+                </button>
+              )}
+            </>
+          )}
+          {!phone && !compact && job.status === "done" && job.filePath && (
+            <>
+              <button
+                type="button"
+                className="shrink-0 font-medium text-accent hover:underline"
+                onClick={() => void openFile(job.filePath!)}
+              >
+                Open
+              </button>
+              {canReveal && (
+                <button
+                  type="button"
+                  className="shrink-0 font-medium text-accent hover:underline"
+                  onClick={() => void revealFile(job.filePath!)}
+                >
+                  Show in folder
+                </button>
+              )}
+            </>
+          )}
+        </div>
       </div>
       {!phone && !compact && (
         <div className="tabular flex w-40 min-w-0 shrink-0 flex-col items-end overflow-hidden text-[11px] leading-[14px] whitespace-nowrap text-fg-2">

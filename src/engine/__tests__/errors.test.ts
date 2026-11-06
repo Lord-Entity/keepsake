@@ -79,7 +79,7 @@ describe("friendlyError: yt-dlp messages map to codes", () => {
 
   test("unknown text keeps the cleaned message, no cookie hint", () => {
     const e = friendlyError("ERROR: something odd happened");
-    expect(e).toEqual({ code: "unknown", message: "something odd happened", detail: "something odd happened", cookiesHint: false });
+    expect(e).toEqual({ code: "unknown", message: ERROR_TEXT.unknown, detail: "something odd happened", cookiesHint: false });
   });
 
   test("cookie hint is set for login-type errors and not for network errors", () => {

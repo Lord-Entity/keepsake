@@ -23,12 +23,45 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 use tauri::{ipc::Channel, AppHandle, Manager};
 
 struct Job {
     pid: u32,
     temp_dir: Option<PathBuf>,
+    /// Set by cancel_ytdlp so the run keeps no temp folder after a cancel.
+    cancelled: Arc<AtomicBool>,
+}
+
+/// Error prefix the TS engine maps to codes: os error 28 (no space) or 13 (permission).
+fn io_prefix(e: &std::io::Error) -> &'static str {
+    match e.raw_os_error() {
+        Some(28) => "ytdlp:no_space: ",
+        Some(13) => "ytdlp:permission: ",
+        _ => "",
+    }
+}
+
+const STALE_TEMP_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// True when a temp folder last touched `age` ago is old enough to sweep.
+fn is_stale_temp(age: std::time::Duration) -> bool {
+    age.as_secs() >= STALE_TEMP_SECS
+}
+
+/// `outDir` must be absolute with no `..` parts.
+fn validate_out_dir(d: &str) -> Result<PathBuf, String> {
+    let p = PathBuf::from(d);
+    if p.is_absolute()
+        && !p
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        Ok(p)
+    } else {
+        Err("outDir must be an absolute path".into())
+    }
 }
 
 /// Running jobs: job id -> process id and the job's own temp folder.
@@ -488,6 +521,7 @@ fn run_blocking(
         cmd.process_group(0);
     }
 
+    let cancelled = Arc::new(AtomicBool::new(false));
     let mut child = {
         let jobs = app.state::<Jobs>();
         let mut map = jobs.0.lock().map_err(|_| "job table poisoned")?;
@@ -496,7 +530,8 @@ fn run_blocking(
         }
         if let Some(t) = &temp_dir {
             // Marker lets a startup sweep recognise folders Keepsake created.
-            std::fs::create_dir_all(t).map_err(|e| format!("cannot create temp folder: {e}"))?;
+            std::fs::create_dir_all(t)
+                .map_err(|e| format!("{}cannot create temp folder: {e}", io_prefix(&e)))?;
             let _ = std::fs::write(t.join(".keepsake-job"), &job_id);
         }
         let child = cmd.spawn().map_err(|e| {
@@ -507,13 +542,14 @@ fn run_blocking(
                     let _ = std::fs::remove_dir(parent);
                 }
             }
-            format!("could not start yt-dlp: {e}")
+            format!("{}could not start yt-dlp: {e}", io_prefix(&e))
         })?;
         map.insert(
             job_id.clone(),
             Job {
                 pid: child.id(),
                 temp_dir: temp_dir.clone(),
+                cancelled: cancelled.clone(),
             },
         );
         child
@@ -534,10 +570,14 @@ fn run_blocking(
     if let Ok(mut map) = app.state::<Jobs>().0.lock() {
         map.remove(&job_id);
     }
-    // The process tree is gone; only now delete this job's temp folder (the
-    // .part files, fragments and intermediates of this job and no other).
+    // The process tree is gone. Delete this job's temp folder (the .part files,
+    // fragments and intermediates of this job and no other) on success or cancel;
+    // keep it after a failed run so a retry can resume (swept after 7 days).
+    let ok = matches!(&status, Ok(s) if s.success());
     if let Some(t) = temp_dir {
-        remove_job_temp(&app, &t);
+        if ok || cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+            remove_job_temp(&app, &t);
+        }
     }
     let status = status.map_err(|e| e.to_string())?;
     Ok(status.code().unwrap_or(-1))
@@ -584,13 +624,50 @@ pub async fn cancel_ytdlp(app: AppHandle, job_id: String) -> Result<(), String> 
         .lock()
         .map_err(|_| "job table poisoned")?
         .get(&job_id)
-        .map(|j| j.pid);
+        .map(|j| {
+            j.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+            j.pid
+        });
     if let Some(pid) = pid {
         tauri::async_runtime::spawn_blocking(move || kill_tree(pid))
             .await
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Remove `<outDir>/.keepsake-tmp/*` folders that carry the `.keepsake-job`
+/// marker and were last modified over 7 days ago. Returns how many were removed.
+#[tauri::command]
+pub async fn sweep_stale_temp(out_dir: String) -> Result<u32, String> {
+    let base = validate_out_dir(&out_dir)?.join(".keepsake-tmp");
+    if cfg!(mobile) {
+        return Ok(0);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let Ok(rd) = std::fs::read_dir(&base) else {
+            return 0;
+        };
+        let mut n = 0;
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_dir() || !p.join(".keepsake-job").is_file() {
+                continue;
+            }
+            let age = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok());
+            if age.is_some_and(is_stale_temp) && std::fs::remove_dir_all(&p).is_ok() {
+                n += 1;
+            }
+        }
+        let _ = std::fs::remove_dir(&base); // only succeeds when empty
+        n
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 fn first_line(program: &Path, arg: &str) -> Option<String> {
@@ -1010,6 +1087,49 @@ mod tests {
         assert_eq!(back.get(&abs("yt-dlp")), m.get(&abs("yt-dlp")));
         // Garbage lines are ignored.
         assert!(parse_version_cache("x\ty\tz\tw\n\n1\t2\t\t/p\n").is_empty());
+    }
+
+    #[test]
+    fn allows_resilience_flags() {
+        let a = s(&[
+            "--no-playlist",
+            "--retries",
+            "5",
+            "--fragment-retries",
+            "5",
+            "--socket-timeout",
+            "30",
+            "--concurrent-fragments",
+            "4",
+            "--",
+            "https://example.com/v",
+        ]);
+        assert!(validate_args(&a).is_ok());
+        assert!(validate_args(&s(&["--retries"])).is_err());
+        assert!(validate_args(&s(&["--cookies", "c.txt"])).is_err());
+        assert!(validate_args(&s(&["--no-playlist", "--exec", "x"])).is_err());
+    }
+
+    #[test]
+    fn stale_age() {
+        use std::time::Duration;
+        assert!(!is_stale_temp(Duration::from_secs(STALE_TEMP_SECS - 1)));
+        assert!(is_stale_temp(Duration::from_secs(STALE_TEMP_SECS)));
+    }
+
+    #[test]
+    fn out_dir_rule() {
+        let good = if cfg!(windows) { r"C:\Users\u\Downloads" } else { "/home/u/d" };
+        assert!(validate_out_dir(good).is_ok());
+        assert!(validate_out_dir("relative/dir").is_err());
+        assert!(validate_out_dir(&format!("{good}{}..", std::path::MAIN_SEPARATOR)).is_err());
+    }
+
+    #[test]
+    fn io_error_prefixes() {
+        assert_eq!(io_prefix(&std::io::Error::from_raw_os_error(28)), "ytdlp:no_space: ");
+        assert_eq!(io_prefix(&std::io::Error::from_raw_os_error(13)), "ytdlp:permission: ");
+        assert_eq!(io_prefix(&std::io::Error::from_raw_os_error(2)), "");
     }
 
     #[test]

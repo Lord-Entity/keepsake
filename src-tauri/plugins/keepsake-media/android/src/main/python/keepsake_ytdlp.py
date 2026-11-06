@@ -1,15 +1,19 @@
 """yt-dlp bridge for the Keepsake Android app (called from Kotlin through Chaquopy).
 
-Both functions take plain strings and return ONE JSON string. They never raise.
+Functions take plain strings and return ONE JSON string. They never raise.
 Options are built only from a fixed allow-list: no postprocessors, cookies, proxy,
 credentials or external downloaders, and nothing from user input except the
 format id, the output folder and the file name.
+Failures are FLAT: {"ok": false, "code": ..., "message": ...}.
 """
 
+import errno
 import glob
 import json
 import os
 import re
+import threading
+import time
 
 import yt_dlp
 
@@ -19,9 +23,10 @@ BASE = {
     "noplaylist": True,
     "quiet": True,
     "no_warnings": False,  # warnings go to stderr -> logcat (tag python.stderr)
-    "retries": 5,
-    "fragment_retries": 5,
+    "retries": 10,
+    "fragment_retries": 10,
     "socket_timeout": 30,
+    "concurrent_fragment_downloads": 4,
     "restrictfilenames": False,
     "extract_flat": False,
     "cachedir": False,
@@ -30,16 +35,28 @@ BASE = {
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
-# (code, needles) in the order of the contract table; first match wins.
+_cancel_flags = {}
+_lock = threading.Lock()
+
+
+class CancelledError(Exception):
+    pass
+
+
+# (code, needles); first match wins.
 _RULES = (
+    ("cancelled", ("cancelled by user",)),
+    ("format_unavailable", ("requested format", "requested format is not available")),
+    ("too_large", ("larger than max-filesize", "max-filesize", "max_filesize", "larger than the 500 mib")),
     ("unsupported_url", ("unsupported url", "is not a valid url")),
+    ("timeout", ("timed out",)),
     ("login_required", ("login", "log in", "sign in", "cookies", "private", "authentication", "not available for anonymous")),
     ("rate_limited", ("429", "too many requests", "rate-limit", "rate limit")),
     ("forbidden", ("403", "forbidden")),
     ("not_found", ("404", "not found", "video unavailable", "no longer available", "has been removed")),
     ("parse_failed", ("unable to extract", "unable to parse", "jsondecodeerror", "no video formats", "no formats")),
 )
-_NETWORK_TEXT = ("getaddrinfo", "timed out", "connection", "network is unreachable", "name resolution", "ssl")
+_NETWORK_TEXT = ("getaddrinfo", "connection reset", "connection refused", "connection aborted", "network is unreachable", "name resolution", "ssl")
 
 
 class _Fail(Exception):
@@ -55,17 +72,33 @@ def _clean(text):
     return " ".join(text.split())[:300]
 
 
+def _inner(exc):
+    info = getattr(exc, "exc_info", None)
+    if info and len(info) > 1 and info[1] is not None:
+        return info[1]
+    return exc
+
+
 def _classify(exc):
     if isinstance(exc, _Fail):
         return exc.code
+    if isinstance(exc, CancelledError):
+        return "cancelled"
+    inner = _inner(exc)
+    if isinstance(inner, CancelledError):
+        return "cancelled"
+    for e in (exc, inner):
+        if isinstance(e, OSError) and e.errno is not None:
+            if e.errno == errno.ENOSPC:
+                return "no_space"
+            if e.errno in (errno.EACCES, errno.EPERM):
+                return "permission"
+            if e.errno == errno.ECONNRESET:
+                return "network"
     text = str(exc).lower()
     for code, needles in _RULES:
         if any(n in text for n in needles):
             return code
-    inner = exc
-    info = getattr(exc, "exc_info", None)
-    if info and len(info) > 1 and info[1] is not None:
-        inner = info[1]
     transport = getattr(getattr(getattr(yt_dlp, "networking", None), "exceptions", None), "TransportError", OSError)
     if isinstance(exc, (OSError, transport)) or isinstance(inner, (OSError, transport)):
         return "network"
@@ -143,8 +176,63 @@ def info(url):
         return _error(exc)
 
 
-def download(url, format_id, out_dir, file_name):
+def cancel(job_id):
     try:
+        with _lock:
+            now = time.time()
+            for k in [k for k, t in _cancel_flags.items() if now - t > 600]:
+                del _cancel_flags[k]
+            _cancel_flags[str(job_id)] = now
+        return json.dumps({"ok": True})
+    except BaseException as exc:
+        return _error(exc)
+
+
+def _is_cancelled(job_id):
+    with _lock:
+        return bool(_cancel_flags.get(job_id))
+
+
+def _remove_files(seen, out_dir, file_name):
+    root = os.path.realpath(out_dir) + os.sep
+    victims = set()
+    for f in seen:
+        if not f:
+            continue
+        victims.update((f, f + ".part", f + ".ytdl"))
+        victims.update(glob.glob(glob.escape(f) + "-Frag*"))
+        if f.endswith(".part"):
+            base = f[:-5]
+            victims.update((base, base + ".ytdl"))
+            victims.update(glob.glob(glob.escape(base) + "-Frag*"))
+    if not seen and file_name:
+        victims.update(glob.glob(os.path.join(glob.escape(out_dir), glob.escape(file_name) + ".*.part")))
+    for v in victims:
+        try:
+            if os.path.realpath(v).startswith(root):
+                os.remove(v)
+        except OSError:
+            pass
+
+
+def download(url, format_id, out_dir, file_name, job_id):
+    job = str(job_id) if job_id is not None else ""
+    seen = set()
+    try:
+        if job and _is_cancelled(job):
+            raise CancelledError("Cancelled by user.")
+
+        def hook(d):
+            for k in ("tmpfilename", "filename"):
+                if d.get(k):
+                    seen.add(d[k])
+            if job and _is_cancelled(job):
+                raise CancelledError("Cancelled by user.")
+            for k in ("total_bytes", "total_bytes_estimate", "downloaded_bytes"):
+                v = d.get(k)
+                if isinstance(v, (int, float)) and v > MAX_FILESIZE:
+                    raise _Fail("too_large", "The file is larger than the 500 MiB limit on Android.")
+
         if file_name:
             name_tmpl = file_name.replace("%", "%%") + ".%(ext)s"
         else:
@@ -153,28 +241,35 @@ def download(url, format_id, out_dir, file_name):
         opts.update({
             "format": format_id,
             "paths": {"home": out_dir, "temp": out_dir},
-            "outtmpl": {"default": os.path.join(out_dir, name_tmpl)},
+            "outtmpl": {"default": name_tmpl},
             "max_filesize": MAX_FILESIZE,
             "overwrites": False,
+            "progress_hooks": [hook],
         })
         with yt_dlp.YoutubeDL(opts) as ydl:
             res = ydl.extract_info(url, download=True)
         _reject_playlist(res)
         path = ((res.get("requested_downloads") or [{}])[0]).get("filepath")
         if not path or not os.path.isfile(path):
-            size = res.get("filesize") or res.get("filesize_approx")
+            rd = (res.get("requested_downloads") or [{}])[0]
+            size = rd.get("filesize") or rd.get("filesize_approx") or res.get("filesize") or res.get("filesize_approx")
             if isinstance(size, (int, float)) and size > MAX_FILESIZE:
-                raise _Fail("unknown", "The file is larger than the 500 MiB limit on Android.")
-            raise _Fail("unknown", "yt-dlp finished without writing a file.")
+                raise _Fail("too_large", "The file is larger than the 500 MiB limit on Android.")
+            raise _Fail("empty", "yt-dlp finished without writing a file.")
         real = os.path.realpath(path)
         if not real.startswith(os.path.realpath(out_dir) + os.sep):
             raise _Fail("unknown", "yt-dlp wrote outside the output folder.")
-        return json.dumps({"ok": True, "path": real, "bytes": os.path.getsize(real)})
+        seen.add(real)
+        size = os.path.getsize(real)
+        if size <= 0:
+            raise _Fail("empty", "The downloaded file is empty.")
+        return json.dumps({"ok": True, "path": real, "bytes": size})
     except BaseException as exc:
-        if file_name:
-            for part in glob.glob(os.path.join(glob.escape(out_dir), glob.escape(file_name) + ".*.part")):
-                try:
-                    os.remove(part)
-                except OSError:
-                    pass
+        try:
+            _remove_files(seen, out_dir, file_name)
+        except BaseException:
+            pass
         return _error(exc)
+    finally:
+        with _lock:
+            _cancel_flags.pop(job, None)

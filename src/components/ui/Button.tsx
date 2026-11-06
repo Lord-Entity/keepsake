@@ -1,6 +1,7 @@
 import { motion, useReducedMotion, type HTMLMotionProps } from "motion/react";
 import type { ReactNode } from "react";
 import { Icon, type IconName } from "./Icon";
+import { Spinner } from "./Loader";
 import { press, t } from "./motion";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger" | "danger-outline";
@@ -57,7 +58,7 @@ export function Button({
       className={`hit icon-host group inline-flex items-center justify-center gap-2 rounded-md text-[12px] font-medium leading-4 whitespace-nowrap transition-[background-color,border-color,color,box-shadow,filter] duration-150 disabled:opacity-45 disabled:pointer-events-none ${h} ${VARIANTS[variant]} ${className}`}
       {...rest}
     >
-      {loading ? <span className="spinner" aria-hidden="true" /> : icon ? <Icon name={icon} size={16} animated /> : null}
+      {loading ? <Spinner size={14} className="" decorative /> : icon ? <Icon name={icon} size={16} animated /> : null}
       {children}
     </motion.button>
   );

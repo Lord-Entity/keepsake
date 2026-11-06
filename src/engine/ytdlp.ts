@@ -303,11 +303,25 @@ function audioSelection(fmt: string, info: VideoInfo | undefined): string[] {
   return ["-f", f, "-x", "--audio-format", fmt];
 }
 
-/** Build the yt-dlp argument list for a download (exported for tests). */
-export function buildDownloadArgs(req: DownloadRequest, outDir: string): { args: string[]; tempDir: string } {
-  assertHttpUrl(req.url);
+/** Per-job temp folder. Rust must keep it when a job fails (not cancelled) so Retry can resume from it. */
+export function keepTempOnFailure(jobId: string, outDir: string): string {
   const s = sep(outDir);
-  const tempDir = `${outDir.replace(/[\\/]+$/, "")}${s}.keepsake-tmp${s}${req.id}`;
+  return `${outDir.replace(/[\\/]+$/, "")}${s}.keepsake-tmp${s}${jobId}`;
+}
+
+const FILE_TEMPLATE = "%(title).80B [%(id)s].%(ext)s";
+const PLAYLIST_TEMPLATE = "%(playlist_title)s/%(playlist_index)s - %(title).80B [%(id)s].%(ext)s";
+
+/** Build the yt-dlp argument list for a download (exported for tests). */
+export function buildDownloadArgs(
+  req: DownloadRequest,
+  outDir: string,
+  opts: { heightFallback?: boolean } = {},
+): { args: string[]; tempDir: string } {
+  assertHttpUrl(req.url);
+  const tempDir = keepTempOnFailure(req.id, outDir);
+  const isPlaylist = req.info?.kind === "playlist";
+  const outTmpl = isPlaylist ? PLAYLIST_TEMPLATE : FILE_TEMPLATE;
   // Keep full paths under ~240 chars on Windows.
   const trim = Math.max(60, Math.min(200, 240 - outDir.length));
   const a = [
@@ -328,14 +342,23 @@ export function buildDownloadArgs(req: DownloadRequest, outDir: string): { args:
     "--print",
     "after_move:KEEPSAKE_DONE|%(filepath)s",
     "-i",
+    "--retries",
+    "10",
+    "--fragment-retries",
+    "10",
+    "--socket-timeout",
+    "30",
+    "--concurrent-fragments",
+    "4",
   ];
+  if (!isPlaylist) a.push("--no-playlist");
   const [kind, value = ""] = req.formatId.split(":");
 
   if (kind === "video") {
-    a.push("-o", "%(title)s.%(ext)s");
+    a.push("-o", outTmpl);
     const h = value === "best" ? 0 : Number.parseInt(value, 10) || 0;
     const cap = h ? `[height<=${h}]` : "";
-    const picked = req.streamId && req.info?.streams.find((st) => st.id === req.streamId);
+    const picked = !opts.heightFallback && req.streamId && req.info?.streams.find((st) => st.id === req.streamId);
     if (picked) {
       a.push("-f", picked.kind === "video-only" ? `${picked.id}+bestaudio[ext=m4a]/${picked.id}+bestaudio` : picked.id);
     } else {
@@ -347,7 +370,7 @@ export function buildDownloadArgs(req: DownloadRequest, outDir: string): { args:
     if (req.embedVideoMeta === true) a.push("--embed-thumbnail", "--convert-thumbnails", "jpg", "--embed-metadata");
   } else if (kind === "audio") {
     const fmt = value || "mp3";
-    a.push("-o", "%(title)s.%(ext)s", ...audioSelection(fmt, req.info));
+    a.push("-o", outTmpl, ...audioSelection(fmt, req.info));
     if (fmt === "mp3" || fmt === "opus") a.push("--audio-quality", `${req.audioBitrate ?? 192}K`);
     // Python bug not ported: never embed into WebM. Embed cover art for mp3/m4a only (Settings, default on).
     if (req.embedThumbnail !== false && (fmt === "mp3" || fmt === "m4a")) {
@@ -355,7 +378,7 @@ export function buildDownloadArgs(req: DownloadRequest, outDir: string): { args:
     }
     a.push("--embed-metadata");
   } else if (kind === "thumb") {
-    a.push("--skip-download", "--write-thumbnail", "-o", "thumbnail:%(title)s_thumb.%(ext)s");
+    a.push("--skip-download", "--write-thumbnail", "-o", "thumbnail:%(title).80B [%(id)s]_thumb.%(ext)s");
     if (value === "png" || value === "jpg") a.push("--convert-thumbnails", value);
     // --skip-download never reaches after_move; print the written thumbnail path instead (INFERRED).
     a.push("--print", "after_video:KEEPSAKE_DONE|%(thumbnails.-1.filepath)s");
@@ -395,8 +418,8 @@ export function parseProgressLine(line: string): Partial<DownloadProgress> | nul
  * Download with yt-dlp. On a bot check with Settings > Cookies "off", retries once per installed browser
  * (COOKIE_FALLBACK_ORDER) with `--cookies-from-browser`, stops at the first success and sets
  * `note: "Retried with cookies from <Browser>"`. An explicit browser choice is never overridden.
- * Every attempt reuses the job id: Rust drops the job from its table and deletes `.keepsake-tmp/<id>` after
- * each exit, so cancel_ytdlp and the temp cleanup behave the same on every attempt.
+ * Every attempt reuses the job id: Rust drops the job from its table after each exit and keeps
+ * `.keepsake-tmp/<id>` after a failed run (so Retry can resume), deleting it only after success or cancel.
  */
 export async function downloadYtdlp(
   req: DownloadRequest,
@@ -404,7 +427,11 @@ export async function downloadYtdlp(
   emit: (p: DownloadProgress) => void,
   isCancelled: () => boolean,
 ): Promise<DownloadProgress> {
-  const first = await downloadOnce(req, outDir, emit, isCancelled);
+  let first = await downloadOnce(req, outDir, emit, isCancelled);
+  // A picked stream that yt-dlp rejects: retry once with the height-based selector for the same request.
+  if (first.status === "failed" && first.error?.code === "format_unavailable" && req.streamId && !isCancelled()) {
+    first = await downloadOnce(req, outDir, emit, isCancelled, true);
+  }
   if (first.status !== "failed" || first.error?.code !== "bot_check" || !wantsFallback(req.cookiesBrowser)) {
     return first;
   }
@@ -433,11 +460,13 @@ async function downloadOnce(
   outDir: string,
   emit: (p: DownloadProgress) => void,
   isCancelled: () => boolean,
+  heightFallback = false,
 ): Promise<DownloadProgress> {
-  const { args, tempDir } = buildDownloadArgs(req, outDir);
+  const { args, tempDir } = buildDownloadArgs(req, outDir, { heightFallback });
   let last: DownloadProgress = { id: req.id, status: "downloading", downloadedBytes: 0 };
   const files: string[] = [];
   const errors: string[] = [];
+  const failedIdx = new Set<string>();
   const r = await runYtdlp(
     req.id,
     args,
@@ -456,6 +485,7 @@ async function downloadOnce(
         files.push(line.slice("KEEPSAKE_DONE|".length));
       } else if (line.includes("ERROR:")) {
         errors.push(line);
+        failedIdx.add(String(last.playlistIndex ?? errors.length));
       }
     },
     tempDir,
@@ -469,12 +499,19 @@ async function downloadOnce(
     if (files.length === 0) {
       return { ...last, status: "failed", error: friendlyError(lastError(errors.length ? errors : r.stderr)) };
     }
-    const failed = errors.length;
-    const err = failed ? { ...appError("unknown"), message: `${files.length} videos, ${failed} failed` } : undefined;
+    const failed = failedIdx.size;
+    const err =
+      failed && count > 0
+        ? { ...appError("unknown"), message: `Saved ${files.length} of ${count} videos` }
+        : undefined;
     return { ...last, status: "done", percent: 100, filePath: finalPath, error: err };
   }
-  if (r.code !== 0 || !finalPath) {
+  if (!finalPath) {
     return { ...last, status: "failed", error: friendlyError(lastError(errors.length ? errors : r.stderr)) };
+  }
+  if (r.code !== 0) {
+    // File was written and its path printed: keep it, flag the non-zero exit.
+    return { ...last, status: "done", percent: 100, filePath: finalPath, note: "Finished with warnings" };
   }
   return { ...last, status: "done", percent: 100, filePath: finalPath };
 }

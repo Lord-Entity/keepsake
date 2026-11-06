@@ -4,5 +4,8 @@
 -keep class app.keepsake.media.OpenArgs { *; }
 -keep class app.keepsake.media.YtdlpInfoArgs { *; }
 -keep class app.keepsake.media.YtdlpDownloadArgs { *; }
+-keep class app.keepsake.media.YtdlpCancelArgs { *; }
+-keep class app.keepsake.media.YtdlpMuxArgs { *; }
+-keep class app.keepsake.media.YtdlpError { *; }
 -keep class app.keepsake.media.KeepsakeYtdlp { *; }
 -keep class com.chaquo.python.** { *; }

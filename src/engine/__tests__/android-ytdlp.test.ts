@@ -140,13 +140,13 @@ describe("host allow-list", () => {
 
 describe("mapYtdlpError", () => {
   test("maps every code to the same AppErrorCode with Android text and no cookie hint", () => {
-    expect(YTDLP_ERROR_CODES.length).toBe(8);
+    expect(YTDLP_ERROR_CODES.length).toBe(16);
     for (const code of YTDLP_ERROR_CODES) {
       const e = mapYtdlpError(`ytdlp:${code}: something happened`);
       expect(e.code).toBe(code);
       expect(e.cookiesHint).toBe(false);
       expect(e.detail).toBe("something happened");
-      expect(e.message).toContain("(Details: something happened)");
+      expect(e.message).not.toContain("Details");
       expect(e.message).not.toContain("Settings > Cookies");
     }
   });
@@ -160,8 +160,8 @@ describe("mapYtdlpError", () => {
 
   test("login_required says the Android app cannot log in", () => {
     const e = mapYtdlpError("ytdlp:login_required: login required");
-    expect(e.message).toMatch(/needs a login/);
-    expect(e.message).toMatch(/Android app can't provide yet/);
+    expect(e.message).toMatch(/needs you to be signed in/);
+    expect(e.message).toMatch(/can't do on Android yet/);
   });
 
   test("an empty detail adds no Details suffix; long details are cut to 300", () => {
@@ -284,14 +284,14 @@ describe("downloadAndroid", () => {
     invokeImpl = async () => ({ path: "/data/x/a.mp4", bytes: 42 });
     const args = { url: "https://www.tiktok.com/@a/video/1", formatId: "h264_720p_1-0", outDir: "/data/x", fileName: "a" };
     expect(await downloadAndroid(args)).toEqual({ path: "/data/x/a.mp4", bytes: 42 });
-    expect(invokeMock).toHaveBeenCalledWith("plugin:keepsake-media|ytdlp_download", args);
+    expect(invokeMock).toHaveBeenCalledWith("plugin:keepsake-media|ytdlp_download", { ...args, jobId: "job" });
   });
 
   test("omits fileName when undefined", async () => {
     invokeImpl = async () => ({ path: "/p", bytes: 1 });
     await downloadAndroid({ url: "u", formatId: "f", outDir: "/d" });
     const sent = invokeMock.mock.calls[0][1];
-    expect(Object.keys(sent).sort()).toEqual(["formatId", "outDir", "url"]);
+    expect(Object.keys(sent).sort()).toEqual(["formatId", "jobId", "outDir", "url"]);
   });
 
   test("bad response -> unknown; native rejection is mapped", async () => {
@@ -310,7 +310,7 @@ describe("listFormats for android + ytdlp info", () => {
     const opts = listFormats(v);
     const video = opts.filter((o) => o.mode === "video" && !o.disabledReason);
     expect(video.map((o) => o.height)).toEqual([1080, 720]);
-    expect(opts.filter((o) => o.mode === "audio").map((o) => o.id)).toEqual(["audio:m4a"]);
+    expect(opts.filter((o) => o.mode === "audio" && !o.disabledReason).map((o) => o.id)).toEqual(["audio:m4a"]);
     expect(opts.filter((o) => o.mode === "thumbnail")).toEqual([]);
   });
 });

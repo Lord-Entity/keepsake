@@ -53,6 +53,8 @@ let fetchToken = 0;
 let fetchAbort: AbortController | null = null;
 let readyTimer: number | undefined;
 
+const RETRYABLE = new Set<string>(["network", "timeout", "rate_limited"]);
+
 const FETCH_MESSAGES = ["Reading the link…", "Checking available formats…", "Almost there…"];
 
 async function runFetch(raw: string) {
@@ -308,7 +310,9 @@ export function HomePage({ phone }: { phone: boolean }) {
         </span>
         <div className="min-w-0 flex-1 pt-0.5">
           <div className="font-semibold">
-            {error?.code === "empty_url" ? "Paste a link first." : "Couldn't read this link"}
+            {error?.code === "empty_url"
+              ? "Paste a link first."
+              : (error?.title ?? "Couldn't read this link")}
           </div>
           {error?.code !== "empty_url" && <p className="selectable text-fg-2">{err.body}</p>}
           {(err.details || error?.detail) && (
@@ -328,7 +332,7 @@ export function HomePage({ phone }: { phone: boolean }) {
           {error?.code !== "empty_url" && (
             <div className={`flex flex-wrap gap-2 ${phone ? "mt-3" : "mt-2"}`}>
               <Button size={phone ? "lg" : "sm"} variant="secondary" icon="retry" onClick={() => fetchNow()}>
-                Try again
+                {error && RETRYABLE.has(error.code) ? "Retry" : "Try again"}
               </Button>
               {error?.cookiesHint && (
                 <Button size={phone ? "lg" : "sm"} variant="ghost" onClick={() => navigate("settings")}>

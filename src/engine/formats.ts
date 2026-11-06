@@ -5,8 +5,8 @@
  * - Desktop (yt-dlp + ffmpeg): every height the link offers (yt-dlp merges), all audio formats, all thumbnails.
  * - Android (youtubei.js + keepsake-media plugin): progressive MP4 at or below 360p (no merging), audio M4A
  *   (default, no conversion) and WAV (AAC decoded to PCM). MP3, FLAC and Opus need encoders Android does not ship yet.
- * - Android, TikTok/Instagram (yt-dlp via Chaquopy, info.source === "ytdlp"): any single-file height (no 360 cap),
- *   M4A only, no thumbnails.
+ * - Android, TikTok/Instagram (yt-dlp via Chaquopy, info.source === "ytdlp"): any height (muxed or merged on device,
+ *   no 360 cap), audio M4A and WAV (MP3 shown disabled), no thumbnails.
  * - Web (dev preview without Tauri): progressive MP4 at or below 360p and thumbnails; no audio (nothing can extract
  *   or convert it in the browser).
  */
@@ -171,29 +171,51 @@ function thumbOptions(): FormatOption[] {
  */
 function androidYtdlpOptions(info: VideoInfo): FormatOption[] {
   const out: FormatOption[] = [];
-  if (info.hasVideo) {
-    const heights = [
-      ...new Set(info.streams.filter((s) => s.kind === "progressive" && s.height).map((s) => s.height!)),
-    ].sort((a, b) => b - a);
-    if (heights.length === 0) {
-      out.push(placeholderRow(SINGLE_FILE_MAX_HEIGHT, false, "No single-file video for this link"));
-    } else {
-      // Default: highest <= 1080, else the first.
-      const defIdx = Math.max(0, heights.findIndex((h) => h <= 1080));
-      heights.forEach((h, i) =>
-        out.push({
-          id: `video:${h}`,
-          mode: "video",
-          label: qualityLabel(h, info.fpsByHeight[h]),
-          height: h,
-          fps: info.fpsByHeight[h] || undefined,
-          ext: "mp4",
-          isDefault: i === defIdx,
-          needsMerge: false,
-          needsConversion: false,
-        }),
-      );
+  const progressive = new Set(info.streams.filter((s) => s.kind === "progressive" && s.height).map((s) => s.height!));
+  const hasAudioOnly = info.streams.some((s) => s.kind === "audio-only");
+  // Video-only heights are usable only when a separate audio stream exists to merge with.
+  const videoOnly = hasAudioOnly
+    ? info.streams.filter((s) => s.kind === "video-only" && s.height).map((s) => s.height!)
+    : [];
+  const heights = [...new Set([...progressive, ...videoOnly])].sort((a, b) => b - a);
+  if (heights.length > 0) {
+    // Default: highest <= 1080, else the lowest available (closest to 1080).
+    const found = heights.findIndex((h) => h <= 1080);
+    const defIdx = found >= 0 ? found : heights.length - 1;
+    heights.forEach((h, i) =>
+      out.push({
+        id: `video:${h}`,
+        mode: "video",
+        label: qualityLabel(h, info.fpsByHeight[h]),
+        height: h,
+        fps: info.fpsByHeight[h] || undefined,
+        ext: "mp4",
+        isDefault: i === defIdx,
+        needsMerge: !progressive.has(h),
+        needsConversion: false,
+      }),
+    );
+  } else {
+    let path = "";
+    try {
+      path = new URL(info.url).pathname;
+    } catch {
+      /* ignore */
     }
+    const photo = !info.hasVideo && (info.thumbnails.length > 0 || /^\/p\//.test(path));
+    const reason = photo
+      ? "This post has photos, not a video. Save images with the desktop app."
+      : "No video we can save on Android for this link. Try Audio, or use the desktop app.";
+    out.push({
+      id: "video:none",
+      mode: "video",
+      label: reason,
+      ext: "mp4",
+      isDefault: false,
+      needsMerge: false,
+      needsConversion: false,
+      disabledReason: reason,
+    });
   }
   const pick = pickYtdlpFormat(info, "audio:m4a");
   out.push({
@@ -202,10 +224,31 @@ function androidYtdlpOptions(info: VideoInfo): FormatOption[] {
     label: AUDIO_LABEL.m4a,
     audioFormat: "m4a",
     ext: "m4a",
-    isDefault: true,
+    isDefault: !!pick,
     needsMerge: false,
     needsConversion: !!pick?.needsRemux,
     ...(pick ? {} : { disabledReason: "No AAC audio in this link" }),
+  });
+  out.push({
+    id: "audio:mp3",
+    mode: "audio",
+    label: AUDIO_LABEL.mp3,
+    audioFormat: "mp3",
+    ext: "mp3",
+    isDefault: false,
+    needsMerge: false,
+    needsConversion: true,
+    disabledReason: "MP3 needs the desktop app.",
+  });
+  out.push({
+    id: "audio:wav",
+    mode: "audio",
+    label: AUDIO_LABEL.wav,
+    audioFormat: "wav",
+    ext: "wav",
+    isDefault: false,
+    needsMerge: false,
+    needsConversion: true,
   });
   return out;
 }

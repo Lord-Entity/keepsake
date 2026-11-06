@@ -7,7 +7,9 @@
 //!   transcode { input, output, format: "wav" | "m4a", kbps? } -> { path }
 //!   open_file { path }
 //!   ytdlp_info { url } -> { ok, info }                        (TikTok/Instagram, yt-dlp via Chaquopy)
-//!   ytdlp_download { url, formatId, outDir, fileName? } -> { path, bytes }
+//!   ytdlp_download { url, formatId, outDir, fileName?, jobId } -> { path, bytes }
+//!   ytdlp_cancel { jobId } -> {}
+//!   ytdlp_mux { videoPath, audioPath, outDir, fileName } -> { path, bytes }
 //!
 //! JS: `invoke("plugin:keepsake-media|transcode", { input, output, format, kbps })`.
 //! On desktop and iOS the command exists but always returns an error; the app
@@ -204,6 +206,60 @@ struct YtdlpDownloadArgs {
     out_dir: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     file_name: Option<String>,
+    job_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct YtdlpCancelArgs {
+    job_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct YtdlpCancelResponse {}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct YtdlpMuxArgs {
+    video_path: String,
+    audio_path: String,
+    out_dir: String,
+    file_name: String,
+}
+
+fn validate_job_id(s: &str) -> Result<(), String> {
+    let ok = !s.is_empty()
+        && s.chars().count() <= 64
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("ytdlp:unknown: Invalid job id: {s:?}"))
+    }
+}
+
+/// Absolute, no "..", extension .mp4/.m4a/.webm/.part (checked as POSIX text).
+fn validate_mux_input(label: &str, s: &str) -> Result<(), String> {
+    let ext_ok = [".mp4", ".m4a", ".webm", ".part"].iter().any(|e| s.ends_with(e));
+    if !s.starts_with('/')
+        || Path::new(s).components().any(|c| matches!(c, Component::ParentDir))
+        || !ext_ok
+    {
+        return Err(format!(
+            "ytdlp:unknown: The {label} path must be absolute, without \"..\", and end in .mp4, .m4a, .webm or .part: {s:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_mux(video: &str, audio: &str, out_dir: &str, file_name: &str) -> Result<(), String> {
+    validate_mux_input("video", video)?;
+    validate_mux_input("audio", audio)?;
+    if video == audio {
+        return Err("ytdlp:unknown: Video and audio must be different files.".into());
+    }
+    validate_out_dir(out_dir)?;
+    validate_file_name(file_name)
 }
 
 /// https only, host must be an allow-listed domain or a subdomain of one.
@@ -271,9 +327,11 @@ async fn ytdlp_download<R: Runtime>(
     format_id: String,
     out_dir: String,
     file_name: Option<String>,
+    job_id: String,
 ) -> Result<YtdlpDownloadResponse, String> {
     validate_ytdlp_url(&url)?;
     validate_format_id(&format_id)?;
+    validate_job_id(&job_id)?;
     validate_out_dir(&out_dir)?;
     if let Some(n) = file_name.as_deref() {
         validate_file_name(n)?;
@@ -285,9 +343,79 @@ async fn ytdlp_download<R: Runtime>(
             format_id,
             out_dir,
             file_name,
+            job_id,
         },
     )
     .await
+}
+
+/// Cancels a running yt-dlp download job (Android only).
+#[tauri::command]
+async fn ytdlp_cancel<R: Runtime>(app: AppHandle<R>, job_id: String) -> Result<(), String> {
+    validate_job_id(&job_id)?;
+    run_ytdlp_cancel(app, YtdlpCancelArgs { job_id }).await.map(|_| ())
+}
+
+/// Muxes a downloaded video and audio track into one file (Android only).
+#[tauri::command]
+async fn ytdlp_mux<R: Runtime>(
+    app: AppHandle<R>,
+    video_path: String,
+    audio_path: String,
+    out_dir: String,
+    file_name: String,
+) -> Result<YtdlpDownloadResponse, String> {
+    validate_mux(&video_path, &audio_path, &out_dir, &file_name)?;
+    run_ytdlp_mux(
+        app,
+        YtdlpMuxArgs {
+            video_path,
+            audio_path,
+            out_dir,
+            file_name,
+        },
+    )
+    .await
+}
+
+#[cfg(target_os = "android")]
+async fn run_ytdlp_cancel<R: Runtime>(
+    app: AppHandle<R>,
+    args: YtdlpCancelArgs,
+) -> Result<YtdlpCancelResponse, String> {
+    let handle = app.state::<MediaHandle<R>>().0.clone();
+    handle
+        .run_mobile_plugin_async::<YtdlpCancelResponse>("ytdlpCancel", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "android"))]
+async fn run_ytdlp_cancel<R: Runtime>(
+    _app: AppHandle<R>,
+    _args: YtdlpCancelArgs,
+) -> Result<YtdlpCancelResponse, String> {
+    Err("ytdlp:unknown: only available on Android.".into())
+}
+
+#[cfg(target_os = "android")]
+async fn run_ytdlp_mux<R: Runtime>(
+    app: AppHandle<R>,
+    args: YtdlpMuxArgs,
+) -> Result<YtdlpDownloadResponse, String> {
+    let handle = app.state::<MediaHandle<R>>().0.clone();
+    handle
+        .run_mobile_plugin_async::<YtdlpDownloadResponse>("ytdlpMux", args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "android"))]
+async fn run_ytdlp_mux<R: Runtime>(
+    _app: AppHandle<R>,
+    _args: YtdlpMuxArgs,
+) -> Result<YtdlpDownloadResponse, String> {
+    Err("ytdlp:unknown: only available on Android.".into())
 }
 
 #[cfg(target_os = "android")]
@@ -338,7 +466,9 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             transcode,
             open_file,
             ytdlp_info,
-            ytdlp_download
+            ytdlp_download,
+            ytdlp_cancel,
+            ytdlp_mux
         ])
         .setup(|app, api| {
             #[cfg(target_os = "android")]
@@ -356,8 +486,34 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 #[cfg(test)]
 mod tests {
     use super::{
-        validate, validate_file_name, validate_format_id, validate_out_dir, validate_ytdlp_url,
+        validate, validate_file_name, validate_format_id, validate_job_id, validate_mux,
+        validate_out_dir, validate_ytdlp_url,
     };
+
+    #[test]
+    fn ytdlp_job_id_rules() {
+        assert!(validate_job_id("job_1-A").is_ok());
+        assert!(validate_job_id("").is_err());
+        assert!(validate_job_id("a.b").is_err());
+        assert!(validate_job_id("a b").is_err());
+        assert!(validate_job_id(&"a".repeat(64)).is_ok());
+        assert!(validate_job_id(&"a".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn ytdlp_mux_rules() {
+        let ok = |v: &str, a: &str, d: &str, n: &str| validate_mux(v, a, d, n).is_ok();
+        assert!(ok("/c/v.mp4", "/c/a.m4a", "/d", "out.mp4"));
+        assert!(ok("/c/v.webm", "/c/a.part", "/d", "out"));
+        assert!(!ok("c/v.mp4", "/c/a.m4a", "/d", "out.mp4"));
+        assert!(!ok("/c/../v.mp4", "/c/a.m4a", "/d", "out.mp4"));
+        assert!(!ok("/c/v.mp4", "/c/v.mp4", "/d", "out.mp4"));
+        assert!(!ok("/c/v.mkv", "/c/a.m4a", "/d", "out.mp4"));
+        assert!(!ok("/c/v.mp4", "/c/a.mp3", "/d", "out.mp4"));
+        assert!(!ok("/c/v.mp4", "/c/a.m4a", "d", "out.mp4"));
+        assert!(!ok("/c/v.mp4", "/c/a.m4a", "/d", "a/b.mp4"));
+        assert!(!ok("/c/v.mp4", "/c/a.m4a", "/d", ""));
+    }
 
     #[test]
     fn ytdlp_url_accepts_allowed_hosts() {

@@ -3,7 +3,7 @@ import type { VideoInfo } from "../../lib/types";
 import { formatClock, formatCount, formatDate } from "../../state/format";
 import { Badge } from "../ui/Badge";
 import { Icon } from "../ui/Icon";
-import { Skeleton } from "../ui/Fields";
+import { Pulse } from "../ui/Loader";
 import { press, t } from "../ui/motion";
 
 function kicker(info: VideoInfo): string {
@@ -76,13 +76,16 @@ export function PreviewCard({
     <AnimatePresence mode="wait" initial={false}>
       {loading ? (
         <motion.div key="loading" {...fade} transition={t.base} className={`flex min-h-0 flex-1 gap-4 ${phone ? "flex-col" : ""}`}>
-          <Skeleton className={phone ? "aspect-video w-full" : "aspect-video h-full max-h-full shrink-0 rounded-md"} />
+          <div
+            aria-hidden="true"
+            className={`ks-shimmer motion-safe-only rounded-[var(--radius-sm)] ${
+              phone ? "aspect-video w-full" : "aspect-video h-full max-h-full shrink-0 rounded-md"
+            }`}
+          />
           <div className="flex min-w-0 flex-1 flex-col gap-3 pt-1">
             <div className="text-[11px] font-medium tracking-wider text-fg-3">FETCHING</div>
             <div className="text-[15px] font-semibold">Reading link info...</div>
-            <Skeleton className="h-3 w-3/4" />
-            <Skeleton className="h-3 w-1/2" />
-            <Skeleton className="h-3 w-2/3" />
+            <Pulse lines={3} />
           </div>
         </motion.div>
       ) : info ? (

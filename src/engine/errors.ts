@@ -25,9 +25,22 @@ function short(detail: string, limit = 300): string {
   return d.length <= limit ? d : `${d.slice(0, limit - 3)}...`;
 }
 
-const RULES: [AppErrorCode, string[], string[]?][] = [
+type Needle = string | RegExp;
+// 4th element: plain-text override for the code's default message.
+const RULES: [AppErrorCode, Needle[], Needle[]?, string?][] = [
   // Rust run_ytdlp rejects with "js_runtime_missing: ..." (src-tauri/src/ytdlp.rs).
   ["js_runtime_missing", ["js_runtime_missing"]],
+  // spawn must come before permission: both can say "access is denied".
+  ["spawn", ["could not start", "failed to start", "failed to spawn", "error spawning"], ["access is denied", "permission denied"]],
+  ["no_space", ["no space left on device", /\berrno 28\b/, "not enough space on the disk", "disk full"]],
+  ["permission", ["permission denied", /\berrno 13\b/, "access is denied"]],
+  [
+    "unavailable",
+    ["premieres in", "premiere will begin", "live event will begin", "this live event", "premiere"],
+    undefined,
+    "This video isn't ready yet. Try again later.",
+  ],
+  ["empty", ["playlist is empty", "no videos", "empty playlist"]],
   ["unsupported_url", ["unsupported url"]],
   ["drm", ["drm protected", "drm-protected", "drm:"]],
   ["age_restricted", ["age-restricted", "age restricted", "confirm your age", "age verification"]],
@@ -61,9 +74,12 @@ const RULES: [AppErrorCode, string[], string[]?][] = [
       "account associated with this video has been terminated",
     ],
   ],
+  // Before login_required so "rate-limit" wording maps here.
+  ["rate_limited", ["http error 429", "too many requests", "rate-limit", "rate limit"]],
   [
     "login_required",
     [
+      "logged-in",
       "login required",
       "log in",
       "login",
@@ -75,15 +91,12 @@ const RULES: [AppErrorCode, string[], string[]?][] = [
       "members-only",
       "members only",
       "premium",
-      "rate-limit",
-      "rate limit",
       "authentication",
       "need to be logged",
       "requires authentication",
     ],
   ],
   ["format_unavailable", ["requested format is not available", "requested format not available"]],
-  ["rate_limited", ["http error 429", "too many requests"]],
   ["forbidden", ["http error 403", "forbidden"]],
   ["not_found", ["http error 404", "404: not found", "not found (404)"]],
   [
@@ -99,9 +112,8 @@ const RULES: [AppErrorCode, string[], string[]?][] = [
       "connection reset",
       "connection aborted",
       "connectionreset",
-      "10054",
-      "10060",
-      "10061",
+      /winerror (?:10054|10060|10061)\b/,
+      /\berrno (?:104|111|113)\b/,
       "remote end closed",
       "no route to host",
       // webview / plugin-http wording (INFERRED from common fetch error texts)
@@ -128,6 +140,7 @@ const COOKIE_CODES: ReadonlySet<AppErrorCode> = new Set<AppErrorCode>([
   "forbidden",
   "no_formats",
 ]);
+// rate_limited/forbidden texts now carry their own hint; keep cookiesHint as before.
 
 /** Build an AppError from a known code. `detail` is appended as "(Details: ...)" unless already in the text. */
 export function appError(code: AppErrorCode, detail?: string): AppError {
@@ -141,11 +154,14 @@ export function appError(code: AppErrorCode, detail?: string): AppError {
 export function friendlyError(raw: string): AppError {
   const detail = cleanError(raw);
   const low = detail.toLowerCase();
-  const has = (needles: string[]) => needles.some((n) => low.includes(n));
-  for (const [code, any, also] of RULES) {
-    if (has(any) && (!also || has(also))) return appError(code, detail);
+  const has = (needles: Needle[]) => needles.some((n) => (typeof n === "string" ? low.includes(n) : n.test(low)));
+  for (const [code, any, also, override] of RULES) {
+    if (has(any) && (!also || has(also))) {
+      const e = appError(code, detail);
+      return override ? { ...e, message: `${override} (Details: ${short(detail)})` } : e;
+    }
   }
-  return { code: "unknown", message: detail, detail, cookiesHint: false };
+  return { code: "unknown", message: ERROR_TEXT.unknown, detail, cookiesHint: false };
 }
 
 /** Normalise anything thrown into a plain AppError object. */

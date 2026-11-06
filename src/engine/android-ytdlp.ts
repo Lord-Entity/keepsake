@@ -3,7 +3,10 @@
  * "keepsake-media" Tauri plugin. Contract: plan-docs/07-android-ytdlp-plan.md section 2, src/engine/CONTRACT.md.
  *
  *   command "ytdlp_info",     args { url },                                   resolves { ok: true, info: YtdlpInfo }
- *   command "ytdlp_download", args { url, formatId, outDir, fileName? },      resolves { path, bytes }
+ *   command "ytdlp_download", args { url, formatId, outDir, fileName?, jobId }, resolves { path, bytes }
+ *   command "ytdlp_cancel",   args { jobId },                                 resolves {}
+ *   command "ytdlp_mux",      args { videoPath, audioPath, outDir, fileName }, resolves { path, bytes }
+ *   jobId: caller-chosen id; "-v" / "-a" suffixes for the video and audio parts of a muxed download.
  *   Both reject with a string containing "ytdlp:<code>: <message>" (code in YTDLP_ERROR_CODES).
  *   Needs "keepsake-media:allow-ytdlp-info" and "keepsake-media:allow-ytdlp-download" in src-tauri/capabilities/mobile.json.
  * VERIFIED (node_modules/@tauri-apps/api/core.d.ts 2.12.4): `invoke<T>(cmd, args?)`; plugin commands are
@@ -34,6 +37,14 @@ export const YTDLP_ERROR_CODES: readonly string[] = [
   "not_found",
   "parse_failed",
   "network",
+  "timeout",
+  "no_space",
+  "permission",
+  "too_large",
+  "cancelled",
+  "format_unavailable",
+  "mux_failed",
+  "empty",
   "unknown",
 ];
 
@@ -60,16 +71,27 @@ export interface YtdlpInfo {
   formats: YtdlpFormat[];
 }
 
+export const PERMISSION_TEXT = "Keepsake can't save to this folder. Pick Downloads, Music or Movies in Settings.";
+export const MP3_TEXT = "MP3 isn't available on Android yet. Choose M4A.";
+
 const ANDROID_TEXT: Record<string, string> = {
   unsupported_url: "This link isn't supported. Paste a TikTok or Instagram video link.",
   login_required:
-    "This post needs a login, which the Android app can't provide yet. Try a public post, try again later, or use the desktop app.",
-  rate_limited: "The site is rate-limiting requests (HTTP 429). Wait a few minutes and try again.",
-  forbidden: "The site refused access (HTTP 403). The post may be private or restricted.",
+    "This post needs you to be signed in, which Keepsake can't do on Android yet. Try a public post, or use the desktop app.",
+  rate_limited: "Instagram or TikTok is asking us to slow down. Wait a few minutes, then try again.",
+  forbidden: "The site refused access. The post may be private or restricted.",
   not_found: "The post wasn't found. The link may be wrong or the video was removed.",
   parse_failed: "Couldn't read this page. The site may have changed; a Keepsake update may fix it.",
-  network: "Couldn't reach the site. Check your internet connection and try again.",
-  unknown: "The download failed.",
+  network: "The connection dropped. Check your signal and tap Retry.",
+  timeout: "The connection timed out. Check your signal and tap Retry.",
+  no_space: "Your phone may be out of storage. Free some space and try again.",
+  permission: PERMISSION_TEXT,
+  too_large: "This video is bigger than 500 MB, which Keepsake can't save on Android yet.",
+  cancelled: "Download cancelled.",
+  format_unavailable: "This quality isn't available for this post. Pick another quality.",
+  mux_failed: "Keepsake couldn't combine the video and audio. Try a different quality.",
+  empty: "No downloadable video was found on this page.",
+  unknown: "Something went wrong while saving. Tap Retry.",
 };
 
 const MISSING_TEXT = "TikTok and Instagram downloads aren't available in this build. Reinstall Keepsake.";
@@ -160,6 +182,10 @@ export interface YtdlpPick {
   needsRemux: boolean;
   height?: number;
   sizeBytes?: number;
+  /** Set when formatId is video-only: the audio-only stream to download and mux with it. */
+  audioFormatId?: string;
+  /** Best single-file (muxed) format of the same info, used when formatId is unavailable. */
+  fallback?: { formatId: string; ext: string };
 }
 
 /** Pure: UI formatId ("video:<h>" | "video:best" | "audio:m4a") -> concrete yt-dlp format, or null when nothing fits. */
@@ -172,17 +198,34 @@ export function pickYtdlpFormat(info: VideoInfo, uiFormatId: string): YtdlpPick 
     const marked = watermarked.get(info) ?? new Set<string>();
     const isMarked = (s: StreamInfo) => marked.has(s.id) || /^download/i.test(s.id);
     const isH264 = (s: StreamInfo) => /^(avc|h264)/i.test(s.vcodec ?? "");
-    const candidates = info.streams
-      .filter((s) => s.kind === "progressive" && (s.height ?? 0) <= limit)
-      .sort(
-        (a, b) =>
-          (b.height ?? 0) - (a.height ?? 0) ||
-          Number(isMarked(a)) - Number(isMarked(b)) ||
-          Number(isH264(b)) - Number(isH264(a)) ||
-          (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0),
-      );
-    const s = candidates[0];
-    return s ? { formatId: s.id, ext: s.ext, needsRemux: false, height: s.height, sizeBytes: s.sizeBytes } : null;
+    const cmp = (a: StreamInfo, b: StreamInfo) =>
+      (b.height ?? 0) - (a.height ?? 0) ||
+      Number(isMarked(a)) - Number(isMarked(b)) ||
+      Number(a.kind === "video-only") - Number(b.kind === "video-only") ||
+      Number(isH264(b)) - Number(isH264(a)) ||
+      (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0);
+    const prog = info.streams.filter((s) => s.kind === "progressive" && (s.height ?? 0) <= limit).sort(cmp);
+    const audio = info.streams.filter((s) => s.kind === "audio-only");
+    const bestAudio = audio.filter((s) => s.ext === "m4a").sort((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0))[0];
+    const vids = info.streams
+      .filter((s) => (s.kind === "progressive" || (s.kind === "video-only" && bestAudio)) && (s.height ?? 0) <= limit)
+      .sort(cmp);
+    const s = vids[0];
+    if (!s) return null;
+    const fb = prog[0];
+    const fallback = fb && fb.id !== s.id ? { formatId: fb.id, ext: fb.ext } : undefined;
+    if (s.kind === "video-only") {
+      return {
+        formatId: s.id,
+        ext: "mp4",
+        needsRemux: false,
+        height: s.height,
+        sizeBytes: s.sizeBytes,
+        audioFormatId: bestAudio!.id,
+        fallback,
+      };
+    }
+    return { formatId: s.id, ext: s.ext, needsRemux: false, height: s.height, sizeBytes: s.sizeBytes, fallback };
   }
   if (uiFormatId === "audio:m4a") {
     const audio = info.streams.filter((s) => s.kind === "audio-only" && s.ext === "m4a");
@@ -204,11 +247,12 @@ export function mapYtdlpError(message: string): AppError {
   const text = typeof message === "string" ? message : rawText(message);
   const m = /ytdlp:([a-z_]+):\s*([\s\S]*)/.exec(text);
   if (m && YTDLP_ERROR_CODES.includes(m[1])) {
+    // Marker-less "unknown" still maps below; known codes map here.
     const code = m[1];
     const detail = m[2].replace(/\s+/g, " ").trim().slice(0, 300) || undefined;
     return {
       code: code as AppErrorCode,
-      message: ANDROID_TEXT[code] + (detail ? ` (Details: ${detail})` : ""),
+      message: ANDROID_TEXT[code] ?? ANDROID_TEXT.unknown,
       detail,
       cookiesHint: false,
     };
@@ -216,7 +260,7 @@ export function mapYtdlpError(message: string): AppError {
   if (!m && MISSING_RE.test(text)) {
     return { code: "ytdlp_missing", message: MISSING_TEXT, detail: text, cookiesHint: false };
   }
-  return { code: "unknown", message: cleanError(text), detail: text, cookiesHint: false };
+  return { code: "unknown", message: ANDROID_TEXT.unknown, detail: cleanError(text), cookiesHint: false };
 }
 
 function badInfo(): EngineError {
@@ -261,6 +305,7 @@ export async function downloadAndroid(args: {
   formatId: string;
   outDir: string;
   fileName?: string;
+  jobId?: string;
 }): Promise<{ path: string; bytes: number }> {
   let res: unknown;
   try {
@@ -269,6 +314,7 @@ export async function downloadAndroid(args: {
       formatId: args.formatId,
       outDir: args.outDir,
       ...(args.fileName ? { fileName: args.fileName } : {}),
+      jobId: args.jobId ?? "job",
     });
   } catch (e) {
     throw new EngineError(mapYtdlpError(rawText(e)));
@@ -283,4 +329,66 @@ export async function downloadAndroid(args: {
     });
   }
   return { path: r.path, bytes: r.bytes };
+}
+
+/** Invokes ytdlp_cancel. Never throws. */
+export async function cancelAndroid(jobId: string): Promise<void> {
+  try {
+    await invoke<unknown>("plugin:keepsake-media|ytdlp_cancel", { jobId });
+  } catch {
+    // nothing to cancel, or the plugin is gone
+  }
+}
+
+/** Invokes ytdlp_mux (video-only + audio-only -> one file). Rejects with EngineError. */
+export async function muxAndroid(args: {
+  videoPath: string;
+  audioPath: string;
+  outDir: string;
+  fileName: string;
+}): Promise<{ path: string; bytes: number }> {
+  let res: unknown;
+  try {
+    res = await invoke<unknown>("plugin:keepsake-media|ytdlp_mux", { ...args });
+  } catch (e) {
+    throw new EngineError(mapYtdlpError(rawText(e)));
+  }
+  const r = res as { path?: unknown; bytes?: unknown } | null;
+  if (!r || typeof r.path !== "string" || r.path === "") {
+    throw new EngineError({ code: "mux_failed", message: ANDROID_TEXT.mux_failed, detail: "bad ytdlp_mux response", cookiesHint: false });
+  }
+  return { path: r.path, bytes: typeof r.bytes === "number" ? r.bytes : 0 };
+}
+
+const RETRYABLE: ReadonlySet<string> = new Set(["network", "timeout", "rate_limited"]);
+
+/**
+ * Run `fn`, retrying network / timeout / rate_limited failures up to `retries` times with `delays` (ms) between
+ * attempts (default 2 s then 6 s). Checks `signal` before every retry; an abort throws "cancelled".
+ */
+export async function runWithRetry<T>(
+  fn: (attempt: number) => Promise<T>,
+  opts: { signal?: AbortSignal; retries?: number; delays?: number[] } = {},
+): Promise<T> {
+  const retries = opts.retries ?? 2;
+  const delays = opts.delays ?? [2000, 6000];
+  for (let attempt = 0; ; attempt++) {
+    if (opts.signal?.aborted) throw new EngineError(appError("cancelled"));
+    try {
+      return await fn(attempt);
+    } catch (e) {
+      const code = (e as { code?: unknown } | null)?.code;
+      if (attempt >= retries || typeof code !== "string" || !RETRYABLE.has(code)) throw e;
+      const ms = delays[Math.min(attempt, delays.length - 1)] ?? 0;
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(done, ms);
+        function done() {
+          clearTimeout(t);
+          opts.signal?.removeEventListener("abort", done);
+          resolve();
+        }
+        opts.signal?.addEventListener("abort", done, { once: true });
+      });
+    }
+  }
 }

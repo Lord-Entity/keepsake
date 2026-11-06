@@ -4,7 +4,6 @@ import { useIsPhone } from "../../state/hooks";
 import { dismissToast, useToasts, type Toast, type ToastTone } from "../../state/toast";
 import { Icon, type IconName } from "./Icon";
 import { IconButton } from "./Button";
-import { t } from "./motion";
 
 const ICON: Record<ToastTone, IconName> = {
   success: "check",
@@ -20,8 +19,11 @@ const TONE: Record<ToastTone, { chip: string; bar: string; text: string }> = {
   info: { chip: "bg-accent-soft text-accent", bar: "bg-accent", text: "text-accent" },
 };
 
-/** At most this many toasts on screen; older ones wait in the store. */
+/** At most this many toasts on screen; older ones beyond the newest 3 are dropped, not queued. */
 const MAX_VISIBLE = 3;
+
+/** Short slide-in: quick ease-out, no overshoot. */
+const SLIDE_IN = { duration: 0.22, ease: [0.2, 0.8, 0.2, 1] as const };
 
 /**
  * Floating feedback stack, newest at the bottom.
@@ -72,12 +74,10 @@ function ToastCard({ toast, phone }: { toast: Toast; phone: boolean }) {
     <motion.div
       layout={reduced ? false : "position"}
       role={toast.tone === "error" ? "alert" : "status"}
-      initial={
-        reduced ? { opacity: 0 } : phone ? { opacity: 0, y: 24, scale: 0.96 } : { opacity: 0, x: 48, scale: 0.94, rotate: 1.2 }
-      }
-      animate={{ opacity: 1, x: 0, y: 0, scale: 1, rotate: 0 }}
-      exit={reduced ? { opacity: 0 } : phone ? { opacity: 0, y: 16, scale: 0.96 } : { opacity: 0, x: 56, scale: 0.96 }}
-      transition={t.spring}
+      initial={reduced ? { opacity: 0 } : phone ? { opacity: 0, y: 20, scale: 0.97 } : { opacity: 0, x: 32, scale: 0.97 }}
+      animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
+      exit={reduced ? { opacity: 0 } : phone ? { opacity: 0, y: 16, scale: 0.96 } : { opacity: 0, x: 48, scale: 0.96 }}
+      transition={reduced ? { duration: 0.12, ease: "linear" } : SLIDE_IN}
       onPointerEnter={(e) => {
         if (e.pointerType === "mouse") setHovered(true);
       }}
@@ -88,8 +88,13 @@ function ToastCard({ toast, phone }: { toast: Toast; phone: boolean }) {
       }}
       className="pointer-events-auto relative overflow-hidden rounded-[18px_18px_18px_6px] border border-line bg-card p-3.5 pr-2.5 shadow-lift"
     >
+      <span aria-hidden="true" className={`absolute inset-y-3 left-0 w-[3px] rounded-r-full ${tone.bar}`} />
       <div className="flex items-start gap-3">
-        <span className={`grid size-9 shrink-0 place-items-center rounded-full ${tone.chip}`}>
+        <span
+          aria-hidden="true"
+          className={`ks-toast-in motion-safe-only grid size-9 shrink-0 place-items-center rounded-full ${tone.chip}`}
+          style={{ animationDelay: reduced ? undefined : "80ms" }}
+        >
           <Icon name={ICON[toast.tone]} size={18} />
         </span>
         <div className="min-w-0 flex-1 pt-0.5">
@@ -110,14 +115,15 @@ function ToastCard({ toast, phone }: { toast: Toast; phone: boolean }) {
         </div>
         <IconButton icon="x" label="Dismiss" size={28} onClick={() => dismissToast(toast.id)} />
       </div>
-      <span
+      {/* Reduced motion: no countdown bar (the global rule would snap it to empty at once). */}
+      {!reduced && <span
         aria-hidden="true"
         className={`absolute inset-x-0 bottom-0 h-[3px] origin-left ${tone.bar}`}
         style={{
           animation: `toast-timer ${toast.duration}ms linear forwards`,
           animationPlayState: paused ? "paused" : "running",
         }}
-      />
+      />}
     </motion.div>
   );
 }

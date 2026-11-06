@@ -48,16 +48,32 @@ class YtdlpInfoArgs {
   lateinit var url: String
 }
 
-/** Arguments of the `ytdlpDownload` command: {url, formatId, outDir, fileName?}. */
+/** Arguments of the `ytdlpDownload` command: {url, formatId, outDir, fileName?, jobId}. */
 @InvokeArg
 class YtdlpDownloadArgs {
   lateinit var url: String
   lateinit var formatId: String
   lateinit var outDir: String
   var fileName: String? = null
+  lateinit var jobId: String
 }
 
-private class MediaError(message: String) : Exception(message)
+/** Arguments of the `ytdlpCancel` command: {jobId}. */
+@InvokeArg
+class YtdlpCancelArgs {
+  lateinit var jobId: String
+}
+
+/** Arguments of the `ytdlpMux` command: {videoPath, audioPath, outDir, fileName}. */
+@InvokeArg
+class YtdlpMuxArgs {
+  lateinit var videoPath: String
+  lateinit var audioPath: String
+  lateinit var outDir: String
+  lateinit var fileName: String
+}
+
+internal class MediaError(message: String, val code: String = "unknown") : Exception(message)
 
 /**
  * Audio conversion on platform codecs only (android.media.*):
@@ -156,7 +172,7 @@ class KeepsakeMediaPlugin(private val activity: Activity) : Plugin(activity) {
       invoke.reject("ytdlp:unknown: Invalid ytdlp_info arguments: ${e.message}")
       return
     }
-    KeepsakeYtdlp.executor.execute {
+    KeepsakeYtdlp.infoExecutor.execute {
       try {
         val r = KeepsakeYtdlp.info(activity, args.url)
         invoke.resolve(JSObject(r.toString()))
@@ -180,13 +196,64 @@ class KeepsakeMediaPlugin(private val activity: Activity) : Plugin(activity) {
     KeepsakeYtdlp.executor.execute {
       try {
         val dir = checkedPath(args.outDir, "output folder")
-        if (!dir.isDirectory && !dir.mkdirs()) throw MediaError("Can't create folder ${dir.path}")
-        val r = KeepsakeYtdlp.download(activity, args.url, args.formatId, dir.path, args.fileName)
+        if (!dir.isDirectory && !dir.mkdirs()) throw MediaError("Can't create folder ${dir.path}", "permission")
+        val r = KeepsakeYtdlp.download(activity, args.url, args.formatId, dir.path, args.fileName, args.jobId)
         val ret = JSObject()
         ret.put("path", r.getString("path"))
         ret.put("bytes", r.getLong("bytes"))
         invoke.resolve(ret)
       } catch (e: YtdlpError) {
+        invoke.reject("ytdlp:${e.code}: ${e.message}")
+      } catch (e: MediaError) {
+        invoke.reject("ytdlp:${e.code}: ${e.message}")
+      } catch (e: Throwable) {
+        invoke.reject("ytdlp:unknown: ${e.message ?: e.toString()}")
+      }
+    }
+  }
+
+  /** Sets the cancel flag of a running download. Resolves {}. */
+  @Command
+  fun ytdlpCancel(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(YtdlpCancelArgs::class.java)
+    } catch (e: Exception) {
+      invoke.reject("ytdlp:unknown: Invalid ytdlp_cancel arguments: ${e.message}")
+      return
+    }
+    // Own thread: must not queue behind running downloads.
+    Thread {
+      try {
+        KeepsakeYtdlp.cancel(activity, args.jobId)
+        invoke.resolve(JSObject())
+      } catch (e: Throwable) {
+        invoke.reject("ytdlp:unknown: ${e.message ?: e.toString()}")
+      }
+    }.start()
+  }
+
+  /** Muxes a video-only and an audio-only file into an MP4. Resolves {path, bytes}; rejects "ytdlp:<code>: <message>". */
+  @Command
+  fun ytdlpMux(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(YtdlpMuxArgs::class.java)
+    } catch (e: Exception) {
+      invoke.reject("ytdlp:unknown: Invalid ytdlp_mux arguments: ${e.message}")
+      return
+    }
+    KeepsakeYtdlp.executor.execute {
+      try {
+        val video = checkedPath(args.videoPath, "video")
+        val audio = checkedPath(args.audioPath, "audio")
+        val dir = checkedPath(args.outDir, "output folder")
+        val r = KeepsakeYtdlp.mux(activity, video, audio, dir, args.fileName)
+        val ret = JSObject()
+        ret.put("path", r.getString("path"))
+        ret.put("bytes", r.getLong("bytes"))
+        invoke.resolve(ret)
+      } catch (e: YtdlpError) {
+        invoke.reject("ytdlp:${e.code}: ${e.message}")
+      } catch (e: MediaError) {
         invoke.reject("ytdlp:${e.code}: ${e.message}")
       } catch (e: Throwable) {
         invoke.reject("ytdlp:unknown: ${e.message ?: e.toString()}")

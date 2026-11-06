@@ -40,7 +40,8 @@ pub fn run() {
             ytdlp::run_ytdlp,
             ytdlp::cancel_ytdlp,
             ytdlp::binary_status,
-            ytdlp::list_installed_browsers
+            ytdlp::list_installed_browsers,
+            ytdlp::sweep_stale_temp
         ])
         .build(tauri::generate_context!())
         .expect("error while building Keepsake")

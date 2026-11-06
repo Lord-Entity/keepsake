@@ -77,6 +77,26 @@ export function FormatPicker({
 
   const choose = (id: string) => setSel({ key, ids: { ...ids, [mode]: id } });
 
+  // Unavailable rows are not listed (no fake "unavailable" entries); their reason is shown as a helper line.
+  const usableOptions = options.filter((o) => !o.disabledReason);
+  const shownOptions = usableOptions.length > 0 ? usableOptions : options;
+  const reason = downloadDisabledReason ?? selected?.disabledReason ?? options.find((o) => o.disabledReason)?.disabledReason;
+  const note =
+    info && reason ? (
+      <p role="note" className="text-[12px] leading-[16px] text-fg-2 [overflow-wrap:anywhere]">
+        {reason}
+      </p>
+    ) : null;
+
+  // Short pulse on the Download button once a new link's info has loaded.
+  const [pulse, setPulse] = useState(false);
+  useEffect(() => {
+    if (!info) return;
+    setPulse(true);
+    const id = window.setTimeout(() => setPulse(false), 1500);
+    return () => window.clearTimeout(id);
+  }, [info]);
+
   const visibleStreams = useMemo(() => {
     if (!info) return [];
     const max = selected?.height;
@@ -134,12 +154,10 @@ export function FormatPicker({
                 value={selectedId}
                 disabled={off}
                 onChange={choose}
-                options={options.map((o) => ({
-                  value: o.id,
-                  label: o.disabledReason ? `${o.label} (unavailable)` : o.label,
-                }))}
+                options={shownOptions.map((o) => ({ value: o.id, label: o.label }))}
               />
             </Row>
+            {note}
             <Row fill={fill} label="Prefer H.264" title="Best compatibility. YouTube offers H.264 up to 1080p only">
               <Switch
                 label="Prefer H.264"
@@ -192,7 +210,7 @@ export function FormatPicker({
                 className="w-[200px] max-w-full"
                 value={selectedId}
                 onChange={choose}
-                options={options.map((o) => ({ value: o.id, label: o.label }))}
+                options={shownOptions.map((o) => ({ value: o.id, label: o.label }))}
               />
             </Row>
             {HAS_BITRATE.has(selected?.audioFormat ?? "") && (
@@ -214,22 +232,18 @@ export function FormatPicker({
               className="w-[200px] max-w-full"
               value={selectedId}
               onChange={choose}
-              options={options.map((o) => ({ value: o.id, label: o.label }))}
+              options={shownOptions.map((o) => ({ value: o.id, label: o.label }))}
             />
           </Row>
         )}
-        {(selected?.disabledReason || downloadDisabledReason) && info && (
-          <p className="text-[11px] leading-[14px] text-warning [overflow-wrap:anywhere]">
-            {downloadDisabledReason ?? selected?.disabledReason}
-          </p>
-        )}
+        {mode !== "video" && note}
       </div>
 
       <Button
         variant="primary"
         size={fill ? "lg" : "md"}
         icon="download"
-        className="w-full shrink-0"
+        className={`w-full shrink-0 ${pulse && canDownload ? "motion-safe:animate-pulse" : ""}`}
         disabled={!canDownload}
         title={`${DOWNLOAD_LABEL[mode]} (${MOD}+Enter)`}
         onClick={download}

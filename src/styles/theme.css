@@ -443,6 +443,66 @@ textarea,
   animation: spin 0.7s linear infinite;
 }
 
+/* Loader.tsx: SVG spinner, sweep bar and skeleton shimmer. */
+@keyframes keepsake-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes keepsake-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+@keyframes keepsake-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+.ks-spin {
+  transform-origin: 50% 50%;
+  animation: keepsake-spin 0.85s linear infinite;
+}
+.ks-sweep {
+  animation: keepsake-sweep 1.2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+.ks-shimmer {
+  background: linear-gradient(90deg, var(--bg-inset) 0%, var(--border) 50%, var(--bg-inset) 100%);
+  background-size: 200% 100%;
+  animation: keepsake-shimmer 1.4s linear infinite;
+}
+.ks-toast-in {
+  animation: keepsake-toast-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes keepsake-toast-in {
+  from {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .motion-safe-only {
+    animation: none !important;
+  }
+  /* Reduced motion: the spinner becomes a still dashed ring; the sweep parks as a static segment. */
+  .ks-spinner-arc {
+    stroke-dasharray: 3 4;
+  }
+  .ks-sweep {
+    transform: translateX(75%);
+  }
+}
+
 .scroll-y {
   overflow-y: auto;
   overscroll-behavior: contain;

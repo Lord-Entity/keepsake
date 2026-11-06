@@ -20,7 +20,17 @@ import { appCacheDir, downloadDir, join } from "@tauri-apps/api/path";
 import { exists, mkdir, open, remove, writeFile, type FileHandle } from "@tauri-apps/plugin-fs";
 import type { AudioFormat, DownloadHandle, DownloadProgress, DownloadRequest, VideoInfo } from "../lib/types";
 import { transcodeAudio } from "./android-media";
-import { downloadAndroid, fetchAndroidInfo, isAndroidYtdlpSupported, pickYtdlpFormat } from "./android-ytdlp";
+import {
+  cancelAndroid,
+  downloadAndroid,
+  fetchAndroidInfo,
+  isAndroidYtdlpSupported,
+  MP3_TEXT,
+  muxAndroid,
+  PERMISSION_TEXT,
+  pickYtdlpFormat,
+  runWithRetry,
+} from "./android-ytdlp";
 import { appError, EngineError, fail, toAppError } from "./errors";
 import { httpFetch, timeoutSignal } from "./http";
 import { isDesktop, platform } from "./platform";
@@ -363,6 +373,7 @@ async function runDirect(req: DownloadRequest, emit: Emit, signal: AbortSignal):
   const [kind, value = ""] = req.formatId.split(":");
   // Guard before any network work: the Android format picker hides these, but never let them through.
   const audioFmt = (kind === "audio" ? value || "m4a" : undefined) as AudioFormat | undefined;
+  if (audioFmt === "mp3") formatError(MP3_TEXT, "audio:mp3");
   if (audioFmt && !DIRECT_AUDIO.has(audioFmt)) {
     formatError(`${audioFmt.toUpperCase()} isn't available on this device yet. Choose M4A or WAV.`, `audio:${audioFmt}`);
   }
@@ -433,47 +444,159 @@ async function runDirect(req: DownloadRequest, emit: Emit, signal: AbortSignal):
 
 /** TikTok/Instagram on Android: one concrete single-file format through the in-process yt-dlp (android-ytdlp.ts). */
 async function runAndroidYtdlp(req: DownloadRequest, emit: Emit, signal: AbortSignal): Promise<DownloadProgress> {
-  const [kind] = req.formatId.split(":");
+  const [kind, value = ""] = req.formatId.split(":");
   if (kind === "thumb") {
     formatError("Thumbnails from TikTok and Instagram can be saved in the desktop app only.", req.formatId);
   }
+  const audioFmt = kind === "audio" ? value || "m4a" : undefined;
+  if (audioFmt === "mp3") formatError(MP3_TEXT, req.formatId);
+  if (audioFmt && audioFmt !== "m4a" && audioFmt !== "wav") {
+    formatError(`${audioFmt.toUpperCase()} isn't available on Android yet. Choose M4A.`, req.formatId);
+  }
+  if (signal.aborted) fail("cancelled");
   const info = req.info?.source === "ytdlp" ? req.info : await fetchAndroidInfo(req.url, signal);
-  const pick = pickYtdlpFormat(info, req.formatId);
+  const pick = pickYtdlpFormat(info, audioFmt ? "audio:m4a" : req.formatId);
   if (!pick) formatError("This format isn't available for this link on Android.", req.formatId);
-  // No progress events from the native side this round: indeterminate bar.
-  emit({ id: req.id, status: "downloading", downloadedBytes: 0 });
+
+  // Cancel: stop whichever native job is running (video, audio or single).
+  const jobIds = [req.id, `${req.id}-v`, `${req.id}-a`];
+  const onAbort = () => {
+    for (const j of jobIds) void cancelAndroid(j);
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await runAndroidYtdlpJob(req, emit, signal, info, pick, audioFmt);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+function permissionError(detail: string): EngineError {
+  return new EngineError({ code: "permission", message: PERMISSION_TEXT, detail, cookiesHint: false });
+}
+
+/** Output folder for yt-dlp downloads: the Settings folder, or a permission error when the platform rejects it. */
+async function ytdlpOutDir(req: DownloadRequest): Promise<string> {
+  const dir = req.outputDir?.trim() || (await downloadDir());
+  if (!/^\//.test(dir)) throw permissionError(`not an absolute path: ${dir}`);
+  try {
+    await mkdir(dir, { recursive: true });
+  } catch (e) {
+    throw permissionError(e instanceof Error ? e.message : String(e));
+  }
+  return dir.replace(/[\\/]+$/, "");
+}
+
+async function runAndroidYtdlpJob(
+  req: DownloadRequest,
+  emit: Emit,
+  signal: AbortSignal,
+  info: VideoInfo,
+  pick: NonNullable<ReturnType<typeof pickYtdlpFormat>>,
+  audioFmt: string | undefined,
+): Promise<DownloadProgress> {
+  const dl = (formatId: string, outDir: string, fileName: string | undefined, suffix = "") =>
+    runWithRetry(
+      () => downloadAndroid({ url: info.url, formatId, outDir, fileName, jobId: `${req.id}${suffix}` }),
+      { signal, retries: 2, delays: [2000, 6000] },
+    );
+  const codeOf = (e: unknown) => toAppError(e).code as string;
+  // Fail early on a bad folder, before any download starts.
+  const dir = await ytdlpOutDir(req);
+  // No byte progress from the native side: indeterminate bar. `stage` is read by the UI when DownloadProgress has it.
+  const emitStage = (status: DownloadProgress["status"], stage: "video" | "audio" | "mux" | undefined, downloadedBytes = 0) => {
+    const p: DownloadProgress & { stage?: string } = { id: req.id, status, downloadedBytes, stage };
+    emit(p);
+  };
+  emitStage("downloading", audioFmt ? "audio" : "video");
   // Rust rejects a fileName starting with "." and yt-dlp adds ".<ext>.part": keep the base short (code points,
   // so no half surrogate pair; 50 x 4 UTF-8 bytes stays under the 255-byte name limit) and free of leading dots.
   // TikTok titles are whole captions.
   const base = Array.from(safeName(info.title)).slice(0, 50).join("").replace(/^[.\s]+/, "").trim() || "download";
 
-  if (!pick.needsRemux) {
-    const dir = await androidOutDir(req);
-    const target = await uniquePath(dir, base, pick.ext);
-    const fileName = target.slice(target.lastIndexOf("/") + 1, target.length - (pick.ext.length + 1));
-    const { path, bytes } = await downloadAndroid({ url: info.url, formatId: pick.formatId, outDir: dir, fileName });
+  const done = (path: string, bytes: number): DownloadProgress => ({
+    id: req.id,
+    status: "done",
+    downloadedBytes: bytes,
+    totalBytes: bytes,
+    percent: 100,
+    filePath: path,
+  });
+  const nameFor = (target: string, ext: string) => target.slice(target.lastIndexOf("/") + 1, target.length - (ext.length + 1));
+
+  // Audio that needs the native transcode (WAV, or M4A out of a muxed MP4): download to the app cache first.
+  const needsConvert = audioFmt === "wav" || (audioFmt === "m4a" && pick.needsRemux);
+  if (needsConvert) {
+    const format = audioFmt as "wav" | "m4a";
+    const cache = await appCacheDir();
+    const tmpDir = await join(cache, `ytdlp-${safeName(req.id, 60)}`);
+    let outPath: string | undefined;
+    try {
+      await mkdir(tmpDir, { recursive: true });
+      const { path, bytes } = await dl(pick.formatId, tmpDir, "source");
+      if (signal.aborted) fail("cancelled");
+      emitStage("converting", "audio", bytes);
+      outPath = await uniquePath(dir, base, format);
+      const res = await transcodeAudio({ input: path, output: outPath, format });
+      if (signal.aborted) fail("cancelled");
+      return done(res.path, bytes);
+    } catch (e) {
+      if (outPath) await remove(outPath).catch(() => undefined);
+      throw e;
+    } finally {
+      await remove(tmpDir, { recursive: true }).catch(() => undefined);
+    }
+  }
+
+  /** One ytdlp_download of a single-file format straight into the chosen folder. */
+  const single = async (formatId: string, ext: string) => {
+    const target = await uniquePath(dir, base, ext);
+    const { path, bytes } = await dl(formatId, dir, nameFor(target, ext));
     if (signal.aborted) {
       await remove(path).catch(() => undefined);
       fail("cancelled");
     }
-    return { id: req.id, status: "done", downloadedBytes: bytes, totalBytes: bytes, percent: 100, filePath: path };
-  }
+    return done(path, bytes);
+  };
 
-  // M4A from a muxed MP4: download to the app cache, then the native plugin copies the AAC track into an M4A.
+  /** Single-file attempt; on format_unavailable retry once with the best muxed format of the same info. */
+  const singleWithFallback = async (formatId: string, ext: string) => {
+    try {
+      return await single(formatId, ext);
+    } catch (e) {
+      if (codeOf(e) === "format_unavailable" && pick.fallback && pick.fallback.formatId !== formatId && !signal.aborted) {
+        return single(pick.fallback.formatId, pick.fallback.ext);
+      }
+      throw e;
+    }
+  };
+
+  if (!pick.audioFormatId) return singleWithFallback(pick.formatId, pick.ext);
+
+  // Video-only pick: download video, then audio (one after the other), mux, delete the temporary files.
   const cache = await appCacheDir();
   const tmpDir = await join(cache, `ytdlp-${safeName(req.id, 60)}`);
   let outPath: string | undefined;
   try {
     await mkdir(tmpDir, { recursive: true });
-    const { path, bytes } = await downloadAndroid({ url: info.url, formatId: pick.formatId, outDir: tmpDir, fileName: "source" });
+    emitStage("downloading", "video");
+    const video = await dl(pick.formatId, tmpDir, "video", "-v");
     if (signal.aborted) fail("cancelled");
-    emit({ id: req.id, status: "converting", downloadedBytes: bytes, totalBytes: bytes });
-    outPath = await uniquePath(await androidOutDir(req), base, "m4a");
-    const res = await transcodeAudio({ input: path, output: outPath, format: "m4a" });
+    emitStage("downloading", "audio", video.bytes);
+    const audio = await dl(pick.audioFormatId, tmpDir, "audio", "-a");
     if (signal.aborted) fail("cancelled");
-    return { id: req.id, status: "done", downloadedBytes: bytes, totalBytes: bytes, percent: 100, filePath: res.path };
+    emitStage("converting", "mux", video.bytes + audio.bytes);
+    const target = await uniquePath(dir, base, "mp4");
+    outPath = target;
+    const res = await muxAndroid({ videoPath: video.path, audioPath: audio.path, outDir: dir, fileName: nameFor(target, "mp4") });
+    outPath = res.path;
+    if (signal.aborted) fail("cancelled");
+    return done(res.path, res.bytes || video.bytes + audio.bytes);
   } catch (e) {
     if (outPath) await remove(outPath).catch(() => undefined);
+    if (["format_unavailable", "mux_failed"].includes(codeOf(e)) && pick.fallback && !signal.aborted) {
+      return single(pick.fallback.formatId, pick.fallback.ext);
+    }
     throw e;
   } finally {
     await remove(tmpDir, { recursive: true }).catch(() => undefined);

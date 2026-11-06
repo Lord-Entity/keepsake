@@ -18,6 +18,7 @@ export interface Job {
   audioBitrate?: AudioBitrate;
   streamId?: string;
   status: DownloadStatus;
+  stage?: string;
   /** 0-100, null when unknown. */
   pct: number | null;
   speedBps: number | null;

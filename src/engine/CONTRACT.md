@@ -22,7 +22,7 @@ Embedding flags on `DownloadRequest` (desktop only):
 | | Windows / Linux | Android | Web (dev preview) |
 |---|---|---|---|
 | Info | YouTube via youtubei.js, falling back to yt-dlp `-J`; other sites via yt-dlp | YouTube via youtubei.js; TikTok and Instagram via yt-dlp (Chaquopy, in-process); others reject with `unsupported_url` | YouTube only; plain-browser fetches fail with `web_cors` |
-| Video | Every height the link offers, plus "Best available"; yt-dlp merges video-only + audio | Progressive MP4 (video + audio in one file) **at or below 360p** only. No merging, no "Best available". TikTok/Instagram: any single-file height, no 360 cap | Same as Android |
+| Video | Every height the link offers, plus "Best available"; yt-dlp merges video-only + audio | Progressive MP4 (video + audio in one file) **at or below 360p** only. No "Best available". TikTok/Instagram: any height, no 360 cap; video-only heights are merged with an audio stream on the phone (copy-mux, no re-encode) | Same as Android |
 | Audio | MP3 (default), M4A, OPUS, WAV, FLAC | **M4A (default) and WAV only.** MP3, FLAC and OPUS are not listed. TikTok/Instagram: M4A only | None |
 | Thumbnail | Original, PNG, JPG | Original, PNG, JPG. TikTok/Instagram: not offered on Android | Original, PNG, JPG |
 | Playlists | Yes, per-item progress | Rejected (`format_unavailable`: "Playlists can be downloaded in the desktop app only.") | Rejected |
@@ -123,18 +123,30 @@ invoke<{ path: string; bytes: number }>("plugin:keepsake-media|ytdlp_download",
 - `YtdlpInfo` is a reduced payload: `id, title, uploader, duration, thumbnail, extractor, webpage_url, formats[]`; each format has `format_id, ext, vcodec, acodec, height, fps, filesize, protocol, format_note`. No stream URLs, headers or cookies reach JS.
 - `formatId` is ONE concrete yt-dlp `format_id` (`A-Z a-z 0-9 _ - .`, 1..64 chars) taken from the info; TS only picks http/https single-file formats. `outDir` is an absolute path inside the allowed roots; `fileName` is a base name without extension. Download re-runs extraction (no info cache on the native side).
 - Capabilities: `keepsake-media:allow-ytdlp-info`, `keepsake-media:allow-ytdlp-download`.
-- Errors reject with `ytdlp:<code>: <message>` (TS searches for it, since Tauri may wrap the text). Codes: `unsupported_url`, `login_required`, `rate_limited`, `forbidden`, `not_found`, `parse_failed`, `network`, `unknown`. They map to the same-named `AppErrorCode`, with Android-specific texts and `cookiesHint: false` always. A missing plugin or permission maps to `ytdlp_missing`.
+- Errors reject with `ytdlp:<code>: <message>` (TS searches for it, since Tauri may wrap the text). Codes (16): `unsupported_url`, `login_required`, `rate_limited`, `forbidden`, `not_found`, `parse_failed`, `network`, `timeout`, `no_space`, `permission`, `too_large`, `cancelled`, `format_unavailable`, `mux_failed`, `empty`, `unknown`. They map to the same-named `AppErrorCode`, with Android-specific texts and `cookiesHint: false` always. A missing plugin or permission maps to `ytdlp_missing`.
+- Added commands (reliability round, see `plan-docs/08-download-reliability-changes.md`):
+  ```ts
+  invoke<{ ok: true; info: YtdlpInfo }>("plugin:keepsake-media|ytdlp_info", { url })            // as above
+  invoke<{ path: string; bytes: number }>("plugin:keepsake-media|ytdlp_download",
+    { url, formatId, outDir, fileName?, jobId })    // one stream per call; TS sends jobId "job" when none is given. A video-only height is two calls (video, then audio) followed by ytdlp_mux
+  invoke<unknown>("plugin:keepsake-media|ytdlp_cancel", { jobId })                               // stops that job; TS never throws from it
+  invoke<{ path: string; bytes: number }>("plugin:keepsake-media|ytdlp_mux",
+    { videoPath, audioPath, outDir, fileName })     // copy-mux (no re-encode) into MP4
+  ```
+  Capabilities: `keepsake-media:allow-ytdlp-cancel`, `keepsake-media:allow-ytdlp-mux`.
+- Extra error codes (same `ytdlp:<code>: <message>` form, same-named `AppErrorCode`): `no_space` (storage full), `permission` (cannot write the folder), `too_large` (over 500 MB), `mux_failed` (combining streams failed), `cancelled` (user stopped the job), `empty` (nothing was downloaded). Retries (`runWithRetry` in `android-ytdlp.ts`): `network`, `timeout` and `rate_limited` are retried twice, with waits of 2 s then 6 s; `no_space`, `permission` and the rest are not retried.
 - Limits: one yt-dlp job at a time (single native thread); files over 500 MiB are refused; M4A audio only (a progressive MP4 is remuxed with `transcode` when no m4a stream exists).
-- Out of scope: progress events (indeterminate bar), cancelling a running job, cookies or login, proxies, user yt-dlp options, MP3/FLAC/Opus/WAV, merging streams, thumbnails, playlists and carousels, other sites, in-app yt-dlp updates.
+- Out of scope: progress events (indeterminate bar), cookies or login, proxies, user yt-dlp options, MP3/FLAC/Opus/WAV, thumbnails, playlists and carousels, other sites, in-app yt-dlp updates.
 
 ## 4. Arguments TS sends (for reference and Rust tests)
 
 Every call: `--encoding utf-8 --no-warnings [--cookies-from-browser <b>]`. Rust prepends its fixed flags (section 2), so TS never sends `--ignore-config`, `--no-plugin-dirs`, `--js-runtimes`, `--no-js-runtimes` or `--ffmpeg-location`.
 
 - Info: `... -J -i --flat-playlist -- <url>`. JSON is the first stdout line starting with `{`.
-- Download (all modes): `--windows-filenames --trim-filenames <60..200> -P home:<outDir> -P temp:<tempDir> --newline --progress --progress-template "download:KEEPSAKE|status|downloaded|total|estimate|speed|eta|playlist_index|n_entries|filename" --progress-template "postprocess:KEEPSAKE_PP|status|postprocessor" --print "after_move:KEEPSAKE_DONE|%(filepath)s" -i`
-  - Video: `-o "%(title)s.%(ext)s" -f "bestvideo[height<=N]+bestaudio/best[height<=N]/best" [-S res,fps,vcodec:h264,acodec:aac] --merge-output-format mp4/mkv [--embed-thumbnail --convert-thumbnails jpg --embed-metadata]` (bracketed embeds only when `embedVideoMeta === true`). Picked video-only stream: `-f "<id>+bestaudio[ext=m4a]/<id>+bestaudio"`.
-  - Audio M4A, info lists a native m4a audio-only stream (not a playlist): `-o "%(title)s.%(ext)s" -f "bestaudio[ext=m4a]"`, **no `-x`** (no ExtractAudio pass). yt-dlp may still run its `FixupM4a` step for DASH m4a; that is a stream copy.
+- Download (all modes): `--windows-filenames --trim-filenames <60..200> -P home:<outDir> -P temp:<tempDir> --newline --progress --progress-template "download:KEEPSAKE|status|downloaded|total|estimate|speed|eta|playlist_index|n_entries|filename" --progress-template "postprocess:KEEPSAKE_PP|status|postprocessor" --print "after_move:KEEPSAKE_DONE|%(filepath)s" -i --retries 10 --fragment-retries 10 --socket-timeout 30 --concurrent-fragments 4 --no-playlist`
+  - Output template (all modes): `-o "%(title).80B [%(id)s].%(ext)s"`.
+  - Video: `-o "%(title).80B [%(id)s].%(ext)s" -f "bestvideo[height<=N]+bestaudio/best[height<=N]/best" [-S res,fps,vcodec:h264,acodec:aac] --merge-output-format mp4/mkv [--embed-thumbnail --convert-thumbnails jpg --embed-metadata]` (bracketed embeds only when `embedVideoMeta === true`). Picked video-only stream: `-f "<id>+bestaudio[ext=m4a]/<id>+bestaudio"`.
+  - Audio M4A, info lists a native m4a audio-only stream (not a playlist): `-o "%(title).80B [%(id)s].%(ext)s" -f "bestaudio[ext=m4a]"`, **no `-x`** (no ExtractAudio pass). yt-dlp may still run its `FixupM4a` step for DASH m4a; that is a stream copy.
   - Audio M4A otherwise: `-f "bestaudio[ext=m4a]/bestaudio/best" -x --audio-format m4a`.
   - Audio OPUS: `-f "bestaudio[acodec=opus]/bestaudio/best" -x --audio-format opus --audio-quality <kbps>K`.
   - Audio MP3/WAV/FLAC: `-f bestaudio/best -x --audio-format <fmt>`, plus `--audio-quality <kbps>K` for MP3 (default 192).

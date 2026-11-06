@@ -36,6 +36,8 @@
     "keepsake-media:allow-open-file",
     "keepsake-media:allow-ytdlp-info",
     "keepsake-media:allow-ytdlp-download",
+    "keepsake-media:allow-ytdlp-cancel",
+    "keepsake-media:allow-ytdlp-mux",
     "fs:default",
     "fs:allow-open",
     "fs:allow-write",
