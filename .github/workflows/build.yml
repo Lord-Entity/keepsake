@@ -3,7 +3,7 @@
 #   check    typecheck, lint, bun tests (if any), frontend build, cargo test
 #   windows  NSIS installer                      (needs: check)
 #   linux    deb, rpm, AppImage                  (needs: check)
-#   android  arm64-v8a split APK, test-signed    (needs: check)
+#   android  arm64-v8a split APK, test-signed, Chaquopy + yt-dlp (TikTok/Instagram)  (needs: check)
 #   release  draft GitHub Release, v* tags only  (needs: windows, linux, android)
 #
 # Every build job writes artifact sizes to its job summary.
@@ -265,6 +265,11 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # Chaquopy compiles the app's Python with a build-machine Python of the same minor version (3.12).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       # We do not use android-actions/setup-android: its startup runs `sdkmanager tools`, which
       # fails on current SDK package indexes ("Failed to find package 'tools'"). The runner image
       # already ships the Android SDK, so install the packages we need straight into it.
@@ -310,6 +315,9 @@ jobs:
       # src-tauri/gen is git-ignored, so the Android project is generated on every run.
       - name: tauri android init
         run: bun run tauri android init --ci
+
+      - name: Patch Gradle for Chaquopy (fails if the patch does not apply)
+        run: bash scripts/android-patch-gradle.sh src-tauri/gen/android
 
       # Put Keepsake's launcher icon into the generated project and verify it, so the APK never
       # ships the template's default icon.

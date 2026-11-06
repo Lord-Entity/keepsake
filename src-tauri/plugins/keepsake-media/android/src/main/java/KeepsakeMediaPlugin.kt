@@ -42,6 +42,21 @@ class OpenArgs {
   lateinit var path: String
 }
 
+/** Arguments of the `ytdlpInfo` command: {url}. */
+@InvokeArg
+class YtdlpInfoArgs {
+  lateinit var url: String
+}
+
+/** Arguments of the `ytdlpDownload` command: {url, formatId, outDir, fileName?}. */
+@InvokeArg
+class YtdlpDownloadArgs {
+  lateinit var url: String
+  lateinit var formatId: String
+  lateinit var outDir: String
+  var fileName: String? = null
+}
+
 private class MediaError(message: String) : Exception(message)
 
 /**
@@ -129,6 +144,53 @@ class KeepsakeMediaPlugin(private val activity: Activity) : Plugin(activity) {
       invoke.resolve(JSObject())
     } catch (e: Throwable) {
       invoke.reject(e.message ?: e.toString())
+    }
+  }
+
+  /** TikTok/Instagram metadata through yt-dlp (Python). Resolves {ok, info}; rejects "ytdlp:<code>: <message>". */
+  @Command
+  fun ytdlpInfo(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(YtdlpInfoArgs::class.java)
+    } catch (e: Exception) {
+      invoke.reject("ytdlp:unknown: Invalid ytdlp_info arguments: ${e.message}")
+      return
+    }
+    KeepsakeYtdlp.executor.execute {
+      try {
+        val r = KeepsakeYtdlp.info(activity, args.url)
+        invoke.resolve(JSObject(r.toString()))
+      } catch (e: YtdlpError) {
+        invoke.reject("ytdlp:${e.code}: ${e.message}")
+      } catch (e: Throwable) {
+        invoke.reject("ytdlp:unknown: ${e.message ?: e.toString()}")
+      }
+    }
+  }
+
+  /** Downloads one concrete yt-dlp format into outDir. Resolves {path, bytes}; rejects "ytdlp:<code>: <message>". */
+  @Command
+  fun ytdlpDownload(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(YtdlpDownloadArgs::class.java)
+    } catch (e: Exception) {
+      invoke.reject("ytdlp:unknown: Invalid ytdlp_download arguments: ${e.message}")
+      return
+    }
+    KeepsakeYtdlp.executor.execute {
+      try {
+        val dir = checkedPath(args.outDir, "output folder")
+        if (!dir.isDirectory && !dir.mkdirs()) throw MediaError("Can't create folder ${dir.path}")
+        val r = KeepsakeYtdlp.download(activity, args.url, args.formatId, dir.path, args.fileName)
+        val ret = JSObject()
+        ret.put("path", r.getString("path"))
+        ret.put("bytes", r.getLong("bytes"))
+        invoke.resolve(ret)
+      } catch (e: YtdlpError) {
+        invoke.reject("ytdlp:${e.code}: ${e.message}")
+      } catch (e: Throwable) {
+        invoke.reject("ytdlp:unknown: ${e.message ?: e.toString()}")
+      }
     }
   }
 

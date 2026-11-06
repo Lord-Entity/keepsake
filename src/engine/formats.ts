@@ -5,10 +5,13 @@
  * - Desktop (yt-dlp + ffmpeg): every height the link offers (yt-dlp merges), all audio formats, all thumbnails.
  * - Android (youtubei.js + keepsake-media plugin): progressive MP4 at or below 360p (no merging), audio M4A
  *   (default, no conversion) and WAV (AAC decoded to PCM). MP3, FLAC and Opus need encoders Android does not ship yet.
+ * - Android, TikTok/Instagram (yt-dlp via Chaquopy, info.source === "ytdlp"): any single-file height (no 360 cap),
+ *   M4A only, no thumbnails.
  * - Web (dev preview without Tauri): progressive MP4 at or below 360p and thumbnails; no audio (nothing can extract
  *   or convert it in the browser).
  */
 import type { AudioFormat, FormatOption, Platform, ThumbnailFormat, VideoInfo } from "../lib/types";
+import { pickYtdlpFormat } from "./android-ytdlp";
 import { platform } from "./platform";
 
 /** Heights offered when the link gives none (playlists): 2160 down to 360 per spec. */
@@ -162,8 +165,54 @@ function thumbOptions(): FormatOption[] {
   }));
 }
 
+/**
+ * Android, TikTok/Instagram (yt-dlp via Chaquopy): single-file http(s) streams only, no height cap, M4A as the only
+ * audio option, no thumbnails.
+ */
+function androidYtdlpOptions(info: VideoInfo): FormatOption[] {
+  const out: FormatOption[] = [];
+  if (info.hasVideo) {
+    const heights = [
+      ...new Set(info.streams.filter((s) => s.kind === "progressive" && s.height).map((s) => s.height!)),
+    ].sort((a, b) => b - a);
+    if (heights.length === 0) {
+      out.push(placeholderRow(SINGLE_FILE_MAX_HEIGHT, false, "No single-file video for this link"));
+    } else {
+      // Default: highest <= 1080, else the first.
+      const defIdx = Math.max(0, heights.findIndex((h) => h <= 1080));
+      heights.forEach((h, i) =>
+        out.push({
+          id: `video:${h}`,
+          mode: "video",
+          label: qualityLabel(h, info.fpsByHeight[h]),
+          height: h,
+          fps: info.fpsByHeight[h] || undefined,
+          ext: "mp4",
+          isDefault: i === defIdx,
+          needsMerge: false,
+          needsConversion: false,
+        }),
+      );
+    }
+  }
+  const pick = pickYtdlpFormat(info, "audio:m4a");
+  out.push({
+    id: "audio:m4a",
+    mode: "audio",
+    label: AUDIO_LABEL.m4a,
+    audioFormat: "m4a",
+    ext: "m4a",
+    isDefault: true,
+    needsMerge: false,
+    needsConversion: !!pick?.needsRemux,
+    ...(pick ? {} : { disabledReason: "No AAC audio in this link" }),
+  });
+  return out;
+}
+
 /** All picker options for a fetched link (or the pre-fetch placeholders when `info` is null). */
 export function listFormats(info: VideoInfo | null | undefined): FormatOption[] {
   const p = platform();
+  if (p === "android" && info?.source === "ytdlp") return androidYtdlpOptions(info);
   return [...videoOptions(info, p), ...audioOptions(p), ...thumbOptions()];
 }

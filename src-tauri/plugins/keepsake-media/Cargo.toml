@@ -3,7 +3,7 @@ name = "tauri-plugin-keepsake-media"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.90"
-description = "Keepsake Android audio transcoding on platform MediaExtractor/MediaCodec/MediaMuxer."
+description = "Keepsake Android: audio transcoding on platform codecs, and yt-dlp (Chaquopy) for TikTok/Instagram."
 publish = false
 # tauri-plugin's build step requires `links` to be set and to match the package name.
 links = "tauri-plugin-keepsake-media"

@@ -59,7 +59,7 @@ export interface VideoInfo {
   /** True when only a preview is playable (sign-in may be needed). */
   previewOnly: boolean;
   playlistCount?: number;
-  /** Which backend produced this info. */
+  /** Which backend produced this info. "ytdlp" = desktop sidecar, or Chaquopy yt-dlp on Android (TikTok/Instagram). */
   source: "youtubei" | "ytdlp";
 }
 

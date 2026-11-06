@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "mobile",
-  "description": "Main window on Android. No window-control or shell permissions; yt-dlp is not available on Android.",
+  "description": "Main window on Android. No window-control or shell permissions; yt-dlp runs in-process (Chaquopy) for TikTok and Instagram only.",
   "windows": ["main"],
   "platforms": ["android"],
   "permissions": [
@@ -34,6 +34,8 @@
     },
     "keepsake-media:allow-transcode",
     "keepsake-media:allow-open-file",
+    "keepsake-media:allow-ytdlp-info",
+    "keepsake-media:allow-ytdlp-download",
     "fs:default",
     "fs:allow-open",
     "fs:allow-write",

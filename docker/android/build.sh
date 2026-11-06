@@ -45,6 +45,10 @@ else
   mkdir -p "$GEN_CACHE" && cp -a src-tauri/gen/android "$GEN_CACHE/android"
 fi
 GEN=src-tauri/gen/android
+# Chaquopy classpath in the root Gradle file (idempotent, so it is also safe on a restored cache).
+log "Patching Gradle for Chaquopy"
+bash scripts/android-patch-gradle.sh "$GEN"
+[[ -d "$GEN_CACHE/android" ]] && cp "$GEN/build.gradle.kts" "$GEN_CACHE/android/build.gradle.kts"
 # Keepsake's launcher icon: copy our mipmap/colour resources over the template's and verify them.
 log "Copying and verifying Keepsake launcher icons"
 RES="$GEN/app/src/main/res"; SRC=src-tauri/icons/android

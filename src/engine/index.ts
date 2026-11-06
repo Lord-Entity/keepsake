@@ -5,6 +5,7 @@
  * satisfies `AppError` ({ code, message, detail, cookiesHint }). Use `toAppError(e)` to get a plain object.
  */
 import type { BinaryStatus, VideoInfo } from "../lib/types";
+import { fetchAndroidInfo, isAndroidYtdlpSupported } from "./android-ytdlp";
 import { EngineError, fail, toAppError } from "./errors";
 import { isDesktop, platform } from "./platform";
 import { fetchYouTubeInfo, isYouTubeUrl } from "./youtube";
@@ -49,8 +50,9 @@ async function fetchInfoInner(url: string, opts: FetchInfoOptions): Promise<Vide
     }
   }
   if (p === "android") {
-    if (!yt) fail("unsupported_url", "Only YouTube links work in the Android app. Other sites need the desktop app.");
-    return fetchYouTubeInfo(url);
+    if (yt) return fetchYouTubeInfo(url);
+    if (isAndroidYtdlpSupported(url)) return fetchAndroidInfo(url, opts.signal);
+    fail("unsupported_url", "Only YouTube, TikTok and Instagram links work in the Android app. Other sites need the desktop app.");
   }
   // Desktop: youtubei.js is fast for YouTube; yt-dlp covers everything else and YouTube fallbacks.
   if (yt) {

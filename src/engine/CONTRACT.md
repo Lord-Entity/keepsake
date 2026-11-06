@@ -21,10 +21,10 @@ Embedding flags on `DownloadRequest` (desktop only):
 
 | | Windows / Linux | Android | Web (dev preview) |
 |---|---|---|---|
-| Info | YouTube via youtubei.js, falling back to yt-dlp `-J`; other sites via yt-dlp | YouTube only (youtubei.js); other sites reject with `unsupported_url` | YouTube only; plain-browser fetches fail with `web_cors` |
-| Video | Every height the link offers, plus "Best available"; yt-dlp merges video-only + audio | Progressive MP4 (video + audio in one file) **at or below 360p** only. No merging, no "Best available" | Same as Android |
-| Audio | MP3 (default), M4A, OPUS, WAV, FLAC | **M4A (default) and WAV only.** MP3, FLAC and OPUS are not listed | None |
-| Thumbnail | Original, PNG, JPG | Original, PNG, JPG | Original, PNG, JPG |
+| Info | YouTube via youtubei.js, falling back to yt-dlp `-J`; other sites via yt-dlp | YouTube via youtubei.js; TikTok and Instagram via yt-dlp (Chaquopy, in-process); others reject with `unsupported_url` | YouTube only; plain-browser fetches fail with `web_cors` |
+| Video | Every height the link offers, plus "Best available"; yt-dlp merges video-only + audio | Progressive MP4 (video + audio in one file) **at or below 360p** only. No merging, no "Best available". TikTok/Instagram: any single-file height, no 360 cap | Same as Android |
+| Audio | MP3 (default), M4A, OPUS, WAV, FLAC | **M4A (default) and WAV only.** MP3, FLAC and OPUS are not listed. TikTok/Instagram: M4A only | None |
+| Thumbnail | Original, PNG, JPG | Original, PNG, JPG. TikTok/Instagram: not offered on Android | Original, PNG, JPG |
 | Playlists | Yes, per-item progress | Rejected (`format_unavailable`: "Playlists can be downloaded in the desktop app only.") | Rejected |
 | Downloads via | yt-dlp sidecar (`run_ytdlp`) | Range requests through plugin-http, streamed to disk with plugin-fs | Range requests into a Blob, then `<a download>` |
 | Conversion via | ffmpeg sidecar, run by yt-dlp | `keepsake-media` Tauri plugin (section 3) | None |
@@ -36,6 +36,7 @@ The 360p cap on Android is because only the ANDROID client's itag 18 (360p progr
 - `handle.cancel()` is idempotent. After it, no further non-final `onProgress` calls are delivered and the final status is `cancelled` (error code `cancelled`), even if the work finished in the same tick.
 - Desktop: `cancel()` sets the flag and sends `cancel_ytdlp`. Because a cancel sent before Rust registers the job is a no-op, `runYtdlp` checks the flag before invoking, re-sends `cancel_ytdlp` on the first output line and once more 500 ms after start. The yt-dlp process tree is killed and `.keepsake-tmp/<jobId>` is deleted by Rust. Cookie-fallback retries stop as soon as the flag is set.
 - Android/web: `cancel()` aborts the `AbortSignal` that every Range request uses. Partial output and the temp file in the app cache are deleted. The native `transcode` call cannot be interrupted; a cancel during it is honoured as soon as it returns, and the converted output is then deleted.
+- Android yt-dlp (TikTok/Instagram): `cancel()` does not interrupt the running native job; its output is deleted when it returns and the final status is `cancelled`. Aborting `fetchInfo` rejects with `cancelled` at once and the native result is dropped.
 - `fetchInfo`: aborting `opts.signal` rejects with `cancelled`; on desktop it also sends `cancel_ytdlp` for the `info-<UUID>` job.
 
 ## 2. Tauri commands (Rust, `src-tauri/src/ytdlp.rs`)
@@ -108,6 +109,23 @@ invoke<{ path: string }>("plugin:keepsake-media|transcode", {
 - Capability: `keepsake-media:allow-transcode` in `src-tauri/capabilities/mobile.json`.
 - M4A from an audio-only AAC stream needs no plugin call: the file is saved as served.
 - Not supported this round: MP3 (needs LAME), FLAC and Opus (encoder availability per API level unverified; Opus needs API 29, minSdk is 24). The engine rejects them with `format_unavailable` before any network work, and `listFormats` does not offer them.
+
+### 3.1 Android yt-dlp commands (TikTok and Instagram)
+
+Same plugin, yt-dlp 2026.10.26 (pure Python) running in-process through Chaquopy, arm64 only. TS wrapper: `src/engine/android-ytdlp.ts`. Details: `plan-docs/07-android-ytdlp-plan.md`.
+
+```ts
+invoke<{ ok: true; info: YtdlpInfo }>("plugin:keepsake-media|ytdlp_info", { url: string })
+invoke<{ path: string; bytes: number }>("plugin:keepsake-media|ytdlp_download",
+  { url: string, formatId: string, outDir: string, fileName?: string })
+```
+- Hosts: https only, `tiktok.com`, `vm.tiktok.com`, `vt.tiktok.com`, `instagram.com`, `instagr.am` (exact or subdomain). Checked in TS (`isAndroidYtdlpHost`) and again in Rust.
+- `YtdlpInfo` is a reduced payload: `id, title, uploader, duration, thumbnail, extractor, webpage_url, formats[]`; each format has `format_id, ext, vcodec, acodec, height, fps, filesize, protocol, format_note`. No stream URLs, headers or cookies reach JS.
+- `formatId` is ONE concrete yt-dlp `format_id` (`A-Z a-z 0-9 _ - .`, 1..64 chars) taken from the info; TS only picks http/https single-file formats. `outDir` is an absolute path inside the allowed roots; `fileName` is a base name without extension. Download re-runs extraction (no info cache on the native side).
+- Capabilities: `keepsake-media:allow-ytdlp-info`, `keepsake-media:allow-ytdlp-download`.
+- Errors reject with `ytdlp:<code>: <message>` (TS searches for it, since Tauri may wrap the text). Codes: `unsupported_url`, `login_required`, `rate_limited`, `forbidden`, `not_found`, `parse_failed`, `network`, `unknown`. They map to the same-named `AppErrorCode`, with Android-specific texts and `cookiesHint: false` always. A missing plugin or permission maps to `ytdlp_missing`.
+- Limits: one yt-dlp job at a time (single native thread); files over 500 MiB are refused; M4A audio only (a progressive MP4 is remuxed with `transcode` when no m4a stream exists).
+- Out of scope: progress events (indeterminate bar), cancelling a running job, cookies or login, proxies, user yt-dlp options, MP3/FLAC/Opus/WAV, merging streams, thumbnails, playlists and carousels, other sites, in-app yt-dlp updates.
 
 ## 4. Arguments TS sends (for reference and Rust tests)
 

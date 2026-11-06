@@ -56,7 +56,7 @@ Keepsake is a [Tauri 2](https://v2.tauri.app) app. The interface is React 19 wit
 
 - **Video, audio or thumbnail.** One format picker with three modes:
   - **Video:** Best, or a specific height (for example 1080p60), with an optional "Prefer H.264" switch for maximum compatibility.
-  - **Audio:** MP3, M4A, OPUS, WAV or FLAC on desktop; M4A or WAV on Android. MP3 offers 128, 192, 256 or 320 kbps. M4A is the original AAC stream with no conversion; WAV and FLAC are lossless copies of the source.
+  - **Audio:** MP3, M4A, OPUS, WAV or FLAC on desktop; M4A or WAV on Android (M4A only for TikTok and Instagram). MP3 offers 128, 192, 256 or 320 kbps. M4A is the original AAC stream with no conversion; WAV and FLAC are lossless copies of the source.
   - **Thumbnail:** original format, PNG or JPG.
 - **Link preview.** Title, channel, duration and thumbnail before you download, plus an Advanced table of the raw streams (desktop).
 - **Playlists** on desktop, with per-item progress.
@@ -85,7 +85,7 @@ Keepsake is a [Tauri 2](https://v2.tauri.app) app. The interface is React 19 wit
 |---|---|---|---|
 | Windows 10 / 11 (x64) | NSIS `.exe` installer only | about 25-35 MB | Bundled yt-dlp, a minimal LGPL ffmpeg for merging and conversion, and QuickJS for YouTube |
 | Linux (x64) | `.deb`, `.rpm`, `.AppImage` | `.deb` / `.rpm` about 20-40 MB; `.AppImage` likely 100 MB or more (it bundles WebKitGTK) | Same bundled standalone yt-dlp, ffmpeg and QuickJS in every package; no system Python needed |
-| Android 7.0+ (API 24) | arm64 `.apk` (default build) | about 6-15 MB | youtubei.js in the app; audio conversion through the native `keepsake-media` plugin. YouTube only, 360p video, M4A and WAV audio |
+| Android 7.0+ (API 24) | arm64 `.apk` (default build) | about 30-45 MB (includes Python and yt-dlp) | youtubei.js in the app for YouTube (360p video, M4A and WAV audio); TikTok and Instagram through the bundled yt-dlp (Chaquopy, arm64 only, M4A audio only, no MP3 or merge); audio conversion through the native `keepsake-media` plugin |
 
 The sizes are estimates from the component sizes, not measurements of a release build. They will be replaced with measured numbers once CI publishes the artifacts. Each CI job writes its artifact sizes to the job summary.
 
@@ -95,11 +95,12 @@ The sizes are estimates from the component sizes, not measurements of a release 
 |---|---|---|
 | YouTube | Yes, all qualities | Yes, video up to 360p (see below) |
 | Audio formats | MP3, M4A, OPUS, WAV, FLAC | M4A (default) and WAV |
+| TikTok, Instagram | Yes | Yes, through the bundled yt-dlp (public posts, single videos, M4A audio only) |
 | Other sites | 1,000+ sites supported by [yt-dlp](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) | No |
 | Playlists | Yes | No |
 | DRM-protected content | No | No |
 
-On Android, video is limited to the one YouTube stream that downloads reliably without extra tokens: a 360p MP4 with audio inside. Higher resolutions need separate video and audio streams merged together, which only the desktop app does today. Audio on Android comes from that same stream (AAC, roughly 96 kbps), saved as M4A without conversion or decoded to WAV on the phone. MP3, FLAC and OPUS are not offered on Android yet, because Android has no built-in MP3 encoder and the FLAC and Opus encoders are not available on every supported Android version.
+On Android, TikTok and Instagram links download through the yt-dlp that is bundled in the app (arm64 only). They offer single-file video at the heights the site serves and M4A audio only; there is no MP3 and no merging, and login-only posts fail. YouTube stays at 360p on Android. For YouTube, video is limited to the one stream that downloads reliably without extra tokens: a 360p MP4 with audio inside. Higher resolutions need separate video and audio streams merged together, which only the desktop app does today. Audio on Android comes from that same stream (AAC, roughly 96 kbps), saved as M4A without conversion or decoded to WAV on the phone. MP3, FLAC and OPUS are not offered on Android yet, because Android has no built-in MP3 encoder and the FLAC and Opus encoders are not available on every supported Android version.
 
 DRM-protected streams (most paid streaming services) cannot be downloaded on any platform.
 
@@ -237,6 +238,7 @@ Unit tests: `bun test` (engine tests in [`src/engine/__tests__`](src/engine/__te
 
 ```bash
 bun run android:init     # once; generates src-tauri/gen/android (git-ignored)
+bash scripts/android-patch-gradle.sh   # after every android:init; adds Chaquopy (needs Python 3.12 on PATH)
 bun run build:android    # arm64 APK (the default build)
 ```
 
@@ -424,7 +426,7 @@ Files are saved to the app's private folder, `/storage/emulated/0/Android/data/c
 </details>
 
 <details>
-<summary><b>Android: "Only YouTube links can be downloaded on this device" or playlist errors</b></summary>
+<summary><b>Android: "Only YouTube, TikTok and Instagram links can be downloaded on this device" or playlist errors</b></summary>
 
 Expected. Other sites and playlists need the Windows or Linux app.
 
@@ -476,7 +478,8 @@ These packages install the sidecars (`yt-dlp`, `ffmpeg`, `qjs`) next to the app 
 Keepsake is built on these projects:
 
 - [Tauri](https://tauri.app): the app shell and plugins
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp): extraction and downloads on desktop (Unlicense)
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp): extraction and downloads on desktop, and TikTok/Instagram on Android (Unlicense)
+- [Chaquopy](https://chaquo.com/chaquopy/): runs Python and yt-dlp inside the Android app (MIT)
 - [FFmpeg](https://ffmpeg.org): merging and conversion on desktop. The bundled build is a minimal **LGPL** configuration from [ffmpeg-ytdl-minimal-build](https://github.com/Abdullah-Masood-05/ffmpeg-ytdl-minimal-build)
 - [QuickJS-NG](https://github.com/quickjs-ng/quickjs): the JavaScript runtime yt-dlp uses for YouTube on desktop (MIT)
 - [youtubei.js](https://github.com/LuanRT/YouTube.js): YouTube info and Android downloads

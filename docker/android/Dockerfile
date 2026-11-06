@@ -3,6 +3,7 @@
 # Every tool is pinned. Keep these values in sync with .github/workflows/build.yml (android job).
 #   Base image   ubuntu:24.04 (for full reproducibility, pin by digest: ubuntu:24.04@sha256:<digest>)
 #   JDK          17 (openjdk-17-jdk-headless; the Android Gradle Plugin used by Tauri 2 needs JDK 17)
+#   Python       3.12 (Ubuntu 24.04 python3, for Chaquopy)
 #   Android      platform android-37.0, build-tools 37.0.0 (Tauri CLI 2.12 writes compileSdk/targetSdk 37)
 #   NDK          27.2.12479018
 #   rustup-init  1.29.3 (sha256 from rust-lang/docker-rust), toolchain Rust 1.90.0
@@ -22,7 +23,7 @@ ARG BUN_SHA256=bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c
 
 # System packages + JDK 17 + build essentials
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl unzip zip git rsync xz-utils perl \
+      ca-certificates curl unzip zip git rsync xz-utils perl python3 \
       build-essential pkg-config libssl-dev clang lld \
       openjdk-17-jdk-headless \
     && rm -rf /var/lib/apt/lists/*

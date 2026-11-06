@@ -5,6 +5,8 @@
  *   streamed to disk (never the whole file in memory). M4A from an audio-only stream is saved as-is; WAV, and M4A
  *   taken from a progressive MP4, go to a temp file in the app cache and through the native keepsake-media plugin
  *   (android-media.ts). MP3/FLAC/Opus are not available on Android yet and are rejected here.
+ * - Android TikTok/Instagram: in-process yt-dlp (Chaquopy) through android-ytdlp.ts, one single-file format, no
+ *   progress events (indeterminate). M4A from a muxed MP4 goes through the app cache and the transcode plugin.
  * - Web: same fetch path into a Blob -> <a download>. (CORS blocks YouTube in a plain browser; dev only.) No conversion.
  *
  * VERIFIED (node_modules/@tauri-apps/plugin-fs/dist-js/index.d.ts 2.7.1): `open(path, { write, create, truncate })`
@@ -18,6 +20,7 @@ import { appCacheDir, downloadDir, join } from "@tauri-apps/api/path";
 import { exists, mkdir, open, remove, writeFile, type FileHandle } from "@tauri-apps/plugin-fs";
 import type { AudioFormat, DownloadHandle, DownloadProgress, DownloadRequest, VideoInfo } from "../lib/types";
 import { transcodeAudio } from "./android-media";
+import { downloadAndroid, fetchAndroidInfo, isAndroidYtdlpSupported, pickYtdlpFormat } from "./android-ytdlp";
 import { appError, EngineError, fail, toAppError } from "./errors";
 import { httpFetch, timeoutSignal } from "./http";
 import { isDesktop, platform } from "./platform";
@@ -355,7 +358,7 @@ const DIRECT_AUDIO: ReadonlySet<AudioFormat> = new Set<AudioFormat>(["m4a", "wav
 
 async function runDirect(req: DownloadRequest, emit: Emit, signal: AbortSignal): Promise<DownloadProgress> {
   if (!isYouTubeUrl(req.url) && req.info?.source !== "youtubei") {
-    fail("unsupported_url", "Only YouTube links can be downloaded on this device. Other sites need the desktop app.");
+    fail("unsupported_url", "Only YouTube, TikTok and Instagram links can be downloaded on this device. Other sites need the desktop app.");
   }
   const [kind, value = ""] = req.formatId.split(":");
   // Guard before any network work: the Android format picker hides these, but never let them through.
@@ -426,6 +429,57 @@ async function runDirect(req: DownloadRequest, emit: Emit, signal: AbortSignal):
   }
 }
 
+// ---------------- Android yt-dlp (TikTok / Instagram) ----------------
+
+/** TikTok/Instagram on Android: one concrete single-file format through the in-process yt-dlp (android-ytdlp.ts). */
+async function runAndroidYtdlp(req: DownloadRequest, emit: Emit, signal: AbortSignal): Promise<DownloadProgress> {
+  const [kind] = req.formatId.split(":");
+  if (kind === "thumb") {
+    formatError("Thumbnails from TikTok and Instagram can be saved in the desktop app only.", req.formatId);
+  }
+  const info = req.info?.source === "ytdlp" ? req.info : await fetchAndroidInfo(req.url, signal);
+  const pick = pickYtdlpFormat(info, req.formatId);
+  if (!pick) formatError("This format isn't available for this link on Android.", req.formatId);
+  // No progress events from the native side this round: indeterminate bar.
+  emit({ id: req.id, status: "downloading", downloadedBytes: 0 });
+  // Rust rejects a fileName starting with "." and yt-dlp adds ".<ext>.part": keep the base short (code points,
+  // so no half surrogate pair; 50 x 4 UTF-8 bytes stays under the 255-byte name limit) and free of leading dots.
+  // TikTok titles are whole captions.
+  const base = Array.from(safeName(info.title)).slice(0, 50).join("").replace(/^[.\s]+/, "").trim() || "download";
+
+  if (!pick.needsRemux) {
+    const dir = await androidOutDir(req);
+    const target = await uniquePath(dir, base, pick.ext);
+    const fileName = target.slice(target.lastIndexOf("/") + 1, target.length - (pick.ext.length + 1));
+    const { path, bytes } = await downloadAndroid({ url: info.url, formatId: pick.formatId, outDir: dir, fileName });
+    if (signal.aborted) {
+      await remove(path).catch(() => undefined);
+      fail("cancelled");
+    }
+    return { id: req.id, status: "done", downloadedBytes: bytes, totalBytes: bytes, percent: 100, filePath: path };
+  }
+
+  // M4A from a muxed MP4: download to the app cache, then the native plugin copies the AAC track into an M4A.
+  const cache = await appCacheDir();
+  const tmpDir = await join(cache, `ytdlp-${safeName(req.id, 60)}`);
+  let outPath: string | undefined;
+  try {
+    await mkdir(tmpDir, { recursive: true });
+    const { path, bytes } = await downloadAndroid({ url: info.url, formatId: pick.formatId, outDir: tmpDir, fileName: "source" });
+    if (signal.aborted) fail("cancelled");
+    emit({ id: req.id, status: "converting", downloadedBytes: bytes, totalBytes: bytes });
+    outPath = await uniquePath(await androidOutDir(req), base, "m4a");
+    const res = await transcodeAudio({ input: path, output: outPath, format: "m4a" });
+    if (signal.aborted) fail("cancelled");
+    return { id: req.id, status: "done", downloadedBytes: bytes, totalBytes: bytes, percent: 100, filePath: res.path };
+  } catch (e) {
+    if (outPath) await remove(outPath).catch(() => undefined);
+    throw e;
+  } finally {
+    await remove(tmpDir, { recursive: true }).catch(() => undefined);
+  }
+}
+
 // ---------------- public ----------------
 
 async function resolveOutDir(req: DownloadRequest): Promise<string> {
@@ -457,6 +511,9 @@ export function startDownload(req: DownloadRequest, onProgress: (p: DownloadProg
       return downloadYtdlp(req, outDir, emit, () => cancelled);
     }
     if (platform() === "web" && !isYouTubeUrl(req.url)) fail("web_cors");
+    if (platform() === "android" && (isAndroidYtdlpSupported(req.url) || req.info?.source === "ytdlp")) {
+      return runAndroidYtdlp(req, emit, ctrl.signal);
+    }
     return runDirect(req, emit, ctrl.signal);
   };
 

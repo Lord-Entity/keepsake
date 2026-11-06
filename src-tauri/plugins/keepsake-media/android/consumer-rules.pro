@@ -2,3 +2,7 @@
 -keep class app.keepsake.media.KeepsakeMediaPlugin { *; }
 -keep class app.keepsake.media.TranscodeArgs { *; }
 -keep class app.keepsake.media.OpenArgs { *; }
+-keep class app.keepsake.media.YtdlpInfoArgs { *; }
+-keep class app.keepsake.media.YtdlpDownloadArgs { *; }
+-keep class app.keepsake.media.KeepsakeYtdlp { *; }
+-keep class com.chaquo.python.** { *; }
