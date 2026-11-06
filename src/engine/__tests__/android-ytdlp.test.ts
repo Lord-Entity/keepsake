@@ -343,8 +343,8 @@ function youtubeInfo(over = {}) {
 }
 
 describe("YouTube yt-dlp host list (separate from TikTok/Instagram)", () => {
-  test("exports the four YouTube hosts; the TikTok/Instagram list is unchanged", () => {
-    expect([...ANDROID_YTDLP_YOUTUBE_HOSTS]).toEqual(["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"]);
+  test("exports the five YouTube hosts; the TikTok/Instagram list is unchanged", () => {
+    expect([...ANDROID_YTDLP_YOUTUBE_HOSTS]).toEqual(["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"]);
     expect(ANDROID_YTDLP_HOSTS.some((h) => h.includes("youtu"))).toBe(false);
     expect(isAndroidYtdlpHost("https://www.youtube.com/watch?v=x")).toBe(false);
   });
@@ -376,15 +376,15 @@ describe("YouTube yt-dlp host list (separate from TikTok/Instagram)", () => {
 describe("youtubeRoute", () => {
   test("flag is on by default", () => {
     expect(YOUTUBE_VIA_YTDLP).toBe(true);
-    expect(youtubeRoute("https://www.youtube.com/watch?v=x")).toBe("ytdlp");
+    expect(youtubeRoute("https://www.youtube.com/watch?v=dQw4w9WgXcQ")).toBe("ytdlp");
   });
 
   test("ytdlp only for https YouTube hosts with the flag on", () => {
-    for (const u of ["https://youtube.com/watch?v=x", "https://m.youtube.com/watch?v=x", "https://youtu.be/x"]) {
+    for (const u of ["https://youtube.com/watch?v=dQw4w9WgXcQ", "https://m.youtube.com/watch?v=dQw4w9WgXcQ", "https://youtu.be/dQw4w9WgXcQ"]) {
       expect(youtubeRoute(u, true)).toBe("ytdlp");
       expect(youtubeRoute(u, false)).toBe("innertube");
     }
-    for (const u of ["http://youtube.com/watch?v=x", "https://www.tiktok.com/@a/video/1", "https://evil.com/x", "junk"]) {
+    for (const u of ["http://youtube.com/watch?v=dQw4w9WgXcQ", "https://www.tiktok.com/@a/video/1", "https://evil.com/x", "junk"]) {
       expect(youtubeRoute(u, true)).toBe("innertube");
     }
   });
@@ -449,7 +449,7 @@ describe("YouTube via yt-dlp info", () => {
   });
 
   test("tryYouTubeViaYtdlp returns info above 360p, null on error or 360p only", async () => {
-    const url = "https://www.youtube.com/watch?v=abc";
+    const url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
     invokeImpl = async () => ({ ok: true, info: youtubeInfo() });
     expect((await tryYouTubeViaYtdlp(url))?.source).toBe("ytdlp");
     invokeImpl = async () => ({ ok: true, info: youtubeInfo({ formats: [youtubeInfo().formats[0], youtubeInfo().formats[3]] }) });
