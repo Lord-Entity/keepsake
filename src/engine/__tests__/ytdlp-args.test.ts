@@ -139,11 +139,11 @@ describe("buildDownloadArgs: every mode", () => {
   });
 
   test("unknown format id is rejected with format_unavailable", () => {
-    let code;
+    let code: string | undefined;
     try {
       buildDownloadArgs(req("bogus:1"), LINUX_OUT);
     } catch (e) {
-      code = e.code;
+      code = (e as { code?: string }).code;
     }
     expect(code).toBe("format_unavailable");
   });

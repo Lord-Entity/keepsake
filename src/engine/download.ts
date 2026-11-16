@@ -676,9 +676,9 @@ async function runAndroidYtdlpJob(
     const audio = await dl(pick.audioFormatId, tmpDir, "audio", "-a");
     if (signal.aborted) fail("cancelled");
     emitStage("converting", "mux", video.bytes + audio.bytes);
-    // The native muxer picks the container from the codecs (MP4 or WebM); name the target for that container.
-    const vcodec = info.streams.find((s) => s.id === pick.formatId)?.vcodec ?? "";
-    const ext = /^av0?1/i.test(vcodec) ? "mp4" : pick.ext === "webm" ? "webm" : "mp4";
+    // The native muxer picks the container from the codecs (MP4 or WebM); the pick says which (muxExt), so the
+    // collision check below runs on the real output name.
+    const ext = pick.muxExt ?? (pick.ext === "webm" ? "webm" : "mp4");
     const target = await uniquePath(dir, base, ext);
     outPath = target;
     const res = await muxAndroid({ videoPath: video.path, audioPath: audio.path, outDir: dir, fileName: nameFor(target, ext) });

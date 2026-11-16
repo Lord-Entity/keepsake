@@ -210,6 +210,7 @@ def _reduce_format(f):
         "vcodec": _str_or_none(f.get("vcodec")),
         "acodec": _str_or_none(f.get("acodec")),
         "height": _int(f.get("height")),
+        "width": _int(f.get("width")),
         "fps": _float(f.get("fps")),
         "tbr": _float(f.get("tbr")),
         "abr": _float(f.get("abr")),

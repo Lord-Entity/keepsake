@@ -12,13 +12,12 @@ import { RadioGroup } from "../components/ui/RadioGroup";
 import { Switch } from "../components/ui/Switch";
 import { getPlatform, healthOf, refreshBinaries, useBinaries, versionsLine } from "../state/engine";
 import { collectDiagnostics } from "../engine/diagnostics";
-import { copyText } from "../state/native";
 import { pickAndroidFolder } from "../engine/android-folder";
 import { GALLERY_SAVE } from "../engine/android-gallery";
 import { useWidth } from "../state/hooks";
 import { notify } from "../state/toast";
 import { PAGE_BOTTOM } from "../components/layout/page";
-import { androidFolders, type AndroidFolder, openFile, pickFolder } from "../state/native";
+import { androidFolders, type AndroidFolder, copyText, openFile, pickFolder } from "../state/native";
 import {
   clampParallel,
   COOKIE_BROWSERS,
@@ -33,6 +32,11 @@ const SPANS: Record<string, Span> = {
   appearance: { wide: [6, 2], narrow: [12, 3] },
   tools: { wide: [6, 2], narrow: [12, 2] },
   reset: { wide: [12, 1], narrow: [12, 1] },
+};
+
+const copyDiagnostics = async () => {
+  await copyText(await collectDiagnostics());
+  notify({ tone: "success", title: "Diagnostics copied", body: "Paste them into your bug report." });
 };
 
 export function SettingsPage({ phone, onSupportedSites }: { phone: boolean; onSupportedSites: () => void }) {
@@ -51,11 +55,6 @@ export function SettingsPage({ phone, onSupportedSites }: { phone: boolean; onSu
   const width = useWidth(ref);
   const narrow = phone || (width > 0 && width < 760);
   const cardPad = phone ? "!p-4" : "";
-
-  const copyDiagnostics = async () => {
-    await copyText(await collectDiagnostics());
-    notify({ tone: "success", title: "Diagnostics copied", body: "Paste them into your bug report." });
-  };
 
   const gallerySel = !s.saveTreeUri && s.saveDir === GALLERY_SAVE;
   const saveLabel =

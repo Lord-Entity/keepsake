@@ -237,7 +237,7 @@ describe("pickYtdlpFormat", () => {
     );
     expect(pickYtdlpFormat(v, "video:best").formatId).toBe("bytevc1_1080p");
     expect(pickYtdlpFormat(v, "video:720").formatId).toBe("hvc1_720p");
-    const video = listFormats(v).filter((o) => o.mode === "video" && !o.disabledReason);
+    const video = listFormats(v).filter((o) => o.mode === "video" && !o.disabledReason && o.id !== "video:best");
     expect(video.map((o) => o.height)).toEqual([1080, 720, 480]);
     expect(video.find((o) => o.height === 480).ext).toBe("webm");
   });
@@ -328,9 +328,96 @@ describe("listFormats for android + ytdlp info", () => {
     const v = ytdlpInfoToVideoInfo(tiktokInfo(), "u");
     const opts = listFormats(v);
     const video = opts.filter((o) => o.mode === "video" && !o.disabledReason);
-    expect(video.map((o) => o.height)).toEqual([1080, 720]);
+    expect(video.map((o) => o.id)).toEqual(["video:best", "video:1080", "video:720"]);
+    expect(video.map((o) => o.height)).toEqual([undefined, 1080, 720]);
     expect(opts.filter((o) => o.mode === "audio" && !o.disabledReason).map((o) => o.id)).toEqual(["audio:m4a", "audio:wav"]);
     expect(opts.filter((o) => o.mode === "thumbnail")).toEqual([]);
+  });
+
+  test("video:best is listed like desktop and resolves to the highest listed height", () => {
+    const v = ytdlpInfoToVideoInfo(instagramInfo(), "u");
+    const video = listFormats(v).filter((o) => o.mode === "video");
+    const best = video.find((o) => o.id === "video:best");
+    expect(best).toMatchObject({ label: "Best available", ext: "mp4", needsMerge: true, isDefault: false });
+    expect(best.disabledReason).toBeUndefined();
+    expect(video.filter((o) => o.isDefault).map((o) => o.id)).toEqual(["video:1080"]);
+    expect(pickYtdlpFormat(v, "video:best")).toEqual(pickYtdlpFormat(v, "video:1080"));
+  });
+
+  test("video:best is the default when every height is above 1080", () => {
+    const v = ytdlpInfoToVideoInfo({ ...tiktokInfo(), formats: [fmt({ format_id: "h264_2160", vcodec: "avc1", height: 2160 })] }, "u");
+    const video = listFormats(v).filter((o) => o.mode === "video");
+    expect(video.filter((o) => o.isDefault).map((o) => o.id)).toEqual(["video:best"]);
+  });
+
+  test("list and pick agree for every listed height", () => {
+    const infos = [
+      tiktokInfo(),
+      instagramInfo(),
+      {
+        ...tiktokInfo(),
+        formats: [
+          fmt({ format_id: "download", format_note: "watermarked", height: 1080, tbr: 9000 }),
+          fmt({ format_id: "bytevc1_1080p_low", vcodec: "bytevc1", height: 1080, tbr: 1200, filesize: 9000000 }),
+          fmt({ format_id: "bytevc1_1080p_high", vcodec: "bytevc1", height: 1080, tbr: 2400, filesize: 4000000 }),
+          fmt({ format_id: "dash-720", vcodec: "avc1", acodec: "none", height: 720, fps: 60 }),
+          fmt({ format_id: "prog-720", vcodec: "avc1", acodec: "aac", height: 720, fps: 30 }),
+          fmt({ format_id: "vp9-540", ext: "webm", vcodec: "vp9", acodec: "none", height: 540 }),
+          fmt({ format_id: "a-m4a", ext: "m4a", vcodec: "none", acodec: "mp4a.40.2", height: null, fps: null, abr: 128 }),
+          fmt({ format_id: "a-opus", ext: "webm", vcodec: "none", acodec: "opus", height: null, fps: null, abr: 96 }),
+          fmt({ format_id: "hls-1080", protocol: "m3u8_native", height: 1440 }),
+        ],
+      },
+    ];
+    for (const raw of infos) {
+      const v = ytdlpInfoToVideoInfo(raw, "u");
+      const map = ytdlpModule.bestStreamsByHeight(v);
+      const rows = listFormats(v).filter((o) => o.mode === "video" && o.height);
+      expect(rows.map((o) => o.height)).toEqual([...map.keys()].toSorted((a, b) => b - a));
+      for (const row of rows) {
+        const hs = map.get(row.height);
+        const p = pickYtdlpFormat(v, row.id);
+        expect(p.formatId).toBe(hs.video.id);
+        expect(p.height).toBe(row.height);
+        expect(p.audioFormatId).toBe(hs.audio?.id);
+        expect(row.needsMerge).toBe(!!hs.audio);
+        expect(row.ext).toBe(hs.container);
+      }
+    }
+  });
+
+  test("tbr breaks ties between same-height TikTok variants; abr picks the audio", () => {
+    const v = ytdlpInfoToVideoInfo(
+      {
+        ...tiktokInfo(),
+        formats: [
+          fmt({ format_id: "bytevc1_1080p_low", vcodec: "bytevc1", height: 1080, tbr: 1200, filesize: 9000000 }),
+          fmt({ format_id: "bytevc1_1080p_high", vcodec: "bytevc1", height: 1080, tbr: 2400, filesize: 4000000 }),
+          fmt({ format_id: "dash-v", vcodec: "avc1", acodec: "none", height: 720 }),
+          fmt({ format_id: "a-big", ext: "m4a", vcodec: "none", acodec: "mp4a.40.2", height: null, fps: null, abr: 64, filesize: 900 }),
+          fmt({ format_id: "a-hq", ext: "m4a", vcodec: "none", acodec: "mp4a.40.2", height: null, fps: null, abr: 128, filesize: 500 }),
+        ],
+      },
+      "u",
+    );
+    expect(pickYtdlpFormat(v, "video:1080").formatId).toBe("bytevc1_1080p_high");
+    expect(pickYtdlpFormat(v, "video:best").formatId).toBe("bytevc1_1080p_high");
+    expect(pickYtdlpFormat(v, "video:720")).toMatchObject({ formatId: "dash-v", audioFormatId: "a-hq", ext: "mp4", muxExt: "mp4" });
+    expect(pickYtdlpFormat(v, "audio:m4a").formatId).toBe("a-hq");
+  });
+
+  test("a muxed AV1 pick reports mp4 as the mux output ext", () => {
+    const v = ytdlpInfoToVideoInfo(
+      {
+        ...tiktokInfo(),
+        formats: [
+          fmt({ format_id: "av1-1080", ext: "webm", vcodec: "av01.0.08M.08", acodec: "none", height: 1080 }),
+          fmt({ format_id: "a-opus", ext: "webm", vcodec: "none", acodec: "opus", height: null, fps: null }),
+        ],
+      },
+      "u",
+    );
+    expect(pickYtdlpFormat(v, "video:1080")).toMatchObject({ formatId: "av1-1080", audioFormatId: "a-opus", ext: "webm", muxExt: "mp4" });
   });
 });
 

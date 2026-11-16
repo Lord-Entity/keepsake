@@ -58,9 +58,14 @@ export interface YtdlpFormat {
   filesize: number | null;
   protocol: string;
   format_note: string | null;
-  /** Optional total / audio bitrate (kbit/s) when the Python side sends it; used only as a YouTube tie-break. */
+  /**
+   * Optional total / audio bitrate (kbit/s) when the Python side sends it. Becomes StreamInfo.bitrate (abr first for
+   * audio-only streams, tbr first otherwise) and breaks ties between same-height variants and between audio streams.
+   */
   tbr?: number | null;
   abr?: number | null;
+  /** Optional frame width. Informational only; nothing ranks on it yet. */
+  width?: number | null;
 }
 
 export interface YtdlpInfo {
@@ -140,16 +145,19 @@ export function ytdlpInfoToVideoInfo(info: YtdlpInfo, requestedUrl: string): Vid
     if (f.protocol !== "https" && f.protocol !== "http") continue;
     if (f.vcodec === "none" && f.acodec === "none") continue;
     if ((f.format_note && /watermark/i.test(f.format_note)) || /^download/i.test(f.format_id)) marked.add(f.format_id);
+    const kind = f.vcodec === "none" ? "audio-only" : f.acodec === "none" ? "video-only" : "progressive";
+    // Audio-only streams rank by audio bitrate; video streams by total bitrate.
+    const bitrate = kind === "audio-only" ? (f.abr ?? f.tbr) : (f.tbr ?? f.abr);
     streams.push({
       id: f.format_id,
-      kind: f.vcodec === "none" ? "audio-only" : f.acodec === "none" ? "video-only" : "progressive",
+      kind,
       ext: f.ext || "mp4",
       height: f.height ?? undefined,
       fps: f.fps ?? undefined,
       vcodec: f.vcodec && f.vcodec !== "none" ? f.vcodec : undefined,
       acodec: f.acodec && f.acodec !== "none" ? f.acodec : undefined,
       sizeBytes: f.filesize ?? undefined,
-      ...(typeof (f.tbr ?? f.abr) === "number" ? { bitrate: (f.tbr ?? f.abr) as number } : {}),
+      ...(typeof bitrate === "number" && Number.isFinite(bitrate) ? { bitrate } : {}),
     });
   }
   const fpsByHeight: Record<number, number> = {};
@@ -188,13 +196,13 @@ export interface YtdlpPick {
   sizeBytes?: number;
   /** Set when formatId is video-only: the audio-only stream to download and mux with it. */
   audioFormatId?: string;
+  /** Set with audioFormatId: extension of the file the native muxer writes (AV1 goes to MP4, so it can differ from ext). */
+  muxExt?: MuxContainer;
   /** Best single-file (muxed) format of the same info, used when formatId is unavailable. */
   fallback?: { formatId: string; ext: string };
   /** Optional user-facing note. download.ts ignores it; no skipped-height note is produced any more. */
   note?: string;
 }
-
-const isH264 = (s: StreamInfo) => /^(avc|h264)/i.test(s.vcodec ?? "");
 
 /** Highest video height YouTube reported. Kept as a public snapshot; no note or cap depends on it. */
 export const rawMaxHeight = new WeakMap<VideoInfo, number>();
@@ -230,47 +238,102 @@ function audioMatches(a: StreamInfo, container: MuxContainer): boolean {
   return (ext === "webm" || ext === "ogg") && /^(opus|vorbis)/i.test(a.acodec ?? "");
 }
 
+/** Audio ranking: bitrate (abr for audio-only streams) when present, then size. */
+const byAudioQuality = (a: StreamInfo, b: StreamInfo) => (b.bitrate ?? 0) - (a.bitrate ?? 0) || (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0);
+
 /** Best audio-only stream that can be muxed into `container` (bitrate, then size), or undefined. */
 export function audioForContainer(info: VideoInfo, container: MuxContainer): StreamInfo | undefined {
-  return info.streams
-    .filter((s) => s.kind === "audio-only" && audioMatches(s, container))
-    .toSorted((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0) || (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0))[0];
+  return info.streams.filter((s) => s.kind === "audio-only" && audioMatches(s, container)).toSorted(byAudioQuality)[0];
+}
+
+/** Extension of the file the native muxer writes for `video` in `container`: AV1 always goes to MP4. */
+export function muxOutputExt(video: StreamInfo, container: MuxContainer): MuxContainer {
+  return /^av0?1/i.test(video.vcodec ?? "") ? "mp4" : container;
+}
+
+/** What one listed height resolves to. Shared by the picker list (formats.ts) and pickYtdlpFormat. */
+export interface HeightStream {
+  /** The progressive or video-only stream for this height. */
+  video: StreamInfo;
+  /** Audio-only stream to mux with `video`; set exactly when `video` is video-only. */
+  audio?: StreamInfo;
+  /** Container shown in the picker row: the muxable one, else mp4/webm from the file's own ext (progressive). */
+  container: MuxContainer;
+  /** Extension of the file actually saved: a progressive file's own ext, or muxOutputExt for a muxed pair. */
+  outExt: string;
+}
+
+/**
+ * Ranks streams of the same height (negative = `a` is better): non-watermarked first, then progressive, fps,
+ * bitrate (tbr), size. Watermarked streams are demoted, never dropped.
+ */
+function sameHeightRank(info: VideoInfo): (a: StreamInfo, b: StreamInfo) => number {
+  const marked = watermarked.get(info);
+  const isMarked = (s: StreamInfo) => !!marked?.has(s.id) || /^download/i.test(s.id);
+  return (a, b) =>
+    Number(isMarked(a)) - Number(isMarked(b)) ||
+    Number(b.kind === "progressive") - Number(a.kind === "progressive") ||
+    (b.fps ?? 0) - (a.fps ?? 0) ||
+    (b.bitrate ?? 0) - (a.bitrate ?? 0) ||
+    (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0);
+}
+
+/**
+ * Pure, single source of truth: the best stream per height that the phone can save. Progressive streams are copied
+ * as-is (any codec, e.g. TikTok's bytevc1). A video-only stream counts only when the native muxer can write its
+ * codec/container and a matching audio-only stream exists (AAC for mp4, Opus/Vorbis for webm). Heightless streams
+ * are not listed. The picker lists exactly these heights and pickYtdlpFormat (non-YouTube) downloads exactly these.
+ */
+export function bestStreamsByHeight(info: VideoInfo): Map<number, HeightStream> {
+  const rank = sameHeightRank(info);
+  const audio: Record<MuxContainer, StreamInfo | undefined> = {
+    mp4: audioForContainer(info, "mp4"),
+    webm: audioForContainer(info, "webm"),
+  };
+  const byHeight = new Map<number, HeightStream>();
+  for (const s of info.streams) {
+    if (s.kind === "audio-only" || !s.height) continue;
+    let entry: HeightStream;
+    if (s.kind === "video-only") {
+      const container = muxContainerFor(s);
+      const a = container ? audio[container] : undefined;
+      if (!container || !a) continue;
+      entry = { video: s, audio: a, container, outExt: muxOutputExt(s, container) };
+    } else {
+      const container = muxContainerFor(s) ?? ((s.ext ?? "").toLowerCase() === "webm" ? "webm" : "mp4");
+      entry = { video: s, container, outExt: s.ext || "mp4" };
+    }
+    const prev = byHeight.get(s.height);
+    if (!prev || rank(s, prev.video) < 0) byHeight.set(s.height, entry);
+  }
+  return byHeight;
 }
 
 const isYouTubeInfo = (info: VideoInfo) => info.site === "youtube" || isAndroidYouTubeYtdlpHost(info.url);
 
-/** Today's TikTok / Instagram video pick (unchanged), over `streams` (defaults to all of info.streams). */
-function pickVideoGeneric(info: VideoInfo, limit: number, streams: StreamInfo[] = info.streams): YtdlpPick | null {
-  const marked = watermarked.get(info) ?? new Set<string>();
-  const isMarked = (s: StreamInfo) => marked.has(s.id) || /^download/i.test(s.id);
-  const cmp = (a: StreamInfo, b: StreamInfo) =>
-    (b.height ?? 0) - (a.height ?? 0) ||
-    Number(isMarked(a)) - Number(isMarked(b)) ||
-    Number(a.kind === "video-only") - Number(b.kind === "video-only") ||
-    Number(isH264(b)) - Number(isH264(a)) ||
-    (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0);
-  const prog = streams.filter((s) => s.kind === "progressive" && (s.height ?? 0) <= limit).toSorted(cmp);
-  const audio = streams.filter((s) => s.kind === "audio-only");
-  const bestAudio = audio.filter((s) => s.ext === "m4a").toSorted((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0))[0];
-  const vids = streams
-    .filter((s) => (s.kind === "progressive" || (s.kind === "video-only" && bestAudio)) && (s.height ?? 0) <= limit)
-    .toSorted(cmp);
-  const s = vids[0];
-  if (!s) return null;
-  const fb = prog[0];
+/**
+ * TikTok / Instagram / other non-YouTube pick: the highest height from bestStreamsByHeight at or below `limit`, and
+ * exactly the stream listed for it (no list/pick disagreement). The best progressive stream at or below that height,
+ * when it is a different file, is kept as the error-only fallback.
+ */
+function pickVideoGeneric(info: VideoInfo, limit: number): YtdlpPick | null {
+  const byHeight = bestStreamsByHeight(info);
+  const height = [...byHeight.keys()].filter((h) => h <= limit).toSorted((a, b) => b - a)[0];
+  const hs = height === undefined ? undefined : byHeight.get(height);
+  if (height === undefined || !hs) return null;
+  const s = hs.video;
+  const rank = sameHeightRank(info);
+  const fb = info.streams
+    .filter((p) => p.kind === "progressive" && (p.height ?? 0) <= height)
+    .toSorted((a, b) => (b.height ?? 0) - (a.height ?? 0) || rank(a, b))[0];
   const fallback = fb && fb.id !== s.id ? { formatId: fb.id, ext: fb.ext } : undefined;
-  if (s.kind === "video-only") {
-    return {
-      formatId: s.id,
-      ext: "mp4",
-      needsRemux: false,
-      height: s.height,
-      sizeBytes: s.sizeBytes,
-      audioFormatId: bestAudio!.id,
-      fallback,
-    };
+  const pick: YtdlpPick = { formatId: s.id, ext: hs.outExt, needsRemux: false, height, sizeBytes: s.sizeBytes, fallback };
+  if (hs.audio) {
+    pick.ext = hs.container;
+    pick.audioFormatId = hs.audio.id;
+    pick.muxExt = muxOutputExt(s, hs.container);
   }
-  return { formatId: s.id, ext: s.ext, needsRemux: false, height: s.height, sizeBytes: s.sizeBytes, fallback };
+  return pick;
 }
 
 /**
@@ -316,7 +379,10 @@ function pickVideoYouTube(info: VideoInfo, limit: number): YtdlpPick | null {
     sizeBytes: best.s.sizeBytes,
     fallback: prog ? { formatId: prog.s.id, ext: prog.c } : undefined,
   };
-  if (best.a) pick.audioFormatId = best.a.id;
+  if (best.a) {
+    pick.audioFormatId = best.a.id;
+    pick.muxExt = muxOutputExt(best.s, best.c);
+  }
   return pick;
 }
 
@@ -330,11 +396,8 @@ export function pickYtdlpFormat(info: VideoInfo, uiFormatId: string): YtdlpPick 
     return isYouTubeInfo(info) ? pickVideoYouTube(info, limit) : pickVideoGeneric(info, limit);
   }
   if (uiFormatId === "audio:m4a") {
-    const audio = info.streams.filter((s) => s.kind === "audio-only" && s.ext === "m4a");
-    if (audio.length > 0) {
-      const best = audio.reduce((a, b) => ((b.sizeBytes ?? 0) >= (a.sizeBytes ?? 0) ? b : a));
-      return { formatId: best.id, ext: "m4a", needsRemux: false, sizeBytes: best.sizeBytes };
-    }
+    const best = info.streams.filter((s) => s.kind === "audio-only" && s.ext === "m4a").toSorted(byAudioQuality)[0];
+    if (best) return { formatId: best.id, ext: "m4a", needsRemux: false, sizeBytes: best.sizeBytes };
     const prog = info.streams
       .filter((s) => s.kind === "progressive" && s.ext === "mp4" && (!s.acodec || /^(mp4a|aac)/i.test(s.acodec)))
       .toSorted((a, b) => (a.sizeBytes ?? Infinity) - (b.sizeBytes ?? Infinity));

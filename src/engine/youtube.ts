@@ -61,7 +61,7 @@ function installEvaluator() {
   Platform.load({
     ...shim,
     // data.output is a self-contained script ending in `return process(...)` (see header).
-    // eslint-disable-next-line no-new-func
+    // oxlint-disable-next-line no-new-func
     eval: (data: Types.BuildScriptResult) => new Function(data.output)() as Record<string, unknown>,
   });
   evalInstalled = true;

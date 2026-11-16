@@ -6,13 +6,13 @@
  * - Android (youtubei.js + keepsake-media plugin): every height that has a muxable video stream; the native mux
  *   writes MP4 (AVC/HEVC + AAC) or WebM (VP8/VP9/AV1 + Opus/Vorbis) without re-encoding. Audio M4A (default, no
  *   conversion) and WAV (AAC decoded to PCM). MP3, FLAC and Opus need encoders Android does not ship yet.
- * - Android, TikTok/Instagram (yt-dlp via Chaquopy, info.source === "ytdlp"): any height with a muxable container,
- *   audio M4A and WAV (MP3 shown disabled), no thumbnails.
+ * - Android, TikTok/Instagram (yt-dlp via Chaquopy, info.source === "ytdlp"): "Best available" plus every height in
+ *   bestStreamsByHeight (shared with pickYtdlpFormat), audio M4A and WAV (MP3 shown disabled), no thumbnails.
  * - Web (dev preview without Tauri): progressive MP4 at or below 360p and thumbnails; no audio (nothing can extract
  *   or convert it in the browser).
  */
-import type { AudioFormat, FormatOption, Platform, StreamInfo, ThumbnailFormat, VideoInfo } from "../lib/types";
-import { audioForContainer, muxContainerFor, pickYtdlpFormat, type MuxContainer } from "./android-ytdlp";
+import type { AudioFormat, FormatOption, Platform, ThumbnailFormat, VideoInfo } from "../lib/types";
+import { bestStreamsByHeight, pickYtdlpFormat } from "./android-ytdlp";
 import { platform } from "./platform";
 
 /** Heights offered when the link gives none (playlists, and the Android pre-fetch placeholders): 2160 down to 360. */
@@ -127,42 +127,6 @@ function webVideoOptions(info: VideoInfo): FormatOption[] {
   }));
 }
 
-/** Progressive first, then fps, bitrate and size: picks the stream that represents a height. */
-function streamRank(a: StreamInfo, b: StreamInfo): number {
-  return (
-    Number(b.kind === "progressive") - Number(a.kind === "progressive") ||
-    (b.fps ?? 0) - (a.fps ?? 0) ||
-    (b.bitrate ?? 0) - (a.bitrate ?? 0) ||
-    (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0)
-  );
-}
-
-/**
- * Best muxable video stream per height. Video-only heights need a matching audio-only stream; progressive streams
- * carry their own audio. Streams whose codec/container the native muxer cannot write are skipped.
- */
-function bestStreamsByHeight(info: VideoInfo): Map<number, StreamInfo> {
-  const byHeight = new Map<number, StreamInfo>();
-  for (const s of info.streams) {
-    if (s.kind === "audio-only" || !s.height) continue;
-    if (s.kind === "video-only") {
-      // A video-only stream is only usable when the phone can mux it with a matching audio stream.
-      const container = muxContainerFor(s);
-      if (!container || !audioForContainer(info, container)) continue;
-    }
-    // A progressive file needs no muxing: list it even when its codec name is one we do not map
-    // (TikTok's bytevc1, Instagram's vp09...). The download itself copies that single file as-is.
-    const prev = byHeight.get(s.height);
-    if (!prev || streamRank(s, prev) < 0) byHeight.set(s.height, s);
-  }
-  return byHeight;
-}
-
-/** Container label for a row: the muxable one, else the file's own extension (progressive streams). */
-function rowContainer(s: StreamInfo): MuxContainer {
-  return muxContainerFor(s) ?? ((s.ext ?? "").toLowerCase() === "webm" ? "webm" : "mp4");
-}
-
 function noVideoRow(label: string): FormatOption {
   return { id: "video:none", mode: "video", label, ext: "mp4", isDefault: false, needsMerge: false, needsConversion: false, disabledReason: label };
 }
@@ -179,16 +143,15 @@ function youtubeiVideoOptions(info: VideoInfo): FormatOption[] {
   const def = heights.find((h) => h <= 1080) ?? heights[0];
   return heights.map((h) => {
     const s = byHeight.get(h)!;
-    const container = rowContainer(s);
     return {
       id: `video:${h}`,
       mode: "video" as const,
       label: qualityLabel(h, info.fpsByHeight[h]),
       height: h,
       fps: info.fpsByHeight[h] || undefined,
-      ext: container,
+      ext: s.container,
       isDefault: h === def,
-      needsMerge: s.kind === "video-only",
+      needsMerge: !!s.audio,
       needsConversion: false,
     };
   });
@@ -235,27 +198,39 @@ function thumbOptions(): FormatOption[] {
 }
 
 /**
- * Android, TikTok/Instagram (yt-dlp via Chaquopy): every height with a muxable video stream (MP4 for AVC/HEVC,
- * WebM for VP8/VP9/AV1), M4A/WAV audio, no thumbnails. Video-only heights need a matching audio-only stream.
- * Default: highest height <= 1080, else the highest.
+ * Android, yt-dlp via Chaquopy (TikTok/Instagram/...): "Best available" plus every height from bestStreamsByHeight
+ * (the same map pickYtdlpFormat uses, so each row downloads exactly the stream it shows), M4A/WAV audio, no
+ * thumbnails. "Best available" resolves to the highest listed height. Default: highest height <= 1080, else Best.
  */
 function androidYtdlpOptions(info: VideoInfo): FormatOption[] {
   const out: FormatOption[] = [];
   const byHeight = bestStreamsByHeight(info);
   const heights = [...byHeight.keys()].toSorted((a, b) => b - a);
-  if (heights.length > 0) {
-    const def = heights.find((h) => h <= 1080) ?? heights[0];
+  const top = heights.length > 0 ? byHeight.get(heights[0]) : undefined;
+  if (top) {
+    const def = heights.find((h) => h <= 1080);
+    out.push({
+      id: "video:best",
+      mode: "video",
+      label: "Best available",
+      ext: top.container,
+      isDefault: def === undefined,
+      needsMerge: !!top.audio,
+      needsConversion: false,
+    });
     for (const h of heights) {
-      const s = byHeight.get(h)!;
+      const s = byHeight.get(h);
+      if (!s) continue;
       out.push({
         id: `video:${h}`,
         mode: "video",
-        label: qualityLabel(h, info.fpsByHeight[h]),
+        // fps of the stream this row downloads, not the height's max over all streams.
+        label: qualityLabel(h, s.video.fps),
         height: h,
-        fps: info.fpsByHeight[h] || undefined,
-        ext: rowContainer(s),
+        fps: s.video.fps || undefined,
+        ext: s.container,
         isDefault: h === def,
-        needsMerge: s.kind === "video-only",
+        needsMerge: !!s.audio,
         needsConversion: false,
       });
     }

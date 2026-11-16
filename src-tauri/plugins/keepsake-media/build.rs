@@ -1,4 +1,8 @@
-const COMMANDS: &[&str] = &["transcode", "open_file", "ytdlp_info", "ytdlp_download",
+const COMMANDS: &[&str] = &[
+    "transcode",
+    "open_file",
+    "ytdlp_info",
+    "ytdlp_download",
     "ytdlp_cancel",
     "ytdlp_mux",
     "gallery_publish",
