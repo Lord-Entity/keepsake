@@ -800,7 +800,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 mod tests {
     use super::{
         validate, validate_file_name, validate_format_id, validate_job_id, validate_mux,
-        validate_out_dir, validate_ytdlp_url,
+        validate_out_dir, validate_ytdlp_url, YtdlpFormat,
     };
     use super::{
         validate_content_uri, validate_folder_save, validate_gallery_publish, validate_media_kind,
@@ -809,87 +809,31 @@ mod tests {
 
     const TREE: &str = "content://com.android.externalstorage.documents/tree/primary%3AMovies";
 
-    // serde_json is not a dependency of this crate, so build the input with serde's own
-    // value deserializer instead.
-    mod fmt_de {
-        use super::super::YtdlpFormat;
-        use serde::de::value::{Error, MapDeserializer};
-        use serde::de::{Deserialize, Deserializer, IntoDeserializer, Visitor};
-
-        #[derive(Clone, Copy)]
-        pub enum V {
-            S(&'static str),
-            F(f64),
-            U(u64),
-            Null,
-        }
-        pub struct VD(V);
-        impl<'de> Deserializer<'de> for VD {
-            type Error = Error;
-            fn deserialize_any<X: Visitor<'de>>(self, v: X) -> Result<X::Value, Error> {
-                match self.0 {
-                    V::S(s) => v.visit_str(s),
-                    V::F(f) => v.visit_f64(f),
-                    V::U(u) => v.visit_u64(u),
-                    V::Null => v.visit_unit(),
-                }
-            }
-            fn deserialize_option<X: Visitor<'de>>(self, v: X) -> Result<X::Value, Error> {
-                match self.0 {
-                    V::Null => v.visit_none(),
-                    _ => v.visit_some(self),
-                }
-            }
-            serde::forward_to_deserialize_any! {
-                bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes
-                byte_buf unit unit_struct newtype_struct seq tuple tuple_struct map struct
-                enum identifier ignored_any
-            }
-        }
-        impl<'de> IntoDeserializer<'de, Error> for V {
-            type Deserializer = VD;
-            fn into_deserializer(self) -> VD {
-                VD(self)
-            }
-        }
-
-        pub fn parse(pairs: Vec<(&'static str, V)>) -> YtdlpFormat {
-            let d = MapDeserializer::<_, Error>::new(pairs.into_iter());
-            YtdlpFormat::deserialize(d).expect("deserialize")
-        }
-    }
-
     #[test]
     fn ytdlp_format_keeps_bitrate_and_width() {
-        use fmt_de::{parse, V};
-        let f = parse(vec![
-            ("format_id", V::S("137")),
-            ("ext", V::S("mp4")),
-            ("protocol", V::S("https")),
-            ("height", V::U(1080)),
-            ("width", V::U(1920)),
-            ("tbr", V::F(4321.5)),
-            ("abr", V::F(128.0)),
-        ]);
+        // Mirrors keepsake_ytdlp._reduce_format output: ints for height/width/filesize, floats for tbr/abr/fps.
+        let f: YtdlpFormat = serde_json::from_str(
+            r#"{"format_id":"137","ext":"mp4","vcodec":"avc1","acodec":null,"height":1080,"width":1920,
+                "fps":30.0,"tbr":4321.5,"abr":128.0,"filesize":null,"protocol":"https","format_note":null}"#,
+        )
+        .unwrap();
         assert_eq!(f.width, Some(1920));
         assert_eq!(f.tbr, Some(4321.5));
         assert_eq!(f.abr, Some(128.0));
         assert_eq!(f.height, Some(1080));
+        let back: YtdlpFormat = serde_json::from_str(&serde_json::to_string(&f).unwrap()).unwrap();
+        assert_eq!(back.width, Some(1920));
+        assert_eq!(back.tbr, Some(4321.5));
+        assert_eq!(back.abr, Some(128.0));
     }
 
     #[test]
     fn ytdlp_format_missing_and_null_optionals_parse() {
-        use fmt_de::{parse, V};
-        let base = vec![
-            ("format_id", V::S("18")),
-            ("ext", V::S("mp4")),
-            ("protocol", V::S("https")),
-        ];
-        let f = parse(base.clone());
+        let base = r#""format_id":"18","ext":"mp4","protocol":"https""#;
+        let f: YtdlpFormat = serde_json::from_str(&format!("{{{base}}}")).unwrap();
         assert!(f.tbr.is_none() && f.abr.is_none() && f.width.is_none());
-        let mut nulls = base;
-        nulls.extend([("tbr", V::Null), ("abr", V::Null), ("width", V::Null)]);
-        let f = parse(nulls);
+        let f: YtdlpFormat =
+            serde_json::from_str(&format!(r#"{{{base},"tbr":null,"abr":null,"width":null}}"#)).unwrap();
         assert!(f.tbr.is_none() && f.abr.is_none() && f.width.is_none());
     }
 

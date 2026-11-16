@@ -152,7 +152,7 @@ function usableFormats(info: YTInfo): YTFormat[] {
 async function sessionPoToken(yt: Innertube): Promise<string | undefined> {
   if (platform() !== "android") return undefined;
   try {
-    const token = (await getPoToken(yt.session.visitor_data)) ?? undefined;
+    const token = (await getPoToken(yt.session.context.client.visitorData ?? "")) ?? undefined;
     if (token) {
       // The player appends `pot=<token>` when it deciphers a stream URL (Player.decipher); the session makes
       // later info calls attach the same token without threading it through every call.
