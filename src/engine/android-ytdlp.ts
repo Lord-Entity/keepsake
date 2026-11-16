@@ -212,7 +212,7 @@ export type MuxContainer = "mp4" | "webm";
 
 // yt-dlp and YouTube spell the same codecs differently: hvc1/bytevc1 are HEVC, vp09 is VP9.
 const MP4_VIDEO_RE = /^(avc|h264|hev|h265|hvc1|bytevc1)/i;
-const WEBM_VIDEO_RE = /^(vp8|vp9|vp09|av01|av1)/i;
+const WEBM_VIDEO_RE = /^(vp8|vp08|vp9|vp09|av01|av1)/i;
 
 /** Pure: the container `video` can be muxed into, or null when the phone cannot write it without re-encoding. */
 export function muxContainerFor(video: StreamInfo): MuxContainer | null {
