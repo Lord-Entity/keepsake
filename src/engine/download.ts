@@ -36,7 +36,14 @@ import {
 import { appError, EngineError, fail, toAppError } from "./errors";
 import { httpFetch, timeoutSignal } from "./http";
 import { isDesktop, platform } from "./platform";
-import { resolveSingleFile, fetchYouTubeInfo, isYouTubeUrl } from "./youtube";
+import {
+  resolveAdaptive,
+  resolveSingleFile,
+  fetchYouTubeInfo,
+  isYouTubeUrl,
+  type ResolvedPair,
+  type ResolvedStream,
+} from "./youtube";
 import { cancelYtdlp, downloadYtdlp } from "./ytdlp";
 
 const CHUNK = 10 * 1024 * 1024;
@@ -371,6 +378,71 @@ function formatError(message: string, detail?: string): never {
 /** Audio formats the direct path can produce. MP3/FLAC/Opus need encoders the Android build does not ship yet. */
 const DIRECT_AUDIO: ReadonlySet<AudioFormat> = new Set<AudioFormat>(["m4a", "wav"]);
 
+/**
+ * Android high-quality video: download a video-only stream and its matching audio-only stream into the
+ * app cache, then mux them on the phone without re-encoding (keepsake-media: MP4 for AVC/HEVC+AAC,
+ * WebM for VP8/VP9+Vorbis/Opus, AV1 to MP4 on Android 10+). This is the path that reaches 1080p, 1440p
+ * and 4K; progressive files stop at 360p/720p.
+ */
+async function downloadAdaptive(
+  req: DownloadRequest,
+  info: VideoInfo,
+  pair: ResolvedPair,
+  emit: Emit,
+  signal: AbortSignal,
+): Promise<DownloadProgress> {
+  if (!pair.audio || platform() !== "android") {
+    throw new EngineError({
+      code: "format_unavailable",
+      message: "This quality needs merging, which isn't available on this device.",
+      cookiesHint: false,
+    });
+  }
+  const dir = await androidOutDir(req);
+  // AV1 always lands in MP4 (Android 10+); every other pair keeps its stream container (MP4 or WebM).
+  const ext = /^av0?1/i.test(pair.video.stream.vcodec ?? "") ? "mp4" : pair.video.ext;
+  const target = await uniquePath(dir, safeName(info.title), ext);
+  const outName = nameFor(target, ext);
+  const stage = await join(await appCacheDir(), `mux-${safeName(req.id, 60)}`);
+  const vPath = await join(stage, `video.${pair.video.ext}`);
+  const aPath = await join(stage, `audio.${pair.audio.ext}`);
+  await mkdir(stage, { recursive: true });
+  const meter = new Meter(req.id, emit);
+  try {
+    emit({ id: req.id, status: "downloading", downloadedBytes: 0, stage: "video" });
+    const videoTarget = await fileTarget(vPath, true);
+    try {
+      await fetchStream(pair.video.url, pair.video.sizeBytes, videoTarget.write, meter, signal);
+      await videoTarget.finish();
+    } catch (e) {
+      await videoTarget.discard();
+      throw e;
+    }
+    if (signal.aborted) fail("cancelled");
+
+    emit({ id: req.id, status: "downloading", downloadedBytes: 0, stage: "audio" });
+    const audioTarget = await fileTarget(aPath, true);
+    try {
+      await fetchStream(pair.audio.url, pair.audio.sizeBytes, audioTarget.write, meter, signal);
+      await audioTarget.finish();
+    } catch (e) {
+      await audioTarget.discard();
+      throw e;
+    }
+    if (signal.aborted) fail("cancelled");
+
+    emit({ id: req.id, status: "merging", downloadedBytes: 0, stage: "mux" });
+    const res = await muxAndroid({ videoPath: vPath, audioPath: aPath, outDir: dir, fileName: outName });
+    if (signal.aborted) {
+      await remove(res.path).catch(() => undefined);
+      fail("cancelled");
+    }
+    return { id: req.id, status: "done", downloadedBytes: res.bytes, totalBytes: res.bytes, percent: 100, filePath: res.path };
+  } finally {
+    await remove(stage, { recursive: true }).catch(() => undefined);
+  }
+}
+
 async function runDirect(req: DownloadRequest, emit: Emit, signal: AbortSignal): Promise<DownloadProgress> {
   if (!isYouTubeUrl(req.url) && req.info?.source !== "youtubei") {
     fail("unsupported_url", "Only YouTube, TikTok and Instagram links can be downloaded on this device. Other sites need the desktop app.");
@@ -391,10 +463,22 @@ async function runDirect(req: DownloadRequest, emit: Emit, signal: AbortSignal):
     return { id: req.id, status: "done", downloadedBytes: 0, percent: 100, filePath };
   }
 
-  const resolved =
-    kind === "video"
-      ? await resolveSingleFile(info.id, { kind: "progressive", maxHeight: value === "best" ? undefined : Number(value) || undefined })
-      : await resolveSingleFile(info.id, { kind: "audio", container: "m4a" });
+  let resolved: ResolvedStream;
+  if (kind === "video") {
+    const maxHeight = value === "best" ? undefined : Number(value) || undefined;
+    // Android: adaptive video+audio pairs reach every height. Desktop/web keep the single-file path.
+    if (platform() === "android") {
+      const pair = await resolveAdaptive(info.id, maxHeight);
+      if (pair.audio && pair.video.stream.kind === "video-only") {
+        return downloadAdaptive(req, info, pair, emit, signal);
+      }
+      resolved = pair.video;
+    } else {
+      resolved = await resolveSingleFile(info.id, { kind: "progressive", maxHeight });
+    }
+  } else {
+    resolved = await resolveSingleFile(info.id, { kind: "audio", container: "m4a" });
+  }
 
   // M4A from an audio-only stream is the file as served. WAV, or audio inside a progressive MP4, needs the plugin.
   const needsConvert = audioFmt !== undefined && (audioFmt === "wav" || resolved.stream.kind === "progressive");
@@ -592,9 +676,12 @@ async function runAndroidYtdlpJob(
     const audio = await dl(pick.audioFormatId, tmpDir, "audio", "-a");
     if (signal.aborted) fail("cancelled");
     emitStage("converting", "mux", video.bytes + audio.bytes);
-    const target = await uniquePath(dir, base, "mp4");
+    // The native muxer picks the container from the codecs (MP4 or WebM); name the target for that container.
+    const vcodec = info.streams.find((s) => s.id === pick.formatId)?.vcodec ?? "";
+    const ext = /^av0?1/i.test(vcodec) ? "mp4" : pick.ext === "webm" ? "webm" : "mp4";
+    const target = await uniquePath(dir, base, ext);
     outPath = target;
-    const res = await muxAndroid({ videoPath: video.path, audioPath: audio.path, outDir: dir, fileName: nameFor(target, "mp4") });
+    const res = await muxAndroid({ videoPath: video.path, audioPath: audio.path, outDir: dir, fileName: nameFor(target, ext) });
     outPath = res.path;
     if (signal.aborted) fail("cancelled");
     return done(res.path, res.bytes || video.bytes + audio.bytes);
@@ -637,7 +724,7 @@ const isInside = (p: string, dir: string) => {
 const routeRequest = (r: DownloadRequest, em: Emit, signal: AbortSignal): Promise<DownloadProgress> => {
   if (platform() === "android" && isAndroidYtdlpSupported(r.url)) return runAndroidYtdlp(r, em, signal);
   if (platform() === "android" && r.info?.source === "ytdlp") {
-    // YouTube quality via yt-dlp failed (PO token, 403, throttling): fall back to the 360p path, as before.
+    // Info came from the (currently disabled) yt-dlp route: if its download fails, retry through youtubei.js.
     return runAndroidYtdlp(r, em, signal).catch((e: unknown) => {
       if (signal.aborted || !isYouTubeUrl(r.url)) throw e;
       return runDirect({ ...r, info: undefined }, em, signal);

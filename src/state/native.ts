@@ -7,6 +7,7 @@
  */
 import { isTauri } from "@tauri-apps/api/core";
 import { platform } from "../engine/platform";
+import { GALLERY_SAVE } from "../engine/android-gallery";
 import { notify } from "./toast";
 
 export const inTauri = (() => {
@@ -81,7 +82,7 @@ export interface AndroidFolder {
 export async function androidFolders(): Promise<AndroidFolder[]> {
   if (!inTauri) return [];
   // Empty path = Gallery (saveDir "" with no tree URI). Listed even if the path API fails.
-  const gallery: AndroidFolder = { key: "gallery", label: "Gallery", path: "" };
+  const gallery: AndroidFolder = { key: "gallery", label: "Gallery", path: GALLERY_SAVE };
   try {
     const { downloadDir, audioDir, videoDir } = await import("@tauri-apps/api/path");
     const [dl, music, movies] = await Promise.all([downloadDir(), audioDir(), videoDir()]);

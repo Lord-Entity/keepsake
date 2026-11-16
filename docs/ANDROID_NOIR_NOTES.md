@@ -8,6 +8,14 @@
 > - **Unverified numbers.** The APK and install sizes in section 2 (63 MB, ~257 MB, ~125 MB, "a few MB"), the certificate details, the "533 lines" count, the NewPipe Extractor / NewPipe version pairing and the request details (1 MiB ranges, POST body, `&rn=`) come from Noir's commit messages and source and were not re-checked. Do not quote them as facts.
 > - Section 3 describes Keepsake as it was on 2026-11-09 (ffmpeg.wasm, a fix then thought uncommitted). Both are out of date; see the notes inline.
 
+## Current implementation (2026-11-16)
+
+The 360p limit is gone. Keepsake now mints a **PO token** on the phone with `bgutils-js`: Google's BotGuard interpreter runs in the app's own WebView, and the challenge and integrity token go through `www.youtube.com/api/jnn/v1`, which the `http` capability already allows. The token is bound to youtubei.js's `visitor_data` and attached to every player request. youtubei.js can then list and decipher every adaptive quality.
+
+High qualities are video-only, so `download.ts` downloads the video stream and the matching audio-only stream into the app cache and hands them to `KeepsakeMux.kt`, which writes **MP4** (AVC/HEVC + AAC) or **WebM** (VP8/VP9 + Vorbis/Opus) without re-encoding; AV1 goes to MP4 on Android 10+. In-process yt-dlp stays for TikTok and Instagram only: it cannot mint a PO token without a Node/Deno runtime, so `YOUTUBE_VIA_YTDLP` is `false`. The Android yt-dlp file cap is now 2 GiB. If token minting fails, the 360p progressive MP4 path is still the fallback.
+
+Noir's technique of 1 MiB range requests remains useful; Keepsake uses 10 MiB ranges streamed to disk.
+
 Notes from 2026-11-09 on how [noir-music-player-android](https://github.com/Abdullah-Masood-05/noir-music-player-android) (Noir, Flutter) handles signing and YouTube on Android, and what that means for Keepsake's Android build.
 
 ## 1. APK signing

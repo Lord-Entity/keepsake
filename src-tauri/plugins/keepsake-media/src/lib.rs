@@ -253,23 +253,33 @@ fn validate_job_id(s: &str) -> Result<(), String> {
     }
 }
 
-/// Absolute, no "..", extension .mp4/.m4a/.webm/.part (checked as POSIX text).
-fn validate_mux_input(label: &str, s: &str) -> Result<(), String> {
-    let ext_ok = [".mp4", ".m4a", ".webm", ".part"].iter().any(|e| s.ends_with(e));
+/// Video inputs may be any container yt-dlp hands us for a video-only stream.
+const MUX_VIDEO_EXTS: [&str; 4] = [".mp4", ".webm", ".mkv", ".part"];
+/// Audio inputs may be any container yt-dlp hands us for an audio-only stream.
+const MUX_AUDIO_EXTS: [&str; 7] = [".m4a", ".aac", ".mp4", ".webm", ".opus", ".ogg", ".part"];
+
+/// Absolute, no "..", one of `exts` (checked as POSIX text).
+fn validate_mux_input(label: &str, s: &str, exts: &[&str]) -> Result<(), String> {
+    let ext_ok = exts.iter().any(|e| s.ends_with(e));
     if !s.starts_with('/')
         || Path::new(s).components().any(|c| matches!(c, Component::ParentDir))
         || !ext_ok
     {
+        let allowed = exts
+            .iter()
+            .map(|e| format!("{e:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(format!(
-            "ytdlp:unknown: The {label} path must be absolute, without \"..\", and end in .mp4, .m4a, .webm or .part: {s:?}"
+            "ytdlp:unknown: The {label} path must be absolute, without \"..\", and end in one of {allowed}: {s:?}"
         ));
     }
     Ok(())
 }
 
 fn validate_mux(video: &str, audio: &str, out_dir: &str, file_name: &str) -> Result<(), String> {
-    validate_mux_input("video", video)?;
-    validate_mux_input("audio", audio)?;
+    validate_mux_input("video", video, &MUX_VIDEO_EXTS)?;
+    validate_mux_input("audio", audio, &MUX_AUDIO_EXTS)?;
     if video == audio {
         return Err("ytdlp:unknown: Video and audio must be different files.".into());
     }
@@ -865,10 +875,17 @@ mod tests {
         let ok = |v: &str, a: &str, d: &str, n: &str| validate_mux(v, a, d, n).is_ok();
         assert!(ok("/c/v.mp4", "/c/a.m4a", "/d", "out.mp4"));
         assert!(ok("/c/v.webm", "/c/a.part", "/d", "out"));
+        // Every container yt-dlp can produce for a single stream is accepted.
+        assert!(ok("/c/v.mkv", "/c/a.m4a", "/d", "out.mp4"));
+        assert!(ok("/c/v.part", "/c/a.opus", "/d", "out.webm"));
+        assert!(ok("/c/v.webm", "/c/a.ogg", "/d", "out"));
+        assert!(ok("/c/v.mp4", "/c/a.aac", "/d", "out.mp4"));
+        assert!(ok("/c/v.mp4", "/c/a.mp4", "/d", "out"));
+        assert!(ok("/c/v.mp4", "/c/a.webm", "/d", "out"));
         assert!(!ok("c/v.mp4", "/c/a.m4a", "/d", "out.mp4"));
         assert!(!ok("/c/../v.mp4", "/c/a.m4a", "/d", "out.mp4"));
         assert!(!ok("/c/v.mp4", "/c/v.mp4", "/d", "out.mp4"));
-        assert!(!ok("/c/v.mkv", "/c/a.m4a", "/d", "out.mp4"));
+        assert!(!ok("/c/v.mov", "/c/a.m4a", "/d", "out.mp4"));
         assert!(!ok("/c/v.mp4", "/c/a.mp3", "/d", "out.mp4"));
         assert!(!ok("/c/v.mp4", "/c/a.m4a", "d", "out.mp4"));
         assert!(!ok("/c/v.mp4", "/c/a.m4a", "/d", "a/b.mp4"));

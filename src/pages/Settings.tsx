@@ -11,7 +11,10 @@ import { Collapsible } from "../components/ui/Collapsible";
 import { RadioGroup } from "../components/ui/RadioGroup";
 import { Switch } from "../components/ui/Switch";
 import { getPlatform, healthOf, refreshBinaries, useBinaries, versionsLine } from "../state/engine";
+import { collectDiagnostics } from "../engine/diagnostics";
+import { copyText } from "../state/native";
 import { pickAndroidFolder } from "../engine/android-folder";
+import { GALLERY_SAVE } from "../engine/android-gallery";
 import { useWidth } from "../state/hooks";
 import { notify } from "../state/toast";
 import { PAGE_BOTTOM } from "../components/layout/page";
@@ -49,12 +52,17 @@ export function SettingsPage({ phone, onSupportedSites }: { phone: boolean; onSu
   const narrow = phone || (width > 0 && width < 760);
   const cardPad = phone ? "!p-4" : "";
 
-  const gallerySel = !s.saveTreeUri && !s.saveDir;
+  const copyDiagnostics = async () => {
+    await copyText(await collectDiagnostics());
+    notify({ tone: "success", title: "Diagnostics copied", body: "Paste them into your bug report." });
+  };
+
+  const gallerySel = !s.saveTreeUri && s.saveDir === GALLERY_SAVE;
   const saveLabel =
     platform === "android"
       ? s.saveTreeUri
         ? s.saveTreeName || "Chosen folder"
-        : s.saveDir || "Gallery"
+        : s.saveDir === GALLERY_SAVE ? "Gallery" : s.saveDir || "App folder"
       : s.saveDir || "System Downloads";
 
   const downloads = (
@@ -76,7 +84,7 @@ export function SettingsPage({ phone, onSupportedSites }: { phone: boolean; onSu
               variant={gallerySel ? "primary" : "ghost"}
               className={phone ? "h-11 shrink-0" : "shrink-0"}
               aria-pressed={gallerySel}
-              onClick={() => updateSettings({ saveTreeUri: "", saveTreeName: "", saveDir: "" })}
+              onClick={() => updateSettings({ saveTreeUri: "", saveTreeName: "", saveDir: GALLERY_SAVE })}
             >
               Gallery
             </Button>
@@ -232,9 +240,14 @@ export function SettingsPage({ phone, onSupportedSites }: { phone: boolean; onSu
         className={cardPad}
         title="Components"
         action={
-          <Button size="sm" variant="ghost" icon="retry" className="shrink-0" onClick={() => void refreshBinaries()}>
-            Check
-          </Button>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button size="sm" variant="ghost" icon="copy" className="shrink-0" onClick={() => void copyDiagnostics()}>
+              Copy diagnostics
+            </Button>
+            <Button size="sm" variant="ghost" icon="retry" className="shrink-0" onClick={() => void refreshBinaries()}>
+              Check
+            </Button>
+          </div>
         }
       >
         <div className="flex min-w-0 items-center gap-2">

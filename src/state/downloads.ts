@@ -132,6 +132,10 @@ function run(job: Job) {
 function onProgress(id: string, p: DownloadProgress) {
   const job = downloadsStore.get().find((j) => j.id === id);
   if (!job || !isActive(job.status)) return;
+  // The engine's last line repeats a terminal status. Let finish() apply it: finish() is what writes the
+  // Library entry and the toast, and it skips jobs that already look finished. Applying it here would
+  // mark the job done first and finish() would then return early, leaving the Library empty.
+  if (!isActive(p.status)) return;
   const stage = (p as { stage?: string }).stage;
   patch(id, {
     ...(stage ? ({ stage } as Partial<Job>) : {}),

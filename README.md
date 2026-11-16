@@ -85,7 +85,7 @@ Keepsake is a [Tauri 2](https://v2.tauri.app) app. The interface is React 19 wit
 |---|---|---|---|
 | Windows 10 / 11 (x64) | NSIS `.exe` installer only | about 25-35 MB | Bundled yt-dlp, a minimal LGPL ffmpeg for merging and conversion, and QuickJS for YouTube |
 | Linux (x64) | `.deb`, `.rpm`, `.AppImage` | `.deb` / `.rpm` about 20-40 MB; `.AppImage` likely 100 MB or more (it bundles WebKitGTK) | Same bundled standalone yt-dlp, ffmpeg and QuickJS in every package; no system Python needed |
-| Android 7.0+ (API 24) | arm64 `.apk` (default build) | about 30-45 MB (includes Python and yt-dlp) | youtubei.js in the app for YouTube (360p video, M4A and WAV audio); TikTok and Instagram through the bundled yt-dlp (Chaquopy, arm64 only, separate video and audio streams are downloaded and combined on the phone without re-encoding, M4A audio only, no MP3); audio conversion through the native `keepsake-media` plugin |
+| Android 7.0+ (API 24) | arm64 `.apk` (default build) | about 30-45 MB (includes Python and yt-dlp) | youtubei.js plus a PO token minted on the phone for YouTube (every quality the video offers, separate video and audio streams combined natively); TikTok and Instagram through the bundled yt-dlp (Chaquopy, arm64 only, separate streams combined the same way, M4A audio only, no MP3); audio conversion through the native `keepsake-media` plugin |
 
 The sizes are estimates from the component sizes, not measurements of a release build. They will be replaced with measured numbers once CI publishes the artifacts. Each CI job writes its artifact sizes to the job summary.
 
@@ -93,14 +93,16 @@ The sizes are estimates from the component sizes, not measurements of a release 
 
 | | Desktop (Windows, Linux) | Android |
 |---|---|---|
-| YouTube | Yes, all qualities | Yes, video up to 1080p when the phone can mux it, otherwise 360p (see below; not verified on a device yet) |
+| YouTube | Yes, all qualities | Yes, every quality the video offers (up to 4K), as long as the phone can mint a PO token; otherwise 360p (see below) |
 | Audio formats | MP3, M4A, OPUS, WAV, FLAC | M4A (default) and WAV |
 | TikTok, Instagram | Yes | Yes, through the bundled yt-dlp (public posts, single videos; separate video and audio streams are combined on the phone without re-encoding; M4A audio only) |
 | Other sites | 1,000+ sites supported by [yt-dlp](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) | No |
 | Playlists | Yes | No |
 | DRM-protected content | No | No |
 
-On Android, TikTok and Instagram links download through the yt-dlp that is bundled in the app (arm64 only). They offer the heights the site serves. When video and audio come as separate streams, both are downloaded and combined on the phone without re-encoding. Audio is M4A only; there is no MP3, and login-only posts fail. YouTube on Android (not verified on a device yet): links accepted are `youtube.com`, `www.`, `m.` and `music.youtube.com` `/watch?v=`, `youtu.be/ID`, and `/shorts/`, `/live/` and `/embed/` paths (https only). Only the 11-character video ID is used; playlist-only links are rejected, single videos only. The bundled yt-dlp asks the player clients `android_vr`, `ios` and `mweb`, in that order, and picks the highest AVC (H.264) MP4 video up to 1080p plus AAC (M4A) audio. The two streams are combined on the phone without re-encoding. 1440p and 4K are VP9/AV1 only, which the phone cannot mux, so they need the desktop app. If yt-dlp fails, or no AVC stream above 360p is offered, Keepsake falls back to the old 360p MP4 through youtubei.js. Caveat: YouTube may demand a PO token for some videos, and `android_vr` often returns only 360p, so the height you get can be lower than 1080p. Audio is saved as M4A without conversion or decoded to WAV on the phone. MP3, FLAC and OPUS are not offered on Android yet, because Android has no built-in MP3 encoder and the FLAC and Opus encoders are not available on every supported Android version.
+On Android, TikTok and Instagram links download through the yt-dlp that is bundled in the app (arm64 only). They offer the heights the site serves. When video and audio come as separate streams, both are downloaded and combined on the phone without re-encoding. Audio is M4A only; there is no MP3, and login-only posts fail.
+
+YouTube on Android uses youtubei.js and mints a **PO token** on the phone: Google's BotGuard runs in the app's own WebView, so higher qualities unlock without Node, Deno or a second app. Links accepted are `youtube.com`, `www.`, `m.` and `music.youtube.com` `/watch?v=`, `youtu.be/ID`, and `/shorts/`, `/live/` and `/embed/` paths (https only). Only the 11-character video ID is used; playlist-only links are rejected, single videos only. The best video-only stream at the chosen height is paired with its matching audio-only stream and combined on the phone without re-encoding: **MP4** for AVC/HEVC + AAC, **WebM** for VP8/VP9 + Vorbis/Opus, and AV1 into MP4 on Android 10 or newer. That reaches 1440p and 4K where the video offers them. If the token cannot be minted (offline, blocked challenge, future BotGuard change) or the link has no adaptive pair, Keepsake falls back to the 360p MP4 it used before. Settings > Components > **Copy diagnostics** reports whether the PO token was minted. Audio is saved as M4A without conversion or decoded to WAV on the phone. MP3, FLAC and OPUS are not offered on Android yet, because Android has no built-in MP3 encoder and the FLAC and Opus encoders are not available on every supported Android version.
 
 DRM-protected streams (most paid streaming services) cannot be downloaded on any platform.
 
@@ -333,13 +335,13 @@ On Windows and Linux, `Ctrl` is the modifier.
                  v                               v
 +-------------------------------+   +-----------------------------+
 | Tauri command run_ytdlp (Rust)|   | youtubei.js (YouTube only)  |
-|   -> yt-dlp sidecar           |   |   via plugin-http           |
-|   -> ffmpeg sidecar (minimal) |   | files written via plugin-fs |
-|   -> qjs sidecar (QuickJS),   |   | keepsake-media plugin       |
-|      else a user-installed    |   |   (Kotlin, MediaCodec):     |
-|      Node.js                  |   |   AAC -> M4A copy, -> WAV   |
-| YouTube info: youtubei.js,    |   |                             |
-|   falling back to yt-dlp -J   |   |                             |
+|   -> yt-dlp sidecar           |   |   + BotGuard PO token       |
+|   -> ffmpeg sidecar (minimal) |   | adaptive video + audio      |
+|   -> qjs sidecar (QuickJS),   |   |   -> keepsake-media mux     |
+|      else a user-installed    |   |   (MP4/WebM, no re-encode)  |
+|      Node.js                  |   | files via plugin-http/fs    |
+| YouTube info: youtubei.js,    |   | audio: AAC -> M4A, -> WAV   |
+|   falling back to yt-dlp -J   |   | TikTok/IG: bundled yt-dlp   |
 +-------------------------------+   +-----------------------------+
 
 Rust (src-tauri) is a thin Tauri shell: plugins (dialog, fs, http,
@@ -456,11 +458,13 @@ Folder access from the picker lasts for one session. Pick the folder again in Se
 </details>
 
 <details>
-<summary><b>Android: where are MP3, FLAC and OPUS? Why only 360p?</b></summary>
+<summary><b>Android: where are MP3, FLAC and OPUS? Why do I sometimes get 360p?</b></summary>
 
 On Android, TikTok and Instagram downloads run on the phone through the bundled yt-dlp. When a post serves video and audio as separate streams, Keepsake combines them on the phone without re-encoding. Audio from TikTok and Instagram is M4A only; there is no MP3 on Android. The app is about 30-45 MB per install because it carries Python and yt-dlp.
 
-For YouTube, Android offers M4A and WAV only for now. M4A is the original audio with no conversion; WAV is decoded on the phone by Android's own media codecs. MP3 needs an encoder Android does not include, and FLAC and Opus encoders are missing on some supported Android versions. Video is limited to 360p because that is the only YouTube stream that downloads reliably on Android without extra tokens. Use the desktop app for other formats and higher resolutions.
+For YouTube, Android offers M4A and WAV only for now. M4A is the original audio with no conversion; WAV is decoded on the phone by Android's own media codecs. MP3 needs an encoder Android does not include, and FLAC and Opus encoders are missing on some supported Android versions.
+
+Video is normally every quality the link offers: Keepsake mints a PO token in the app's WebView and combines the separate video and audio streams on the phone (MP4 or WebM, no re-encoding). If that token cannot be minted, YouTube refuses the high-quality URLs and Keepsake falls back to the 360p progressive MP4, which needs no token. Check Settings > Components > **Copy diagnostics**: "PO token ready" means the high-quality path is working. For MP3, FLAC and OPUS, use the desktop app.
 
 </details>
 
@@ -484,7 +488,6 @@ These packages install the sidecars (`yt-dlp`, `ffmpeg`, `qjs`) next to the app 
 
 ## Roadmap
 
-- [ ] Android: download higher resolutions by merging separate video and audio streams (depends on whether YouTube serves them without a PO token)
 - [ ] Android: MP3, FLAC and OPUS output
 - [ ] Android: save to the public Downloads folder (MediaStore)
 - [ ] Measure real installer and APK sizes in CI and replace the estimates above

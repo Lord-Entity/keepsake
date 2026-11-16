@@ -3,20 +3,21 @@
  * Every option listed here is one the engine can produce on the current platform; nothing is shown greyed out
  * for platform reasons.
  * - Desktop (yt-dlp + ffmpeg): every height the link offers (yt-dlp merges), all audio formats, all thumbnails.
- * - Android (youtubei.js + keepsake-media plugin): progressive MP4 at or below 360p (no merging), audio M4A
- *   (default, no conversion) and WAV (AAC decoded to PCM). MP3, FLAC and Opus need encoders Android does not ship yet.
- * - Android, TikTok/Instagram (yt-dlp via Chaquopy, info.source === "ytdlp"): any height (muxed or merged on device,
- *   no 360 cap), audio M4A and WAV (MP3 shown disabled), no thumbnails.
+ * - Android (youtubei.js + keepsake-media plugin): every height that has a muxable video stream; the native mux
+ *   writes MP4 (AVC/HEVC + AAC) or WebM (VP8/VP9/AV1 + Opus/Vorbis) without re-encoding. Audio M4A (default, no
+ *   conversion) and WAV (AAC decoded to PCM). MP3, FLAC and Opus need encoders Android does not ship yet.
+ * - Android, TikTok/Instagram (yt-dlp via Chaquopy, info.source === "ytdlp"): any height with a muxable container,
+ *   audio M4A and WAV (MP3 shown disabled), no thumbnails.
  * - Web (dev preview without Tauri): progressive MP4 at or below 360p and thumbnails; no audio (nothing can extract
  *   or convert it in the browser).
  */
-import type { AudioFormat, FormatOption, Platform, ThumbnailFormat, VideoInfo } from "../lib/types";
-import { pickYtdlpFormat, rawMaxHeight } from "./android-ytdlp";
+import type { AudioFormat, FormatOption, Platform, StreamInfo, ThumbnailFormat, VideoInfo } from "../lib/types";
+import { audioForContainer, muxContainerFor, pickYtdlpFormat, type MuxContainer } from "./android-ytdlp";
 import { platform } from "./platform";
 
-/** Heights offered when the link gives none (playlists): 2160 down to 360 per spec. */
+/** Heights offered when the link gives none (playlists, and the Android pre-fetch placeholders): 2160 down to 360. */
 const PLAYLIST_HEIGHTS = [2160, 1440, 1080, 720, 480, 360];
-/** Android/web download one progressive stream (ANDROID itag 18 is the one that works without a PO token). */
+/** Web preview only: the browser can play one progressive stream and nothing above 360p is offered there. */
 const SINGLE_FILE_MAX_HEIGHT = 360;
 
 function heightName(h: number): string {
@@ -101,8 +102,8 @@ function desktopVideoOptions(info: VideoInfo): FormatOption[] {
   return [best, ...opts];
 }
 
-/** Android/web: only progressive (video + audio) streams at or below 360p; no merging, no "Best available". */
-function singleFileVideoOptions(info: VideoInfo): FormatOption[] {
+/** Web preview: only progressive (video + audio) streams at or below 360p; no merging, no "Best available". */
+function webVideoOptions(info: VideoInfo): FormatOption[] {
   const heights = [
     ...new Set(
       info.streams
@@ -126,14 +127,82 @@ function singleFileVideoOptions(info: VideoInfo): FormatOption[] {
   }));
 }
 
+/** Progressive first, then fps, bitrate and size: picks the stream that represents a height. */
+function streamRank(a: StreamInfo, b: StreamInfo): number {
+  return (
+    Number(b.kind === "progressive") - Number(a.kind === "progressive") ||
+    (b.fps ?? 0) - (a.fps ?? 0) ||
+    (b.bitrate ?? 0) - (a.bitrate ?? 0) ||
+    (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0)
+  );
+}
+
+/**
+ * Best muxable video stream per height. Video-only heights need a matching audio-only stream; progressive streams
+ * carry their own audio. Streams whose codec/container the native muxer cannot write are skipped.
+ */
+function bestStreamsByHeight(info: VideoInfo): Map<number, StreamInfo> {
+  const byHeight = new Map<number, StreamInfo>();
+  for (const s of info.streams) {
+    if (s.kind === "audio-only" || !s.height) continue;
+    if (s.kind === "video-only") {
+      // A video-only stream is only usable when the phone can mux it with a matching audio stream.
+      const container = muxContainerFor(s);
+      if (!container || !audioForContainer(info, container)) continue;
+    }
+    // A progressive file needs no muxing: list it even when its codec name is one we do not map
+    // (TikTok's bytevc1, Instagram's vp09...). The download itself copies that single file as-is.
+    const prev = byHeight.get(s.height);
+    if (!prev || streamRank(s, prev) < 0) byHeight.set(s.height, s);
+  }
+  return byHeight;
+}
+
+/** Container label for a row: the muxable one, else the file's own extension (progressive streams). */
+function rowContainer(s: StreamInfo): MuxContainer {
+  return muxContainerFor(s) ?? ((s.ext ?? "").toLowerCase() === "webm" ? "webm" : "mp4");
+}
+
+function noVideoRow(label: string): FormatOption {
+  return { id: "video:none", mode: "video", label, ext: "mp4", isDefault: false, needsMerge: false, needsConversion: false, disabledReason: label };
+}
+
+/**
+ * Android (youtubei.js): every height with a muxable video stream. Ext comes from the stream's codec (mp4 for
+ * AVC/HEVC, webm for VP8/VP9/AV1); video-only heights need a merge with the matching audio-only stream.
+ * Default: highest height <= 1080, else the highest.
+ */
+function youtubeiVideoOptions(info: VideoInfo): FormatOption[] {
+  const byHeight = bestStreamsByHeight(info);
+  const heights = [...byHeight.keys()].toSorted((a, b) => b - a);
+  if (heights.length === 0) return [noVideoRow("No video we can save on this link")];
+  const def = heights.find((h) => h <= 1080) ?? heights[0];
+  return heights.map((h) => {
+    const s = byHeight.get(h)!;
+    const container = rowContainer(s);
+    return {
+      id: `video:${h}`,
+      mode: "video" as const,
+      label: qualityLabel(h, info.fpsByHeight[h]),
+      height: h,
+      fps: info.fpsByHeight[h] || undefined,
+      ext: container,
+      isDefault: h === def,
+      needsMerge: s.kind === "video-only",
+      needsConversion: false,
+    };
+  });
+}
+
 function videoOptions(info: VideoInfo | null | undefined, p: Platform): FormatOption[] {
   const desktop = isDesktopPlatform(p);
   if (!info) {
-    const heights = desktop ? PLAYLIST_HEIGHTS : [SINGLE_FILE_MAX_HEIGHT];
+    const heights = desktop || p === "android" ? PLAYLIST_HEIGHTS : [SINGLE_FILE_MAX_HEIGHT];
     return heights.map((h) => placeholderRow(h, desktop, "Fetch a video first"));
   }
   if (!info.hasVideo) return [];
-  return desktop ? desktopVideoOptions(info) : singleFileVideoOptions(info);
+  if (desktop) return desktopVideoOptions(info);
+  return p === "android" ? youtubeiVideoOptions(info) : webVideoOptions(info);
 }
 
 function audioOptions(p: Platform): FormatOption[] {
@@ -165,65 +234,29 @@ function thumbOptions(): FormatOption[] {
   }));
 }
 
-const YT_HOSTS = new Set(["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"]);
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return "";
-  }
-}
-
-/** AVC (H.264) video that the phone can mux as MP4. */
-const isAvc = (s: { vcodec?: string; ext?: string }) => /^(avc|h264)/i.test(s.vcodec ?? "") && (!s.ext || s.ext === "mp4");
-
 /**
- * Android, TikTok/Instagram (yt-dlp via Chaquopy): single-file http(s) streams only, no height cap, M4A as the only
- * audio option, no thumbnails. YouTube links: AVC MP4 heights <= 1080 only, plus a "desktop app" note row.
+ * Android, TikTok/Instagram (yt-dlp via Chaquopy): every height with a muxable video stream (MP4 for AVC/HEVC,
+ * WebM for VP8/VP9/AV1), M4A/WAV audio, no thumbnails. Video-only heights need a matching audio-only stream.
+ * Default: highest height <= 1080, else the highest.
  */
 function androidYtdlpOptions(info: VideoInfo): FormatOption[] {
   const out: FormatOption[] = [];
-  const progressive = new Set(info.streams.filter((s) => s.kind === "progressive" && s.height).map((s) => s.height!));
-  const hasAudioOnly = info.streams.some((s) => s.kind === "audio-only");
-  // Video-only heights are usable only when a separate audio stream exists to merge with.
-  // YouTube: the phone muxes MP4 with AVC only, so keep AVC heights <= 1080 (VP9/AV1 above that is desktop-only).
-  const yt = YT_HOSTS.has(hostOf(info.url).toLowerCase());
-  const videoOnlyStreams = hasAudioOnly ? info.streams.filter((s) => s.kind === "video-only" && s.height) : [];
-  const videoOnly = videoOnlyStreams.filter((s) => !yt || (isAvc(s) && s.height! <= 1080)).map((s) => s.height!);
-  const heights = [...new Set([...progressive, ...videoOnly])]
-    .filter((h) => !yt || h <= 1080)
-    .toSorted((a, b) => b - a);
-  // VP9/AV1 streams above 1080 were filtered out before this info reached here, so read the raw height.
-  const hiddenHigh = yt && (rawMaxHeight.get(info) ?? 0) > 1080;
+  const byHeight = bestStreamsByHeight(info);
+  const heights = [...byHeight.keys()].toSorted((a, b) => b - a);
   if (heights.length > 0) {
-    // Default: highest <= 1080, else the lowest available (closest to 1080).
-    const found = heights.findIndex((h) => h <= 1080);
-    const defIdx = found >= 0 ? found : heights.length - 1;
-    heights.forEach((h, i) =>
+    const def = heights.find((h) => h <= 1080) ?? heights[0];
+    for (const h of heights) {
+      const s = byHeight.get(h)!;
       out.push({
         id: `video:${h}`,
         mode: "video",
         label: qualityLabel(h, info.fpsByHeight[h]),
         height: h,
         fps: info.fpsByHeight[h] || undefined,
-        ext: "mp4",
-        isDefault: i === defIdx,
-        needsMerge: !progressive.has(h),
+        ext: rowContainer(s),
+        isDefault: h === def,
+        needsMerge: s.kind === "video-only",
         needsConversion: false,
-      }),
-    );
-    if (hiddenHigh) {
-      const reason = "1440p and 4K need the desktop app";
-      out.push({
-        id: "video:desktop-only",
-        mode: "video",
-        label: reason,
-        ext: "mp4",
-        isDefault: false,
-        needsMerge: false,
-        needsConversion: false,
-        disabledReason: reason,
       });
     }
   } else {

@@ -223,6 +223,25 @@ describe("pickYtdlpFormat", () => {
     expect(pickYtdlpFormat(v, "video:abc")).toBeNull();
   });
 
+  test("real yt-dlp codec names (bytevc1, hvc1, vp09) still pick and still list", () => {
+    const v = ytdlpInfoToVideoInfo(
+      {
+        ...tiktokInfo(),
+        formats: [
+          fmt({ format_id: "bytevc1_1080p", vcodec: "bytevc1", acodec: "aac", height: 1080, filesize: 5000000 }),
+          fmt({ format_id: "hvc1_720p", vcodec: "hvc1", acodec: "aac", height: 720, filesize: 3000000 }),
+          fmt({ format_id: "vp09_480p", ext: "webm", vcodec: "vp09.00.10.08", acodec: "opus", height: 480, filesize: 1000000 }),
+        ],
+      },
+      "u",
+    );
+    expect(pickYtdlpFormat(v, "video:best").formatId).toBe("bytevc1_1080p");
+    expect(pickYtdlpFormat(v, "video:720").formatId).toBe("hvc1_720p");
+    const video = listFormats(v).filter((o) => o.mode === "video" && !o.disabledReason);
+    expect(video.map((o) => o.height)).toEqual([1080, 720, 480]);
+    expect(video.find((o) => o.height === 480).ext).toBe("webm");
+  });
+
   test("audio:m4a prefers the largest audio-only m4a, no remux", () => {
     const v = ytdlpInfoToVideoInfo(instagramInfo(), "u");
     expect(pickYtdlpFormat(v, "audio:m4a")).toMatchObject({ formatId: "dash-a", ext: "m4a", needsRemux: false });
@@ -315,8 +334,15 @@ describe("listFormats for android + ytdlp info", () => {
   });
 });
 
-const { ANDROID_YTDLP_YOUTUBE_HOSTS, isAndroidYouTubeYtdlpHost, filterYouTubeMp4Formats, fetchAndroidYouTubeInfo } =
-  await import("../android-ytdlp");
+const {
+  ANDROID_YTDLP_YOUTUBE_HOSTS,
+  isAndroidYouTubeYtdlpHost,
+  filterYouTubeMuxableFormats,
+  filterYouTubeMp4Formats,
+  muxContainerFor,
+  fetchAndroidYouTubeInfo,
+} = await import("../android-ytdlp");
+const ytdlpModule = await import("../android-ytdlp");
 const { YOUTUBE_VIA_YTDLP, youtubeRoute, tryYouTubeViaYtdlp } = await import("../youtube-ytdlp");
 
 function youtubeInfo(over = {}) {
@@ -374,9 +400,10 @@ describe("YouTube yt-dlp host list (separate from TikTok/Instagram)", () => {
 });
 
 describe("youtubeRoute", () => {
-  test("flag is on by default", () => {
-    expect(YOUTUBE_VIA_YTDLP).toBe(true);
-    expect(youtubeRoute("https://www.youtube.com/watch?v=dQw4w9WgXcQ")).toBe("ytdlp");
+  test("flag is off by default: YouTube uses youtubei.js for PO tokens", () => {
+    expect(YOUTUBE_VIA_YTDLP).toBe(false);
+    expect(youtubeRoute("https://www.youtube.com/watch?v=dQw4w9WgXcQ")).toBe("innertube");
+    expect(youtubeRoute("https://www.youtube.com/watch?v=dQw4w9WgXcQ", true)).toBe("ytdlp");
   });
 
   test("ytdlp only for https YouTube hosts with the flag on", () => {
@@ -390,36 +417,59 @@ describe("youtubeRoute", () => {
   });
 });
 
+describe("muxContainerFor", () => {
+  test("maps AVC/HEVC mp4 to mp4 and VP8/VP9/AV1 webm to webm", () => {
+    expect(muxContainerFor({ id: "a", kind: "video-only", ext: "mp4", vcodec: "avc1.640028" })).toBe("mp4");
+    expect(muxContainerFor({ id: "a", kind: "video-only", ext: "mp4", vcodec: "hev1.1.6" })).toBe("mp4");
+    expect(muxContainerFor({ id: "a", kind: "video-only", ext: "webm", vcodec: "vp9" })).toBe("webm");
+    expect(muxContainerFor({ id: "a", kind: "video-only", ext: "webm", vcodec: "vp08" })).toBe("webm");
+    expect(muxContainerFor({ id: "a", kind: "video-only", ext: "webm", vcodec: "av01.0.08M.08" })).toBe("webm");
+  });
+
+  test("mismatched container or unknown codec gives null", () => {
+    expect(muxContainerFor({ id: "a", kind: "video-only", ext: "webm", vcodec: "avc1" })).toBeNull();
+    expect(muxContainerFor({ id: "a", kind: "video-only", ext: "mp4", vcodec: "vp9" })).toBeNull();
+    expect(muxContainerFor({ id: "a", kind: "video-only", ext: "mp4", vcodec: "av01" })).toBeNull();
+    expect(muxContainerFor({ id: "a", kind: "video-only", ext: "mkv", vcodec: "h264" })).toBeNull();
+  });
+});
+
 describe("YouTube via yt-dlp info", () => {
-  test("keeps only AVC/AAC MP4-safe formats and picks 1080p avc1 + m4a", async () => {
-    const f = filterYouTubeMp4Formats(youtubeInfo()).formats.map((x) => x.format_id);
-    expect(f).toEqual(["18", "137", "136", "140"]);
+  test("keeps every muxable format (mp4 and webm) and picks VP9 2160 + Opus", async () => {
+    const f = filterYouTubeMuxableFormats(youtubeInfo()).formats.map((x) => x.format_id);
+    // 399 is av01 in an mp4 container: the phone cannot mux that pair.
+    expect(f).toEqual(["18", "137", "136", "248", "313", "140", "251"]);
+    expect(filterYouTubeMp4Formats).toBe(filterYouTubeMuxableFormats);
     invokeImpl = async () => ({ ok: true, info: youtubeInfo() });
     const url = "https://www.youtube.com/watch?v=abc";
     const v = await fetchAndroidYouTubeInfo(url);
     expect(invokeMock).toHaveBeenCalledWith("plugin:keepsake-media|ytdlp_info", { url });
     expect(v.source).toBe("ytdlp");
-    expect(v.heights).toEqual([1080, 720, 360]);
-    expect(pickYtdlpFormat(v, "video:best")).toMatchObject({ formatId: "137", audioFormatId: "140", ext: "mp4", height: 1080 });
+    expect(v.heights).toEqual([2160, 1080, 720, 360]);
+    expect(pickYtdlpFormat(v, "video:best")).toMatchObject({ formatId: "313", audioFormatId: "251", ext: "webm", height: 2160 });
   });
 
-  test("AVC 1080 is preferred over VP9 1440 and AAC audio is chosen", () => {
+  test("AVC 1080 mp4 is still offered and pairs with AAC", () => {
+    const v = ytdlpInfoToVideoInfo(youtubeInfo(), "https://www.youtube.com/watch?v=abc");
+    expect(pickYtdlpFormat(v, "video:1080")).toMatchObject({ ext: "mp4", audioFormatId: "140", height: 1080 });
+  });
+
+  test("a 1440p AV1 stream is offered as webm and pairs with Opus", () => {
     const v = ytdlpInfoToVideoInfo(
       youtubeInfo({
         formats: [
           fmt({ format_id: "18", vcodec: "avc1.42001E", acodec: "mp4a.40.2", height: 360 }),
-          fmt({ format_id: "137", vcodec: "avc1.640028", acodec: "none", height: 1080, filesize: 50000000 }),
-          fmt({ format_id: "271", ext: "webm", vcodec: "vp9", acodec: "none", height: 1440, filesize: 90000000 }),
+          fmt({ format_id: "400", ext: "webm", vcodec: "av01.0.09M.08", acodec: "none", height: 1440, filesize: 90000000 }),
           fmt({ format_id: "251", ext: "webm", vcodec: "none", acodec: "opus", height: null, fps: null, filesize: 9000000 }),
           fmt({ format_id: "140", ext: "m4a", vcodec: "none", acodec: "mp4a.40.2", height: null, fps: null, filesize: 1000000 }),
         ],
       }),
       "https://www.youtube.com/watch?v=abc",
     );
-    expect(pickYtdlpFormat(v, "video:best")).toMatchObject({ formatId: "137", audioFormatId: "140", ext: "mp4", height: 1080 });
+    expect(pickYtdlpFormat(v, "video:best")).toMatchObject({ formatId: "400", audioFormatId: "251", ext: "webm", height: 1440 });
   });
 
-  test("with no AVC above 360 the pick falls back to the 360p progressive stream", () => {
+  test("the highest height wins even when it is VP9, with the 360p progressive as fallback", () => {
     const v = ytdlpInfoToVideoInfo(
       youtubeInfo({
         formats: [
@@ -430,7 +480,31 @@ describe("YouTube via yt-dlp info", () => {
       }),
       "https://www.youtube.com/watch?v=abc",
     );
-    expect(pickYtdlpFormat(v, "video:best")).toMatchObject({ formatId: "18", height: 360 });
+    expect(pickYtdlpFormat(v, "video:best")).toMatchObject({
+      formatId: "271",
+      audioFormatId: "251",
+      ext: "webm",
+      height: 1440,
+      fallback: { formatId: "18", ext: "mp4" },
+    });
+  });
+
+  test("video-only VP9 without Opus is skipped in favour of the progressive stream", () => {
+    const v = ytdlpInfoToVideoInfo(
+      youtubeInfo({
+        formats: [
+          fmt({ format_id: "18", vcodec: "avc1.42001E", acodec: "mp4a.40.2", height: 360 }),
+          fmt({ format_id: "271", ext: "webm", vcodec: "vp9", acodec: "none", height: 1440 }),
+          fmt({ format_id: "140", ext: "m4a", vcodec: "none", acodec: "mp4a.40.2", height: null, fps: null }),
+        ],
+      }),
+      "https://www.youtube.com/watch?v=abc",
+    );
+    expect(pickYtdlpFormat(v, "video:best")).toMatchObject({ formatId: "18", ext: "mp4", height: 360 });
+  });
+
+  test("the old high-resolution desktop note is gone", () => {
+    expect(ytdlpModule.YOUTUBE_HIGH_RES_NOTE).toBeUndefined();
   });
 
   test("TikTok and Instagram picks are unchanged", () => {
@@ -448,11 +522,15 @@ describe("YouTube via yt-dlp info", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  test("tryYouTubeViaYtdlp returns info above 360p, null on error or 360p only", async () => {
+  test("tryYouTubeViaYtdlp returns info whenever a pick exists, null on error or no muxable pair", async () => {
     const url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
     invokeImpl = async () => ({ ok: true, info: youtubeInfo() });
     expect((await tryYouTubeViaYtdlp(url))?.source).toBe("ytdlp");
-    invokeImpl = async () => ({ ok: true, info: youtubeInfo({ formats: [youtubeInfo().formats[0], youtubeInfo().formats[3]] }) });
+    // A 360p progressive is enough now: no >360 gate.
+    invokeImpl = async () => ({ ok: true, info: youtubeInfo({ formats: [youtubeInfo().formats[0]] }) });
+    expect((await tryYouTubeViaYtdlp(url))?.source).toBe("ytdlp");
+    // VP9 video-only with no Opus audio -> nothing to mux.
+    invokeImpl = async () => ({ ok: true, info: youtubeInfo({ formats: [youtubeInfo().formats[4]] }) });
     expect(await tryYouTubeViaYtdlp(url)).toBeNull();
     invokeImpl = async () => {
       throw "ytdlp:unsupported_url: Only https TikTok and Instagram links are supported on Android";

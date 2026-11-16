@@ -49,7 +49,7 @@ internal object KeepsakeYtdlp {
     module(context).callAttr("cancel", jobId)
   }
 
-  /** Muxes one video-only and one audio-only file into an MP4. Throws [YtdlpError]. */
+  /** Muxes one video-only and one audio-only file into MP4 or WebM (chosen from the codecs). Throws [YtdlpError]. */
   fun mux(context: Context, video: java.io.File, audio: java.io.File, outDir: java.io.File, fileName: String): JSONObject =
     try {
       KeepsakeMux.mux(context, video, audio, outDir, fileName)

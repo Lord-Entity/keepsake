@@ -24,7 +24,7 @@ except Exception:  # module missing or broken: keep the original URL rather than
     def canonical_youtube_url(url):
         return None
 
-MAX_FILESIZE = 500 * 1024 * 1024
+MAX_FILESIZE = 2 * 1024 * 1024 * 1024
 
 BASE = {
     "noplaylist": True,
@@ -305,7 +305,7 @@ def download(url, format_id, out_dir, file_name, job_id):
             for k in ("total_bytes", "total_bytes_estimate", "downloaded_bytes"):
                 v = d.get(k)
                 if isinstance(v, (int, float)) and v > MAX_FILESIZE:
-                    raise _Fail("too_large", "The file is larger than the 500 MiB limit on Android.")
+                    raise _Fail("too_large", "The file is larger than the 2 GiB limit on Android.")
 
         if file_name:
             name_tmpl = file_name.replace("%", "%%") + ".%(ext)s"
@@ -328,7 +328,7 @@ def download(url, format_id, out_dir, file_name, job_id):
             rd = (res.get("requested_downloads") or [{}])[0]
             size = rd.get("filesize") or rd.get("filesize_approx") or res.get("filesize") or res.get("filesize_approx")
             if isinstance(size, (int, float)) and size > MAX_FILESIZE:
-                raise _Fail("too_large", "The file is larger than the 500 MiB limit on Android.")
+                raise _Fail("too_large", "The file is larger than the 2 GiB limit on Android.")
             raise _Fail("empty", "yt-dlp finished without writing a file.")
         real = os.path.realpath(path)
         if not real.startswith(os.path.realpath(out_dir) + os.sep):

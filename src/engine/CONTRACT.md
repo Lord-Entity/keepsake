@@ -22,14 +22,23 @@ Embedding flags on `DownloadRequest` (desktop only):
 | | Windows / Linux | Android | Web (dev preview) |
 |---|---|---|---|
 | Info | YouTube via youtubei.js, falling back to yt-dlp `-J`; other sites via yt-dlp | YouTube via youtubei.js; TikTok and Instagram via yt-dlp (Chaquopy, in-process); others reject with `unsupported_url` | YouTube only; plain-browser fetches fail with `web_cors` |
-| Video | Every height the link offers, plus "Best available"; yt-dlp merges video-only + audio | YouTube (not verified on a device yet): yt-dlp via Chaquopy with player clients `android_vr`, `ios`, `mweb` (in order); best AVC MP4 video at or below 1080p (tie-break fps, then tbr) plus AAC/M4A audio, copy-muxed on the phone. 1440p/4K (VP9/AV1 only) are skipped with a "need the desktop app" detail. Accepted links (https): hosts `youtube.com`, `www.`, `m.`, `music.youtube.com`, `youtu.be`; forms `watch?v=`, `youtu.be/ID`, `/shorts/`, `/live/`, `/embed/`; canonicalised to `https://www.youtube.com/watch?v=ID`; playlist-only URLs rejected. No AVC above 360p, or any yt-dlp failure (except cancel): fall back to the youtubei.js progressive MP4 at or below 360p. Caveat: a PO token may be required for some videos and `android_vr` often yields only 360p, so the real best height may be lower. No "Best available". TikTok/Instagram: any height, no 360 cap; video-only heights are merged with an audio stream on the phone (copy-mux, no re-encode) | Same as Android |
+| Video | Every height the link offers, plus "Best available"; yt-dlp merges video-only + audio | YouTube: youtubei.js with a PO token (section 1.3); every height the video offers down to 144p, plus "Best available". A video-only stream is paired with a matching audio-only stream and copy-muxed on the phone (MP4 for AVC/HEVC+AAC, WebM for VP8/VP9+Vorbis/Opus, AV1 to MP4 on Android 10+). Without a token, or when no pair exists: the progressive MP4 at or below 360p, exactly as before. Accepted links (https): hosts `youtube.com`, `www.`, `m.`, `music.youtube.com`, `youtu.be`; forms `watch?v=`, `youtu.be/ID`, `/shorts/`, `/live/`, `/embed/`; canonicalised to `https://www.youtube.com/watch?v=ID`; playlist-only URLs rejected. TikTok/Instagram: any height; video-only heights are merged with an audio stream on the phone (copy-mux, no re-encode) | Same as Android |
 | Audio | MP3 (default), M4A, OPUS, WAV, FLAC | **M4A (default) and WAV only.** MP3, FLAC and OPUS are not listed. TikTok/Instagram: M4A only | None |
 | Thumbnail | Original, PNG, JPG | Original, PNG, JPG. TikTok/Instagram: not offered on Android | Original, PNG, JPG |
 | Playlists | Yes, per-item progress | Rejected (`format_unavailable`: "Playlists can be downloaded in the desktop app only.") | Rejected |
 | Downloads via | yt-dlp sidecar (`run_ytdlp`) | Range requests through plugin-http, streamed to disk with plugin-fs | Range requests into a Blob, then `<a download>` |
 | Conversion via | ffmpeg sidecar, run by yt-dlp | `keepsake-media` Tauri plugin (section 3) | None |
 
-The 360p cap on Android is because only the ANDROID client's itag 18 (360p progressive, AAC audio) downloads without a PO token. Android audio quality is therefore that stream's AAC (roughly 96 kbps, estimated).
+### 1.3 Android YouTube quality: PO token + adaptive mux
+
+YouTube binds every high-quality `googlevideo` URL to a PO token. The Android client still lists the formats without one, but each request answers 403; only ANDROID itag 18 (360p progressive) downloads unchecked. Keepsake therefore mints a token on the phone:
+
+- `src/engine/po-token.ts` runs Google's BotGuard in the app's own WebView with `bgutils-js` (CSP already allows `'unsafe-eval'` for youtubei.js). Challenge and integrity token go through `www.youtube.com/api/jnn/v1`, already allowed by the `http` capability; no Deno, Node or extra host.
+- The player token is bound to the session's `visitor_data` and attached as `po_token` to every `getBasicInfo` client (`youtube.ts`), then cached until shortly before the integrity token expires.
+- All of it is fail-soft: a missing interpreter, blocked challenge or network error resolves to `null` and the old 360p path runs unchanged. Nothing in the engine throws because of it.
+- `YOUTUBE_VIA_YTDLP` in `youtube-ytdlp.ts` is **false**: in-process yt-dlp cannot run yt-dlp's JavaScript challenge solver without a Node/Deno runtime, so it cannot mint a token. yt-dlp on Android stays for TikTok and Instagram.
+- `resolveAdaptive(videoId, maxHeight)` (`youtube.ts`) picks the best video-only stream at or below the requested height and its matching audio-only stream (same container: mp4 for AAC, webm for Opus/Vorbis). `download.ts` streams both to `$APPCACHE/mux-<id>/`, then calls `muxAndroid`; output follows the codec matrix in section 3, and no re-encoding happens.
+- Diagnostics: Settings > Components > "Copy diagnostics" reports the platform, WebView, app version and whether the PO token is minted (`poTokenStatus()`), so a bug report can tell "token failed" from "no pair at that height".
 
 ### 1.2 Cancel semantics
 
@@ -103,16 +112,16 @@ invoke<{ path: string }>("plugin:keepsake-media|transcode", {
   kbps?: number,          // reserved for future encoders; ignored by "wav" and "m4a"
 })
 ```
-- `m4a`: copy the AAC track into an MPEG-4 audio container (no re-encode; any video track is dropped). Used when the audio came from the 360p progressive MP4.
+- `m4a`: copy the AAC track into an MPEG-4 audio container (no re-encode; any video track is dropped). Used when the audio came from a progressive MP4 or a muxed file.
 - `wav`: decode the audio track to 16-bit PCM and write a WAV header.
 - Resolves `{ path }` (the written file). Rejects with a message on any failure; the wrapper maps "plugin not found / not allowed" to `format_unavailable` and everything else to `unknown`.
 - Capability: `keepsake-media:allow-transcode` in `src-tauri/capabilities/mobile.json`.
 - M4A from an audio-only AAC stream needs no plugin call: the file is saved as served.
 - Not supported this round: MP3 (needs LAME), FLAC and Opus (encoder availability per API level unverified; Opus needs API 29, minSdk is 24). The engine rejects them with `format_unavailable` before any network work, and `listFormats` does not offer them.
 
-### 3.1 Android yt-dlp commands (TikTok and Instagram)
+### 3.1 Android yt-dlp commands (TikTok and Instagram; YouTube route off)
 
-Same plugin, yt-dlp 2026.10.26 (pure Python) running in-process through Chaquopy, arm64 only. TS wrapper: `src/engine/android-ytdlp.ts`. Details: `plan-docs/07-android-ytdlp-plan.md`.
+Same plugin, yt-dlp 2026.10.26 (pure Python) running in-process through Chaquopy, arm64 only. TS wrapper: `src/engine/android-ytdlp.ts`. Details: `plan-docs/07-android-ytdlp-plan.md`. The commands still accept YouTube hosts because the route is behind `YOUTUBE_VIA_YTDLP`, but it ships **off**: in-process yt-dlp cannot mint a PO token without a Node runtime (section 1.3).
 
 ```ts
 invoke<{ ok: true; info: YtdlpInfo }>("plugin:keepsake-media|ytdlp_info", { url: string })
@@ -131,11 +140,12 @@ invoke<{ path: string; bytes: number }>("plugin:keepsake-media|ytdlp_download",
     { url, formatId, outDir, fileName?, jobId })    // one stream per call; TS sends jobId "job" when none is given. A video-only height is two calls (video, then audio) followed by ytdlp_mux
   invoke<unknown>("plugin:keepsake-media|ytdlp_cancel", { jobId })                               // stops that job; TS never throws from it
   invoke<{ path: string; bytes: number }>("plugin:keepsake-media|ytdlp_mux",
-    { videoPath, audioPath, outDir, fileName })     // copy-mux (no re-encode) into MP4
+    { videoPath, audioPath, outDir, fileName })     // copy-mux (no re-encode) into MP4 or WebM
   ```
   Capabilities: `keepsake-media:allow-ytdlp-cancel`, `keepsake-media:allow-ytdlp-mux`.
-- Extra error codes (same `ytdlp:<code>: <message>` form, same-named `AppErrorCode`): `no_space` (storage full), `permission` (cannot write the folder), `too_large` (over 500 MB), `mux_failed` (combining streams failed), `cancelled` (user stopped the job), `empty` (nothing was downloaded). Retries (`runWithRetry` in `android-ytdlp.ts`): `network`, `timeout` and `rate_limited` are retried twice, with waits of 2 s then 6 s; `no_space`, `permission` and the rest are not retried.
-- Limits: one yt-dlp job at a time (single native thread); files over 500 MiB are refused; M4A audio only (a progressive MP4 is remuxed with `transcode` when no m4a stream exists).
+  Inputs may be `.mp4/.webm/.mkv/.part` (video) and `.m4a/.aac/.mp4/.webm/.opus/.ogg/.part` (audio); the file name is a base name without extension. `KeepsakeMux.kt` chooses the container from the probe codecs: AVC/HEVC + AAC -> MP4; VP8/VP9 + Vorbis/Opus -> WebM; AV1 + AAC/Opus -> MP4 on API 29+, else `mux_failed`. Nothing is re-encoded.
+- Extra error codes (same `ytdlp:<code>: <message>` form, same-named `AppErrorCode`): `no_space` (storage full), `permission` (cannot write the folder), `too_large` (over 2 GiB), `mux_failed` (combining streams failed), `cancelled` (user stopped the job), `empty` (nothing was downloaded). Retries (`runWithRetry` in `android-ytdlp.ts`): `network`, `timeout` and `rate_limited` are retried twice, with waits of 2 s then 6 s; `no_space`, `permission` and the rest are not retried.
+- Limits: one yt-dlp job at a time (single native thread); files over 2 GiB are refused; M4A audio only (a progressive MP4 is remuxed with `transcode` when no m4a stream exists).
 - Out of scope: progress events (indeterminate bar), cookies or login, proxies, user yt-dlp options, MP3/FLAC/Opus/WAV, thumbnails, playlists and carousels, other sites, in-app yt-dlp updates.
 
 ## 4. Arguments TS sends (for reference and Rust tests)

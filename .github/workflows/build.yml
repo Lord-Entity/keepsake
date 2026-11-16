@@ -1,10 +1,13 @@
 # Single source of truth for Keepsake cloud builds.
 #
 #   check    typecheck, lint, bun tests (if any), frontend build, cargo test
-#   windows  NSIS installer                      (needs: check)
-#   linux    deb, rpm, AppImage                  (needs: check)
+#   windows  NSIS installer                      (needs: check)  DISABLED (if: false)
+#   linux    deb, rpm, AppImage                  (needs: check)  DISABLED (if: false)
 #   android  arm64-v8a split APK, test-signed, Chaquopy + yt-dlp (TikTok/Instagram)  (needs: check)
-#   release  draft GitHub Release, v* tags only  (needs: windows, linux, android)
+#   release  draft GitHub Release, v* tags only  (needs: android)
+#
+# Only the Android build runs for now. Remove `if: false` from windows/linux and put them back in
+# `release.needs` to re-enable desktop artifacts.
 #
 # Every build job writes artifact sizes to its job summary.
 # Builds are NOT code-signed (see README.md). No signing secrets are used here.
@@ -106,6 +109,8 @@ jobs:
         run: cargo test
 
   windows:
+    # Disabled for now: Android-only builds. Remove this line to re-enable.
+    if: false
     needs: check
     runs-on: windows-latest
     defaults:
@@ -168,6 +173,8 @@ jobs:
           $md -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
   linux:
+    # Disabled for now: Android-only builds. Remove this line to re-enable.
+    if: false
     needs: check
     runs-on: ubuntu-22.04
     defaults:
@@ -406,7 +413,9 @@ jobs:
   # platform artifact into a DRAFT GitHub Release, so you review it before publishing.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, linux, android]
+    # Android-only for now: windows and linux are disabled above. Add them back to this list
+    # when those jobs are re-enabled.
+    needs: [android]
     runs-on: ubuntu-latest
     permissions:
       contents: write

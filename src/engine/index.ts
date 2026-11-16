@@ -57,7 +57,7 @@ async function fetchInfoInner(url: string, opts: FetchInfoOptions): Promise<Vide
       if (!canonicalYoutubeUrl(url) && /[?&]list=|\/playlist/i.test(url)) {
         fail("unsupported_url", "Playlists can be downloaded in the desktop app only.");
       }
-      // yt-dlp first for >360p (flagged); any error or nothing above 360p -> youtubei.js exactly as before.
+      // The yt-dlp route is currently off (it cannot mint a PO token); youtubei.js + section 1.3 does the work.
       if (youtubeRoute(url) === "ytdlp") {
         const info = await tryYouTubeViaYtdlp(url, opts.signal);
         if (info) return info;

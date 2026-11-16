@@ -24,7 +24,7 @@ mock.module("@tauri-apps/api/core", () => ({
   },
 }));
 
-const { androidSaveMode, publishToGallery } = await import("../android-gallery");
+const { androidSaveMode, publishToGallery, GALLERY_SAVE } = await import("../android-gallery");
 
 beforeEach(() => {
   invokeImpl = async () => ({});
@@ -39,9 +39,10 @@ describe("androidSaveMode", () => {
     expect(androidSaveMode({ saveTreeUri: "content://tree/abc", saveDir: "/storage/emulated/0/Download" })).toBe("folder");
     expect(androidSaveMode({ saveTreeUri: "content://tree/abc", saveDir: "" })).toBe("folder");
   });
-  test("empty saveDir without a tree means gallery", () => {
-    expect(androidSaveMode({ saveTreeUri: "", saveDir: "" })).toBe("gallery");
-    expect(androidSaveMode({ saveDir: "" })).toBe("gallery");
+  test("explicit gallery value means gallery; empty saveDir keeps the old app folder (legacy)", () => {
+    expect(androidSaveMode({ saveTreeUri: "", saveDir: GALLERY_SAVE })).toBe("gallery");
+    expect(androidSaveMode({ saveTreeUri: "", saveDir: "" })).toBe("legacy");
+    expect(androidSaveMode({ saveDir: "" })).toBe("legacy");
   });
   test("a non-empty saveDir without a tree is legacy", () => {
     expect(androidSaveMode({ saveTreeUri: "", saveDir: "/storage/emulated/0/Download" })).toBe("legacy");

@@ -19,6 +19,7 @@ import { useWidth } from "../state/hooks";
 import { computeStats, useLibrary } from "../state/library";
 import { isActive } from "../state/models";
 import { pickAndroidFolder } from "../engine/android-folder";
+import { GALLERY_SAVE } from "../engine/android-gallery";
 import { pickFolder, readClipboard } from "../state/native";
 import { toggleFavorite, useIsFavorite } from "../state/favorites";
 import { navigate, openAddLink, useCommand, type Command } from "../state/nav";
@@ -747,7 +748,9 @@ function SaveFolderCard({
   const label = android
     ? treeUri
       ? treeName || "Chosen folder"
-      : saveDir || "Gallery"
+      : saveDir === GALLERY_SAVE || !saveDir
+        ? saveDir === GALLERY_SAVE ? "Gallery" : "App folder"
+        : saveDir
     : saveDir || "System Downloads folder";
   return (
     <Card

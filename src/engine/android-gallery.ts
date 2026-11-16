@@ -15,10 +15,13 @@ export type GalleryKind = "video" | "audio" | "image";
 
 export const GALLERY_ERROR_CODES: readonly string[] = ["no_space", "permission", "unknown"];
 
-/** "gallery" when no SAF tree and no legacy folder; "folder" for a SAF tree; otherwise "legacy". */
+/** Value of the saveDir setting that means "save to the Gallery". An empty saveDir keeps the old app folder. */
+export const GALLERY_SAVE = "gallery";
+
+/** "folder" for a SAF tree; "gallery" when saveDir is GALLERY_SAVE; otherwise "legacy" (the old app folder). */
 export function androidSaveMode(settings: { saveDir: string; saveTreeUri: string }): AndroidSaveMode {
   if (settings.saveTreeUri) return "folder";
-  if (!settings.saveDir) return "gallery";
+  if (settings.saveDir === GALLERY_SAVE) return "gallery";
   return "legacy";
 }
 

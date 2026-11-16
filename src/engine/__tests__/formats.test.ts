@@ -26,9 +26,9 @@ function info(over = {}) {
     heights: [1080, 720, 360],
     fpsByHeight: { 1080: 60, 720: 30, 360: 30 },
     streams: [
-      { id: "137", kind: "video-only", ext: "mp4", height: 1080, fps: 60 },
-      { id: "136", kind: "video-only", ext: "mp4", height: 720, fps: 30 },
-      { id: "18", kind: "progressive", ext: "mp4", height: 360, fps: 30 },
+      { id: "137", kind: "video-only", ext: "mp4", height: 1080, fps: 60, vcodec: "avc1.640028" },
+      { id: "136", kind: "video-only", ext: "mp4", height: 720, fps: 30, vcodec: "avc1.4d401f" },
+      { id: "18", kind: "progressive", ext: "mp4", height: 360, fps: 30, vcodec: "avc1.42001E", acodec: "mp4a.40.2" },
       { id: "140", kind: "audio-only", ext: "m4a", acodec: "mp4a.40.2" },
       { id: "251", kind: "audio-only", ext: "webm", acodec: "opus" },
     ],
@@ -116,41 +116,87 @@ describe("listFormats on Android", () => {
     expect(audio.find((o) => o.id === "audio:wav").needsConversion).toBe(true);
   });
 
-  test("video: only progressive heights (360p) are usable, nothing needs a merge", () => {
+  test("every height with a muxable stream is usable; video-only heights need a merge, progressive ones do not", () => {
     const video = byMode(listFormats(info()), "video");
-    const usableHeights = enabled(video)
-      .filter((o) => o.height)
-      .map((o) => o.height);
-    expect(usableHeights).toEqual([360]);
-    expect(video.every((o) => o.needsMerge === false)).toBe(true);
-    expect(video.filter((o) => o.isDefault).map((o) => o.id)).toEqual(["video:360"]);
+    expect(ids(video)).toEqual(["video:1080", "video:720", "video:360"]);
+    expect(video.every((o) => !o.disabledReason)).toBe(true);
+    expect(video.find((o) => o.id === "video:1080").needsMerge).toBe(true);
+    expect(video.find((o) => o.id === "video:360").needsMerge).toBe(false);
+    expect(video.every((o) => o.ext === "mp4")).toBe(true);
+    expect(video.filter((o) => o.isDefault).map((o) => o.id)).toEqual(["video:1080"]);
   });
 
-  test("no usable video height above 360p even if the link offers them", () => {
-    const video = enabled(byMode(listFormats(info()), "video"));
-    expect(video.every((o) => (o.height ?? 0) <= 360)).toBe(true);
-  });
-
-  test("a progressive stream above 360p is still not offered (no PO token, 360p cap)", () => {
+  test("a 2160p VP9 + Opus webm pair is offered as video:2160 with ext webm", () => {
     const tall = info({
+      heights: [2160, 1080, 720, 360],
+      fpsByHeight: { 2160: 30, 1080: 60, 720: 30, 360: 30 },
       streams: [
-        { id: "22", kind: "progressive", ext: "mp4", height: 720 },
-        { id: "18", kind: "progressive", ext: "mp4", height: 360 },
+        { id: "313", kind: "video-only", ext: "webm", height: 2160, fps: 30, vcodec: "vp9" },
+        { id: "251", kind: "audio-only", ext: "webm", acodec: "opus" },
+        { id: "137", kind: "video-only", ext: "mp4", height: 1080, fps: 60, vcodec: "avc1.640028" },
+        { id: "140", kind: "audio-only", ext: "m4a", acodec: "mp4a.40.2" },
+        { id: "18", kind: "progressive", ext: "mp4", height: 360, vcodec: "avc1.42001E", acodec: "mp4a.40.2" },
       ],
     });
-    expect(ids(enabled(byMode(listFormats(tall), "video")))).toEqual(["video:360"]);
+    const video = byMode(listFormats(tall), "video");
+    const top = video.find((o) => o.id === "video:2160");
+    expect(top).toMatchObject({ ext: "webm", height: 2160, needsMerge: true, isDefault: false });
+    expect(top.disabledReason).toBeUndefined();
+    // Default stays the highest <= 1080.
+    expect(video.filter((o) => o.isDefault).map((o) => o.id)).toEqual(["video:1080"]);
   });
 
-  test("no progressive stream: one disabled row, nothing usable", () => {
-    const none = info({ streams: [{ id: "137", kind: "video-only", ext: "mp4", height: 1080 }] });
+  test("a 1440p AV1 stream is offered with ext webm", () => {
+    const tall = info({
+      streams: [
+        { id: "400", kind: "video-only", ext: "webm", height: 1440, vcodec: "av01.0.09M.08" },
+        { id: "251", kind: "audio-only", ext: "webm", acodec: "opus" },
+      ],
+    });
+    const row = byMode(listFormats(tall), "video").find((o) => o.id === "video:1440");
+    expect(row).toMatchObject({ ext: "webm", needsMerge: true });
+  });
+
+  test("AVC 1080 mp4 is still offered alongside webm heights", () => {
+    expect(byMode(listFormats(info()), "video").find((o) => o.id === "video:1080")).toMatchObject({ ext: "mp4" });
+  });
+
+  test("video-only height without a matching audio stream is not offered", () => {
+    const none = info({ streams: [{ id: "137", kind: "video-only", ext: "mp4", height: 1080, vcodec: "avc1" }] });
     const video = byMode(listFormats(none), "video");
     expect(enabled(video)).toEqual([]);
     expect(video.length).toBeGreaterThan(0);
   });
 
-  test("before a fetch: video placeholders are disabled and never above 360p", () => {
+  test("video-only webm height with only AAC audio is not offered", () => {
+    const mismatched = info({
+      streams: [
+        { id: "313", kind: "video-only", ext: "webm", height: 2160, vcodec: "vp9" },
+        { id: "140", kind: "audio-only", ext: "m4a", acodec: "mp4a.40.2" },
+      ],
+    });
+    expect(enabled(byMode(listFormats(mismatched), "video"))).toEqual([]);
+  });
+
+  test("progressive files with yt-dlp codec names (bytevc1, vp09) are still offered", () => {
+    const real = info({
+      heights: [1080, 720],
+      fpsByHeight: { 1080: 30, 720: 30 },
+      streams: [
+        { id: "bytevc1_1080p", kind: "progressive", ext: "mp4", height: 1080, vcodec: "bytevc1", acodec: "aac" },
+        { id: "vp09_720p", kind: "progressive", ext: "webm", height: 720, vcodec: "vp09.00.10.08", acodec: "opus" },
+      ],
+    });
+    const video = byMode(listFormats(real), "video");
+    expect(ids(video)).toEqual(["video:1080", "video:720"]);
+    expect(video.map((o) => o.ext)).toEqual(["mp4", "webm"]);
+    expect(video.every((o) => !o.disabledReason)).toBe(true);
+  });
+
+  test("before a fetch: Android placeholders use the playlist heights and are disabled", () => {
     const video = byMode(listFormats(null), "video");
-    expect(video.every((o) => o.disabledReason && (o.height ?? 0) <= 360)).toBe(true);
+    expect(video.map((o) => o.height)).toEqual([2160, 1440, 1080, 720, 480, 360]);
+    expect(video.every((o) => o.disabledReason === "Fetch a video first")).toBe(true);
   });
 
   test("thumbnails stay available, Original is the default", () => {

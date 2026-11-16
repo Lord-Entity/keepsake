@@ -70,7 +70,8 @@ export function sanitizeSettings(raw: Partial<Settings> | null): Settings {
   return {
     theme: ["system", "dark", "light"].includes(s.theme) ? s.theme : "system",
     parallelDownloads: clampParallel(Number(s.parallelDownloads)),
-    saveDir: typeof s.saveDir === "string" ? s.saveDir : "",
+    // A content:// address (saved by an earlier build's folder picker) is not a folder: drop it so downloads use the app folder.
+    saveDir: typeof s.saveDir === "string" && !/^content:/i.test(s.saveDir) ? s.saveDir : "",
     // Old stored settings lack these keys; the defaults spread above yields "" for them.
     saveTreeUri: typeof s.saveTreeUri === "string" ? s.saveTreeUri : "",
     saveTreeName: typeof s.saveTreeName === "string" ? s.saveTreeName : "",
